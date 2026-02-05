@@ -21,7 +21,7 @@
     {"phase": 3, "action": "finish"},
     {"phase": 4, "action": "create-pr"}
   ],
-  "commit": null,
+  "commit": "155beec",
   "pr_url": null,
   "subtasks": [],
   "relatedFiles": [
