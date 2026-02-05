@@ -1,0 +1,40 @@
+{
+  "id": "storage-layer",
+  "name": "storage-layer",
+  "title": "Implement Storage Layer (EventStore, CheckpointStore, MemoryStore)",
+  "description": "",
+  "status": "in-progress",
+  "dev_type": null,
+  "scope": null,
+  "priority": "P2",
+  "creator": "openintern",
+  "assignee": "openintern",
+  "createdAt": "2026-02-05",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": null,
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {"phase": 1, "action": "implement"},
+    {"phase": 2, "action": "check"},
+    {"phase": 3, "action": "finish"},
+    {"phase": 4, "action": "create-pr"}
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "relatedFiles": [
+    "src/backend/store/event-store.ts",
+    "src/backend/store/event-store.test.ts",
+    "src/backend/store/checkpoint-store.ts",
+    "src/backend/store/checkpoint-store.test.ts",
+    "src/backend/store/memory-store.ts",
+    "src/backend/store/memory-store.test.ts",
+    "src/backend/store/projection-store.ts",
+    "src/backend/store/projection-store.test.ts",
+    "src/backend/store/index.ts",
+    "src/utils/logger.ts"
+  ],
+  "notes": ""
+}
