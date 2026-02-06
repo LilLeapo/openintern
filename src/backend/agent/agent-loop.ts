@@ -1,0 +1,365 @@
+/**
+ * AgentLoop - Core agent execution loop
+ *
+ * Features:
+ * - Plan/Act/Observe loop
+ * - Max steps control
+ * - Tool call handling
+ * - State management
+ * - Event emission
+ */
+
+import type {
+  AgentLoopConfig,
+  AgentStatus,
+  StepResult,
+  ToolCall,
+  Message,
+} from '../../types/agent.js';
+import type { Event } from '../../types/events.js';
+import { EventStore } from '../store/event-store.js';
+import { ContextManager } from './context-manager.js';
+import { ToolRouter } from './tool-router.js';
+import { createLLMClient, type ILLMClient } from './llm-client.js';
+import { generateSpanId, generateStepId } from '../../utils/ids.js';
+import { logger } from '../../utils/logger.js';
+
+const DEFAULT_CONFIG: AgentLoopConfig = {
+  maxSteps: 10,
+  timeout: 300000, // 5 minutes
+  modelConfig: {
+    provider: 'mock',
+    model: 'mock-model',
+    temperature: 0.7,
+    maxTokens: 2000,
+  },
+};
+
+/**
+ * Event callback type for broadcasting events
+ */
+export type EventCallback = (event: Event) => void;
+
+/**
+ * AgentLoop class for executing agent tasks
+ */
+export class AgentLoop {
+  private runId: string;
+  private sessionKey: string;
+  private agentId: string;
+  private config: AgentLoopConfig;
+  private status: AgentStatus;
+  private eventStore: EventStore;
+  private contextManager: ContextManager;
+  private toolRouter: ToolRouter;
+  private llmClient: ILLMClient;
+  private eventCallback?: EventCallback;
+  private startTime: number = 0;
+  private rootSpanId: string;
+  private aborted = false;
+
+  constructor(
+    runId: string,
+    sessionKey: string,
+    config: Partial<AgentLoopConfig> = {},
+    baseDir: string = 'data'
+  ) {
+    this.runId = runId;
+    this.sessionKey = sessionKey;
+    this.agentId = 'main';
+    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.rootSpanId = generateSpanId();
+
+    // Initialize status
+    this.status = {
+      status: 'idle',
+      currentStep: 0,
+      maxSteps: this.config.maxSteps,
+      startedAt: new Date().toISOString(),
+    };
+
+    // Initialize components
+    this.eventStore = new EventStore(sessionKey, runId, baseDir);
+    this.contextManager = new ContextManager(runId, sessionKey, {}, baseDir);
+    this.toolRouter = new ToolRouter({ memoryBaseDir: `${baseDir}/memory/shared` });
+
+    // Initialize LLM client
+    const modelConfig = this.config.modelConfig ?? DEFAULT_CONFIG.modelConfig!;
+    this.llmClient = createLLMClient(modelConfig);
+  }
+
+  /**
+   * Set event callback for broadcasting events
+   */
+  setEventCallback(callback: EventCallback): void {
+    this.eventCallback = callback;
+  }
+
+  /**
+   * Get current status
+   */
+  getStatus(): AgentStatus {
+    return { ...this.status };
+  }
+
+  /**
+   * Abort the execution
+   */
+  abort(): void {
+    this.aborted = true;
+    logger.info('Agent loop aborted', { runId: this.runId });
+  }
+
+  /**
+   * Create base event fields
+   */
+  private createBaseEvent(stepId: string, parentSpanId: string | null = null): Omit<Event, 'type' | 'payload'> {
+    return {
+      v: 1,
+      ts: new Date().toISOString(),
+      session_key: this.sessionKey,
+      run_id: this.runId,
+      agent_id: this.agentId,
+      step_id: stepId,
+      span_id: generateSpanId(),
+      parent_span_id: parentSpanId,
+      redaction: { contains_secrets: false },
+    };
+  }
+
+  /**
+   * Emit and store an event
+   */
+  private async emitEvent(event: Event): Promise<void> {
+    await this.eventStore.append(event);
+    if (this.eventCallback) {
+      this.eventCallback(event);
+    }
+  }
+
+  /**
+   * Execute the agent loop with user input
+   */
+  async execute(input: string): Promise<void> {
+    this.startTime = Date.now();
+    this.status.status = 'running';
+    this.status.startedAt = new Date().toISOString();
+
+    const stepId = generateStepId(0);
+
+    logger.info('Agent loop started', { runId: this.runId, input: input.substring(0, 100) });
+
+    // Emit run.started event
+    await this.emitEvent({
+      ...this.createBaseEvent(stepId, null),
+      type: 'run.started',
+      payload: { input },
+    } as Event);
+
+    // Add user message to context
+    this.contextManager.addMessage('user', input);
+
+    try {
+      // Main loop
+      while (this.status.currentStep < this.config.maxSteps && !this.aborted) {
+        const result = await this.step();
+
+        if (result.type === 'final_answer') {
+          // Run completed successfully
+          const duration = Date.now() - this.startTime;
+          this.status.status = 'completed';
+          this.status.completedAt = new Date().toISOString();
+
+          await this.emitEvent({
+            ...this.createBaseEvent(generateStepId(this.status.currentStep), this.rootSpanId),
+            type: 'run.completed',
+            payload: { output: result.content, duration_ms: duration },
+          } as Event);
+
+          logger.info('Agent loop completed', { runId: this.runId, steps: this.status.currentStep });
+          return;
+        }
+      }
+
+      // Max steps reached
+      if (!this.aborted) {
+        throw new Error(`Max steps (${this.config.maxSteps}) reached`);
+      }
+    } catch (error) {
+      await this.handleError(error);
+    }
+  }
+
+  /**
+   * Execute a single step
+   */
+  async step(): Promise<StepResult> {
+    this.status.currentStep++;
+    const stepNumber = this.status.currentStep;
+    const stepId = generateStepId(stepNumber);
+    const stepStartTime = Date.now();
+
+    logger.debug('Step started', { runId: this.runId, step: stepNumber });
+
+    // Emit step.started event
+    await this.emitEvent({
+      ...this.createBaseEvent(stepId, this.rootSpanId),
+      type: 'step.started',
+      payload: { stepNumber },
+    } as Event);
+
+    // Build context
+    const context = this.contextManager.buildContext();
+
+    // Get available tools
+    const tools = this.toolRouter.listTools();
+
+    // Prepare messages for LLM
+    const messages: Message[] = [
+      { role: 'system', content: context.systemPrompt },
+      ...context.messages,
+    ];
+
+    // Call LLM
+    const llmStartTime = Date.now();
+    const response = await this.llmClient.chat(messages, tools);
+    const llmDuration = Date.now() - llmStartTime;
+
+    // Emit llm.called event
+    await this.emitEvent({
+      ...this.createBaseEvent(stepId, this.rootSpanId),
+      type: 'llm.called',
+      payload: {
+        model: this.config.modelConfig?.model ?? 'mock-model',
+        promptTokens: response.usage.promptTokens,
+        completionTokens: response.usage.completionTokens,
+        totalTokens: response.usage.totalTokens,
+        duration_ms: llmDuration,
+      },
+    } as Event);
+
+    // Process response
+    let result: StepResult;
+
+    if (response.toolCalls && response.toolCalls.length > 0) {
+      // Handle tool calls
+      result = await this.handleToolCalls(stepId, response.toolCalls);
+    } else {
+      // Final answer
+      result = {
+        stepId,
+        type: 'final_answer',
+        content: response.content,
+      };
+
+      // Add assistant message to context
+      this.contextManager.addMessage('assistant', response.content);
+    }
+
+    // Emit step.completed event
+    const stepDuration = Date.now() - stepStartTime;
+    await this.emitEvent({
+      ...this.createBaseEvent(stepId, this.rootSpanId),
+      type: 'step.completed',
+      payload: {
+        stepNumber,
+        resultType: result.type,
+        duration_ms: stepDuration,
+      },
+    } as Event);
+
+    // Save checkpoint
+    await this.contextManager.saveCheckpoint();
+
+    return result;
+  }
+
+  /**
+   * Handle tool calls from LLM response
+   */
+  private async handleToolCalls(stepId: string, toolCalls: ToolCall[]): Promise<StepResult> {
+    const results: string[] = [];
+
+    for (const toolCall of toolCalls) {
+      // Emit tool.called event
+      await this.emitEvent({
+        ...this.createBaseEvent(stepId, this.rootSpanId),
+        type: 'tool.called',
+        payload: {
+          toolName: toolCall.name,
+          args: toolCall.parameters,
+        },
+      } as Event);
+
+      // Execute tool
+      const toolResult = await this.toolRouter.callTool(
+        toolCall.name,
+        toolCall.parameters
+      );
+
+      // Emit tool.result event
+      await this.emitEvent({
+        ...this.createBaseEvent(stepId, this.rootSpanId),
+        type: 'tool.result',
+        payload: {
+          toolName: toolCall.name,
+          result: toolResult.result,
+          isError: !toolResult.success,
+          error: toolResult.error ? {
+            code: 'TOOL_ERROR',
+            message: toolResult.error,
+          } : undefined,
+        },
+      } as Event);
+
+      // Format result for context
+      const resultStr = toolResult.success
+        ? JSON.stringify(toolResult.result)
+        : `Error: ${toolResult.error}`;
+      results.push(`[${toolCall.name}]: ${resultStr}`);
+
+      // Add tool result to context
+      this.contextManager.addMessage(
+        'tool',
+        resultStr,
+        toolCall.id
+      );
+    }
+
+    return {
+      stepId,
+      type: 'tool_call',
+      content: results.join('\n'),
+      toolCalls,
+    };
+  }
+
+  /**
+   * Handle errors during execution
+   */
+  private async handleError(error: unknown): Promise<void> {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const stepId = generateStepId(this.status.currentStep);
+
+    this.status.status = 'failed';
+    this.status.error = errorMessage;
+    this.status.completedAt = new Date().toISOString();
+
+    logger.error('Agent loop failed', {
+      runId: this.runId,
+      error: errorMessage,
+      step: this.status.currentStep,
+    });
+
+    await this.emitEvent({
+      ...this.createBaseEvent(stepId, this.rootSpanId),
+      type: 'run.failed',
+      payload: {
+        error: {
+          code: 'AGENT_ERROR',
+          message: errorMessage,
+        },
+      },
+    } as Event);
+  }
+}

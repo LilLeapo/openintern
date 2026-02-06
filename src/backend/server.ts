@@ -15,6 +15,7 @@ import cors from 'cors';
 import { createRunsRouter } from './api/runs.js';
 import { RunQueue } from './queue/run-queue.js';
 import { SSEManager } from './api/sse.js';
+import { createAgentExecutor } from './agent/executor.js';
 import { AgentError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import type { ErrorResponse } from '../types/api.js';
@@ -48,6 +49,14 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   // Create shared instances
   const runQueue = new RunQueue();
   const sseManager = new SSEManager();
+
+  // Set up agent executor for the run queue
+  const agentExecutor = createAgentExecutor({
+    baseDir: finalConfig.baseDir,
+    sseManager,
+    maxSteps: 10,
+  });
+  runQueue.setExecutor(agentExecutor);
 
   // Middleware: CORS
   app.use(

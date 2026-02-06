@@ -167,8 +167,8 @@ describe('Runs API', () => {
   });
 
   describe('POST /api/runs/:run_id/cancel', () => {
-    it('should return 400 for already completed run', async () => {
-      // Create a run first (it will be auto-processed and completed)
+    it('should return 400 for running or completed run', async () => {
+      // Create a run first (it will be auto-processed)
       const createResponse = await request(app)
         .post('/api/runs')
         .send({
@@ -179,12 +179,13 @@ describe('Runs API', () => {
       const createBody = createResponse.body as CreateRunResponse;
       const runId = createBody.run_id;
 
-      // Try to cancel the already completed run
+      // Try to cancel the run (may be running or completed)
       const response = await request(app).post(`/api/runs/${runId}/cancel`);
 
       const body = response.body as ErrorResponse;
       expect(response.status).toBe(400);
-      expect(body.error.code).toBe('RUN_ALREADY_FINISHED');
+      // Run may be running or already finished depending on timing
+      expect(['RUN_NOT_CANCELLABLE', 'RUN_ALREADY_FINISHED']).toContain(body.error.code);
     });
 
     it('should return 404 for non-existent run', async () => {

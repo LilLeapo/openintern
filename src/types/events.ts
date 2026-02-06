@@ -79,12 +79,42 @@ export const ToolResultPayloadSchema = z.object({
 });
 
 /**
+ * Step started event payload
+ */
+export const StepStartedPayloadSchema = z.object({
+  stepNumber: z.number().nonnegative(),
+});
+
+/**
+ * Step completed event payload
+ */
+export const StepCompletedPayloadSchema = z.object({
+  stepNumber: z.number().nonnegative(),
+  resultType: z.enum(['tool_call', 'final_answer', 'continue']),
+  duration_ms: z.number().nonnegative(),
+});
+
+/**
+ * LLM called event payload
+ */
+export const LLMCalledPayloadSchema = z.object({
+  model: z.string(),
+  promptTokens: z.number().nonnegative(),
+  completionTokens: z.number().nonnegative(),
+  totalTokens: z.number().nonnegative(),
+  duration_ms: z.number().nonnegative(),
+});
+
+/**
  * Event type enum
  */
 export const EventTypeSchema = z.enum([
   'run.started',
   'run.completed',
   'run.failed',
+  'step.started',
+  'step.completed',
+  'llm.called',
   'tool.called',
   'tool.result',
 ]);
@@ -142,6 +172,36 @@ export const ToolResultEventSchema = BaseEventSchema.extend({
 export type ToolResultEvent = z.infer<typeof ToolResultEventSchema>;
 
 /**
+ * Step started event
+ */
+export const StepStartedEventSchema = BaseEventSchema.extend({
+  type: z.literal('step.started'),
+  payload: StepStartedPayloadSchema,
+});
+
+export type StepStartedEvent = z.infer<typeof StepStartedEventSchema>;
+
+/**
+ * Step completed event
+ */
+export const StepCompletedEventSchema = BaseEventSchema.extend({
+  type: z.literal('step.completed'),
+  payload: StepCompletedPayloadSchema,
+});
+
+export type StepCompletedEvent = z.infer<typeof StepCompletedEventSchema>;
+
+/**
+ * LLM called event
+ */
+export const LLMCalledEventSchema = BaseEventSchema.extend({
+  type: z.literal('llm.called'),
+  payload: LLMCalledPayloadSchema,
+});
+
+export type LLMCalledEvent = z.infer<typeof LLMCalledEventSchema>;
+
+/**
  * Union of all event schemas
  */
 export const EventSchema = z.discriminatedUnion('type', [
@@ -150,6 +210,9 @@ export const EventSchema = z.discriminatedUnion('type', [
   RunFailedEventSchema,
   ToolCalledEventSchema,
   ToolResultEventSchema,
+  StepStartedEventSchema,
+  StepCompletedEventSchema,
+  LLMCalledEventSchema,
 ]);
 
 export type Event = z.infer<typeof EventSchema>;
