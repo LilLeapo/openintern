@@ -1,0 +1,17 @@
+[project]
+name = "mcp-server"
+version = "0.1.0"
+description = "MCP Server for Agent System"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+mcp-server = "mcp_server.server:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

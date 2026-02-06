@@ -1,0 +1,6 @@
+# MCP Server dependencies
+# No external dependencies required for MVP - using only Python stdlib
+
+# Development dependencies
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
