@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MemoryItemSchema, type MemoryItem } from '../../types/memory.js';
 import { MemoryStoreError } from '../../utils/errors.js';
+import type { HybridSearcher, HybridSearchResult } from './hybrid-searcher.js';
 
 /**
  * Keyword index structure: { keyword: [memory_id1, memory_id2, ...] }
@@ -23,11 +24,19 @@ export class MemoryStore {
   private readonly itemsDir: string;
   private readonly indexDir: string;
   private readonly keywordIndexPath: string;
+  private hybridSearcher: HybridSearcher | null = null;
 
   constructor(private readonly baseDir: string = 'data/memory/shared') {
     this.itemsDir = path.join(baseDir, 'items');
     this.indexDir = path.join(baseDir, 'index');
     this.keywordIndexPath = path.join(this.indexDir, 'keyword.json');
+  }
+
+  /**
+   * Set a hybrid searcher for combined keyword+vector search
+   */
+  setHybridSearcher(searcher: HybridSearcher): void {
+    this.hybridSearcher = searcher;
   }
 
   /**
@@ -92,6 +101,16 @@ export class MemoryStore {
 
       // Update keyword index
       await this.updateKeywordIndex(item);
+
+      // Update vector index if hybrid searcher is available
+      if (this.hybridSearcher) {
+        try {
+          await this.hybridSearcher.indexDocument(item.id, item.content);
+          await this.hybridSearcher.save();
+        } catch {
+          // Non-fatal: vector indexing failure shouldn't block writes
+        }
+      }
     } catch (error) {
       if (error instanceof MemoryStoreError) {
         throw error;
@@ -228,6 +247,69 @@ export class MemoryStore {
   }
 
   /**
+   * Hybrid search combining keyword and vector scores.
+   * Falls back to keyword-only search if no hybrid searcher is configured.
+   */
+  async searchHybrid(
+    query: string,
+    topK: number = 10,
+  ): Promise<Array<{ item: MemoryItem; score: number }>> {
+    if (!this.hybridSearcher) {
+      const items = await this.search(query, topK);
+      return items.map((item, i) => ({
+        item,
+        score: 1 - i * 0.1,
+      }));
+    }
+
+    // Build keyword scores from existing search
+    const keywordScores = await this.buildKeywordScores(query);
+
+    const hybridResults = await this.hybridSearcher.search(
+      query,
+      keywordScores,
+      topK,
+    );
+
+    const results: Array<{ item: MemoryItem; score: number }> = [];
+    for (const hr of hybridResults) {
+      const item = await this.get(hr.id);
+      if (item) {
+        results.push({ item, score: hr.score });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Build keyword match scores for hybrid search
+   */
+  private async buildKeywordScores(query: string): Promise<Map<string, number>> {
+    const scores = new Map<string, number>();
+    const queryLower = query.toLowerCase();
+
+    const queryWords = queryLower
+      .split(/\s+/)
+      .map((w) => w.replace(/[^a-z0-9\u4e00-\u9fff]/g, ''))
+      .filter((w) => w.length >= 1);
+
+    const index = await this.loadKeywordIndex();
+
+    for (const [keyword, ids] of Object.entries(index)) {
+      for (const word of queryWords) {
+        if (keyword.includes(word) || word.includes(keyword)) {
+          for (const id of ids) {
+            scores.set(id, (scores.get(id) ?? 0) + 1);
+          }
+        }
+      }
+    }
+
+    return scores;
+  }
+
+  /**
    * Update the keyword index with a memory item (private method)
    */
   private async updateKeywordIndex(item: MemoryItem): Promise<void> {
@@ -317,16 +399,26 @@ export class MemoryStore {
       }
     }
 
-    // Extract words from content (simple tokenization)
-    const words = item.content
+    // Extract Latin words from content (2+ chars)
+    const latinWords = item.content
       .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length >= 3) // Only words with 3+ chars
-      .map((w) => w.replace(/[^a-z0-9]/g, '')) // Remove non-alphanumeric
-      .filter((w) => w.length >= 3); // Re-filter after cleanup
+      .match(/[a-z0-9]{2,}/g);
+    if (latinWords) {
+      for (const w of latinWords) {
+        if (w.length >= 3) keywords.add(w);
+      }
+    }
 
-    for (const word of words) {
-      keywords.add(word);
+    // Extract CJK characters and bigrams
+    const cjkChars = item.content.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g);
+    if (cjkChars) {
+      for (const ch of cjkChars) {
+        keywords.add(ch);
+      }
+      // CJK bigrams for better matching
+      for (let i = 0; i < cjkChars.length - 1; i++) {
+        keywords.add(cjkChars[i]! + cjkChars[i + 1]!);
+      }
     }
 
     return Array.from(keywords);

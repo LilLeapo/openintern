@@ -14,5 +14,19 @@
   "agent": {
     "maxSteps": 10,
     "timeout": 300000
+  },
+  "embedding": {
+    "provider": "hash",
+    "dimension": 256,
+    "alpha": 0.6
+  },
+  "sandbox": {
+    "enabled": true,
+    "maxWriteSize": 1048576,
+    "fileTypeBlacklist": [".exe", ".sh", ".bat", ".cmd", ".ps1", ".dll", ".so"],
+    "rateLimit": {
+      "maxCalls": 60,
+      "windowMs": 60000
+    }
   }
 }

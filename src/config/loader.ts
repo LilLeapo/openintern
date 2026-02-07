@@ -121,6 +121,19 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
     if (envDataDir) result.server.baseDir = envDataDir;
   }
 
+  // Embedding env overrides
+  const envEmbeddingProvider = process.env['EMBEDDING_PROVIDER'];
+  const envEmbeddingApiUrl = process.env['EMBEDDING_API_URL'];
+  const envEmbeddingApiModel = process.env['EMBEDDING_API_MODEL'];
+  if (envEmbeddingProvider || envEmbeddingApiUrl || envEmbeddingApiModel) {
+    if (!result.embedding) result.embedding = {};
+    if (envEmbeddingProvider) {
+      result.embedding.provider = envEmbeddingProvider as 'hash' | 'api';
+    }
+    if (envEmbeddingApiUrl) result.embedding.apiUrl = envEmbeddingApiUrl;
+    if (envEmbeddingApiModel) result.embedding.apiModel = envEmbeddingApiModel;
+  }
+
   return result;
 }
 

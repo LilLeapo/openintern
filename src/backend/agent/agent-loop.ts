@@ -23,6 +23,8 @@ import { EventStore } from '../store/event-store.js';
 import { ContextManager } from './context-manager.js';
 import { ToolRouter } from './tool-router.js';
 import { createLLMClient, type ILLMClient } from './llm-client.js';
+import { RetryPolicy } from './retry-policy.js';
+import { detectOrphanedToolCalls, generateSyntheticResults } from './orphan-detector.js';
 import { generateSpanId, generateStepId } from '../../utils/ids.js';
 import { logger } from '../../utils/logger.js';
 
@@ -77,6 +79,7 @@ export class AgentLoop {
   private startTime: number = 0;
   private rootSpanId: string;
   private aborted = false;
+  private retryPolicy: RetryPolicy;
 
   constructor(
     runId: string,
@@ -117,6 +120,9 @@ export class AgentLoop {
     // Initialize LLM client
     const modelConfig = this.config.modelConfig ?? DEFAULT_CONFIG.modelConfig!;
     this.llmClient = createLLMClient(modelConfig);
+
+    // Initialize retry policy
+    this.retryPolicy = new RetryPolicy(this.config.retry);
   }
 
   /**
@@ -169,6 +175,89 @@ export class AgentLoop {
   }
 
   /**
+   * Resume execution from a checkpoint
+   */
+  async resume(): Promise<void> {
+    this.startTime = Date.now();
+    this.status.status = 'running';
+    this.status.startedAt = new Date().toISOString();
+
+    const checkpoint = await this.contextManager.loadCheckpoint();
+    if (!checkpoint) {
+      logger.warn('No checkpoint found, cannot resume', { runId: this.runId });
+      throw new Error('No checkpoint found for resume');
+    }
+
+    const stepId = checkpoint.step_id;
+    this.status.currentStep = this.contextManager.getCurrentStepNumber();
+
+    logger.info('Resuming from checkpoint', {
+      runId: this.runId,
+      stepId,
+      messageCount: this.contextManager.getMessages().length,
+    });
+
+    // Detect and fix orphaned tool calls
+    const messages = this.contextManager.getMessages();
+    const orphans = detectOrphanedToolCalls(messages);
+    if (orphans.length > 0) {
+      const syntheticResults = generateSyntheticResults(orphans);
+      for (const msg of syntheticResults) {
+        this.contextManager.addMessage(msg.role, msg.content, msg.toolCallId);
+      }
+      logger.info('Injected synthetic results for orphaned tool calls', {
+        count: orphans.length,
+      });
+    }
+
+    // Emit run.resumed event
+    await this.emitEvent({
+      ...this.createBaseEvent(stepId, null),
+      type: 'run.resumed',
+      payload: {
+        checkpoint_step_id: stepId,
+        orphaned_tool_calls: orphans.length,
+      },
+    } as Event);
+
+    // Continue execution loop
+    try {
+      while (this.status.currentStep < this.config.maxSteps && !this.aborted) {
+        const availability = await this.contextManager.checkContextAvailability();
+        if (!availability.available) {
+          throw new Error(`Context window exhausted: ${availability.warning}`);
+        }
+
+        const result = await this.step();
+
+        if (result.type === 'final_answer') {
+          const duration = Date.now() - this.startTime;
+          this.status.status = 'completed';
+          this.status.completedAt = new Date().toISOString();
+
+          await this.emitEvent({
+            ...this.createBaseEvent(generateStepId(this.status.currentStep), this.rootSpanId),
+            type: 'run.completed',
+            payload: { output: result.content, duration_ms: duration },
+          } as Event);
+
+          logger.info('Agent loop completed (resumed)', {
+            runId: this.runId,
+            steps: this.status.currentStep,
+          });
+          return;
+        }
+      }
+
+      if (!this.aborted) {
+        throw new Error(`Max steps (${this.config.maxSteps}) reached`);
+      }
+    } catch (error) {
+      await this.handleError(error);
+    }
+  }
+
+  /**
    * Execute the agent loop with user input
    */
   async execute(input: string): Promise<void> {
@@ -193,6 +282,18 @@ export class AgentLoop {
     try {
       // Main loop
       while (this.status.currentStep < this.config.maxSteps && !this.aborted) {
+        // Context window guard
+        const availability = await this.contextManager.checkContextAvailability();
+        if (!availability.available) {
+          throw new Error(`Context window exhausted: ${availability.warning}`);
+        }
+        if (availability.warning) {
+          logger.warn('Context window warning', {
+            runId: this.runId,
+            warning: availability.warning,
+          });
+        }
+
         const result = await this.step();
 
         if (result.type === 'final_answer') {
@@ -251,10 +352,27 @@ export class AgentLoop {
       ...context.messages,
     ];
 
-    // Call LLM
+    // Call LLM with retry policy
     const llmStartTime = Date.now();
-    const response = await this.llmClient.chat(messages, tools);
+    const { result: response, attempts } = await this.retryPolicy.execute(
+      () => this.llmClient.chat(messages, tools),
+      `llm.chat step ${stepNumber}`,
+    );
     const llmDuration = Date.now() - llmStartTime;
+
+    // Emit step.retried event if retries occurred
+    if (attempts > 1) {
+      await this.emitEvent({
+        ...this.createBaseEvent(stepId, this.rootSpanId),
+        type: 'step.retried',
+        payload: {
+          stepNumber,
+          attempt: attempts,
+          reason: 'LLM call retried due to transient error',
+          delayMs: llmDuration,
+        },
+      } as Event);
+    }
 
     // Emit llm.called event
     await this.emitEvent({
@@ -383,6 +501,16 @@ export class AgentLoop {
       error: errorMessage,
       step: this.status.currentStep,
     });
+
+    // Save checkpoint on failure for potential recovery
+    try {
+      await this.contextManager.saveCheckpoint();
+      logger.debug('Failure checkpoint saved', { runId: this.runId });
+    } catch (cpErr) {
+      logger.warn('Failed to save failure checkpoint', {
+        error: cpErr instanceof Error ? cpErr.message : String(cpErr),
+      });
+    }
 
     await this.emitEvent({
       ...this.createBaseEvent(stepId, this.rootSpanId),

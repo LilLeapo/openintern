@@ -107,6 +107,15 @@ export const LLMContextSchema = z.object({
 export type LLMContext = z.infer<typeof LLMContextSchema>;
 
 /**
+ * Retry policy configuration
+ */
+export interface RetryConfig {
+  maxRetries: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+
+/**
  * Agent loop configuration
  */
 export interface AgentLoopConfig {
@@ -115,6 +124,8 @@ export interface AgentLoopConfig {
   modelConfig?: LLMConfig;
   /** Custom working directory for file tools */
   workDir?: string;
+  /** Retry policy for transient errors */
+  retry?: RetryConfig;
 }
 
 /**
@@ -127,6 +138,14 @@ export interface ContextConfig {
   maxMessages?: number;
   /** Working directory path to include in system prompt */
   workDir?: string;
+  /** Model's maximum context window size in tokens */
+  modelMaxTokens?: number;
+  /** Minimum available tokens before blocking execution */
+  minContextTokens?: number;
+  /** Token threshold for warning about low context */
+  warnContextTokens?: number;
+  /** Number of recent conversation turns to always preserve */
+  preserveTurns?: number;
 }
 
 /**
@@ -163,5 +182,23 @@ export interface AgentConfig {
     timeout?: number;
     /** Working directory for file tools (absolute path) */
     workDir?: string;
+  };
+  embedding?: {
+    provider?: 'hash' | 'api';
+    dimension?: number;
+    alpha?: number;
+    apiUrl?: string;
+    apiModel?: string;
+  };
+  sandbox?: {
+    enabled?: boolean;
+    jailDir?: string;
+    fileTypeBlacklist?: string[];
+    fileTypeWhitelist?: string[];
+    maxWriteSize?: number;
+    rateLimit?: {
+      maxCalls?: number;
+      windowMs?: number;
+    };
   };
 }

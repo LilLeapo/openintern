@@ -17,6 +17,8 @@ import type { MemoryItem } from '../../types/memory.js';
 import type { Checkpoint } from '../../types/checkpoint.js';
 import { CheckpointStore } from '../store/checkpoint-store.js';
 import { MemoryStore } from '../store/memory-store.js';
+import { TokenCounter } from './token-counter.js';
+import { ContextTrimmer } from './context-trimmer.js';
 import { logger } from '../../utils/logger.js';
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant. You have access to tools that are provided via the function calling interface — use them when appropriate.
@@ -34,6 +36,15 @@ const DEFAULT_CONFIG: ContextConfig = {
 };
 
 /**
+ * Context availability status
+ */
+export interface ContextAvailability {
+  available: boolean;
+  totalTokens: number;
+  warning?: string;
+}
+
+/**
  * ContextManager class for managing LLM context
  */
 export class ContextManager {
@@ -44,6 +55,8 @@ export class ContextManager {
   private runId: string;
   private sessionKey: string;
   private currentStepNumber = 0;
+  private tokenCounter: TokenCounter;
+  private contextTrimmer: ContextTrimmer;
 
   constructor(
     runId: string,
@@ -56,6 +69,10 @@ export class ContextManager {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.checkpointStore = new CheckpointStore(sessionKey, runId, baseDir);
     this.memoryStore = new MemoryStore(`${baseDir}/memory/shared`);
+    this.tokenCounter = new TokenCounter();
+    this.contextTrimmer = new ContextTrimmer(this.tokenCounter, {
+      preserveTurns: this.config.preserveTurns ?? 3,
+    });
   }
 
   /**
@@ -110,61 +127,41 @@ export class ContextManager {
   }
 
   /**
-   * Estimate token count for a string (simple approximation)
+   * Estimate token count for a string using TokenCounter.
+   * Synchronous version for backward compatibility.
    */
   private estimateTokens(text: string): number {
-    // Simple approximation: ~4 characters per token
-    return Math.ceil(text.length / 4);
+    return this.tokenCounter.countSync(text);
   }
 
   /**
-   * Trim messages to fit within token limit
+   * Check context window availability.
+   * Returns whether execution should proceed, with optional warning.
    */
-  private trimMessages(messages: Message[], maxTokens: number): Message[] {
-    const maxMessages = this.config.maxMessages ?? 20;
+  async checkContextAvailability(): Promise<ContextAvailability> {
+    const totalTokens = await this.tokenCounter.countMessages(this.messages);
+    const minTokens = this.config.minContextTokens ?? 16000;
+    const warnTokens = this.config.warnContextTokens ?? 32000;
+    const modelMax = this.config.modelMaxTokens ?? 128000;
+    const available = modelMax - totalTokens;
 
-    // If we have too many messages, keep first and last N
-    if (messages.length > maxMessages) {
-      const keepFirst = 1; // Keep first user message
-      const keepLast = maxMessages - keepFirst;
-      const trimmed = [
-        ...messages.slice(0, keepFirst),
-        ...messages.slice(-keepLast),
-      ];
-      logger.debug('Messages trimmed by count', {
-        original: messages.length,
-        trimmed: trimmed.length,
-      });
-      return trimmed;
+    if (available < minTokens) {
+      return {
+        available: false,
+        totalTokens,
+        warning: `Context nearly full: ${totalTokens} tokens used, only ${available} remaining (min: ${minTokens})`,
+      };
     }
 
-    // Check token count
-    let totalTokens = 0;
-    for (const msg of messages) {
-      totalTokens += this.estimateTokens(msg.content);
+    if (available < warnTokens) {
+      return {
+        available: true,
+        totalTokens,
+        warning: `Context running low: ${totalTokens} tokens used, ${available} remaining`,
+      };
     }
 
-    if (totalTokens <= maxTokens) {
-      return messages;
-    }
-
-    // Remove messages from middle until under limit
-    const result = [...messages];
-    while (result.length > 2 && totalTokens > maxTokens) {
-      const midIndex = Math.floor(result.length / 2);
-      const removed = result.splice(midIndex, 1)[0];
-      if (removed) {
-        totalTokens -= this.estimateTokens(removed.content);
-      }
-    }
-
-    logger.debug('Messages trimmed by tokens', {
-      original: messages.length,
-      trimmed: result.length,
-      estimatedTokens: totalTokens,
-    });
-
-    return result;
+    return { available: true, totalTokens };
   }
 
   /**
@@ -214,17 +211,18 @@ export class ContextManager {
     const systemPrompt = this.config.systemPrompt + workDirContext + memoryContext;
 
     // Reserve tokens for system prompt
-    const systemTokens = this.estimateTokens(systemPrompt);
+    const systemTokens = await this.tokenCounter.count(systemPrompt);
     const availableTokens = this.config.maxTokens - systemTokens;
 
-    // Trim messages to fit
-    const trimmedMessages = this.trimMessages(this.messages, availableTokens);
+    // Trim messages using turn-based trimmer
+    const trimmedMessages = await this.contextTrimmer.trim(
+      this.messages,
+      availableTokens,
+    );
 
     // Calculate total tokens
-    let totalTokens = systemTokens;
-    for (const msg of trimmedMessages) {
-      totalTokens += this.estimateTokens(msg.content);
-    }
+    const messageTokens = await this.tokenCounter.countMessages(trimmedMessages);
+    const totalTokens = systemTokens + messageTokens;
 
     logger.debug('Context built', {
       messageCount: trimmedMessages.length,
@@ -232,14 +230,14 @@ export class ContextManager {
     });
 
     return {
-      systemPrompt: systemPrompt,
+      systemPrompt,
       messages: trimmedMessages,
       totalTokens,
     };
   }
 
   /**
-   * Save checkpoint to storage
+   * Save checkpoint to storage (preserves toolCallId and toolCalls)
    */
   async saveCheckpoint(): Promise<void> {
     const stepId = `step_${this.currentStepNumber.toString().padStart(4, '0')}`;
@@ -250,10 +248,19 @@ export class ContextManager {
       run_id: this.runId,
       step_id: stepId,
       state: {
-        messages: this.messages.map((m) => ({
-          role: m.role as 'user' | 'assistant' | 'system' | 'tool',
-          content: m.content,
-        })),
+        messages: this.messages.map((m) => {
+          const msg: Checkpoint['state']['messages'][number] = {
+            role: m.role as 'user' | 'assistant' | 'system' | 'tool',
+            content: m.content,
+          };
+          if (m.toolCallId) {
+            msg.toolCallId = m.toolCallId;
+          }
+          if (m.toolCalls && m.toolCalls.length > 0) {
+            msg.toolCalls = m.toolCalls;
+          }
+          return msg;
+        }),
       },
     };
 
@@ -262,17 +269,23 @@ export class ContextManager {
   }
 
   /**
-   * Load checkpoint from storage
+   * Load checkpoint from storage (restores toolCallId and toolCalls)
    */
   async loadCheckpoint(): Promise<Checkpoint | null> {
     const checkpoint = await this.checkpointStore.loadLatest();
 
     if (checkpoint) {
-      // Restore messages from checkpoint
-      this.messages = checkpoint.state.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
+      // Restore messages from checkpoint, including toolCallId and toolCalls
+      this.messages = checkpoint.state.messages.map((m) => {
+        const msg: Message = { role: m.role, content: m.content };
+        if (m.toolCallId) {
+          msg.toolCallId = m.toolCallId;
+        }
+        if (m.toolCalls && m.toolCalls.length > 0) {
+          msg.toolCalls = m.toolCalls;
+        }
+        return msg;
+      });
 
       // Extract step number from step_id
       const stepMatch = checkpoint.step_id.match(/step_(\d+)/);

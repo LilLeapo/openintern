@@ -88,6 +88,20 @@ export class NotFoundError extends AgentError {
 }
 
 /**
+ * Error for sandbox security violations
+ */
+export class SandboxError extends AgentError {
+  constructor(
+    message: string,
+    public violationType: string,
+    details?: Record<string, unknown>
+  ) {
+    super(message, 'SANDBOX_ERROR', 403, { ...details, violationType });
+    this.name = 'SandboxError';
+  }
+}
+
+/**
  * Error for LLM API operations
  */
 export class LLMError extends AgentError {

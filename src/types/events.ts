@@ -106,14 +106,34 @@ export const LLMCalledPayloadSchema = z.object({
 });
 
 /**
+ * Run resumed event payload
+ */
+export const RunResumedPayloadSchema = z.object({
+  checkpoint_step_id: z.string(),
+  orphaned_tool_calls: z.number().nonnegative(),
+});
+
+/**
+ * Step retried event payload
+ */
+export const StepRetriedPayloadSchema = z.object({
+  stepNumber: z.number().nonnegative(),
+  attempt: z.number().positive(),
+  reason: z.string(),
+  delayMs: z.number().nonnegative(),
+});
+
+/**
  * Event type enum
  */
 export const EventTypeSchema = z.enum([
   'run.started',
   'run.completed',
   'run.failed',
+  'run.resumed',
   'step.started',
   'step.completed',
+  'step.retried',
   'llm.called',
   'tool.called',
   'tool.result',
@@ -150,6 +170,16 @@ export const RunFailedEventSchema = BaseEventSchema.extend({
 });
 
 export type RunFailedEvent = z.infer<typeof RunFailedEventSchema>;
+
+/**
+ * Run resumed event
+ */
+export const RunResumedEventSchema = BaseEventSchema.extend({
+  type: z.literal('run.resumed'),
+  payload: RunResumedPayloadSchema,
+});
+
+export type RunResumedEvent = z.infer<typeof RunResumedEventSchema>;
 
 /**
  * Tool called event
@@ -192,6 +222,16 @@ export const StepCompletedEventSchema = BaseEventSchema.extend({
 export type StepCompletedEvent = z.infer<typeof StepCompletedEventSchema>;
 
 /**
+ * Step retried event
+ */
+export const StepRetriedEventSchema = BaseEventSchema.extend({
+  type: z.literal('step.retried'),
+  payload: StepRetriedPayloadSchema,
+});
+
+export type StepRetriedEvent = z.infer<typeof StepRetriedEventSchema>;
+
+/**
  * LLM called event
  */
 export const LLMCalledEventSchema = BaseEventSchema.extend({
@@ -208,10 +248,12 @@ export const EventSchema = z.discriminatedUnion('type', [
   RunStartedEventSchema,
   RunCompletedEventSchema,
   RunFailedEventSchema,
+  RunResumedEventSchema,
   ToolCalledEventSchema,
   ToolResultEventSchema,
   StepStartedEventSchema,
   StepCompletedEventSchema,
+  StepRetriedEventSchema,
   LLMCalledEventSchema,
 ]);
 

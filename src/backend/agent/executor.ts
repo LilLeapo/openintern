@@ -25,13 +25,15 @@ export interface AgentExecutorConfig {
   defaultModelConfig?: LLMConfig;
   /** Custom working directory for file tools */
   workDir?: string;
+  /** Whether to attempt resuming from checkpoint */
+  resume?: boolean;
 }
 
 /**
  * Create an agent executor function for the RunQueue
  */
 export function createAgentExecutor(config: AgentExecutorConfig): (run: QueuedRun) => Promise<void> {
-  const { baseDir, sseManager, maxSteps = 10, defaultModelConfig, workDir } = config;
+  const { baseDir, sseManager, maxSteps = 10, defaultModelConfig, workDir, resume: shouldResume } = config;
 
   return async (run: QueuedRun): Promise<void> => {
     logger.info('Agent executor starting', {
@@ -73,8 +75,17 @@ export function createAgentExecutor(config: AgentExecutorConfig): (run: QueuedRu
     });
 
     try {
-      // Execute the agent loop
-      await agentLoop.execute(run.input);
+      // Execute or resume the agent loop
+      if (shouldResume) {
+        try {
+          await agentLoop.resume();
+        } catch {
+          logger.info('Resume failed, starting fresh', { runId: run.run_id });
+          await agentLoop.execute(run.input);
+        }
+      } else {
+        await agentLoop.execute(run.input);
+      }
 
       // Update projections after completion
       const projectionStore = new ProjectionStore(

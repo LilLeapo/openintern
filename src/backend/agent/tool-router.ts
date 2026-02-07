@@ -10,10 +10,11 @@
 
 import type { ToolDefinition, ToolResult } from '../../types/agent.js';
 import { MemoryStore } from '../store/memory-store.js';
-import { ToolError } from '../../utils/errors.js';
+import { ToolError, SandboxError } from '../../utils/errors.js';
 import { generateMemoryId } from '../../utils/ids.js';
 import { logger } from '../../utils/logger.js';
 import { createFileTools } from './file-tools.js';
+import { ToolSandbox, type ToolSandboxConfig } from './sandbox/index.js';
 
 /**
  * Tool interface with execute function
@@ -34,6 +35,8 @@ export interface ToolRouterConfig {
   baseDir: string;
   /** Custom working directory for file tools (absolute path, overrides baseDir/workspace) */
   workDir?: string;
+  /** Sandbox configuration */
+  sandbox?: ToolSandboxConfig;
 }
 
 const DEFAULT_CONFIG: ToolRouterConfig = {
@@ -49,10 +52,16 @@ export class ToolRouter {
   private tools: Map<string, Tool> = new Map();
   private config: ToolRouterConfig;
   private memoryStore: MemoryStore;
+  private sandbox: ToolSandbox | null = null;
 
   constructor(config: Partial<ToolRouterConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.memoryStore = new MemoryStore(this.config.memoryBaseDir);
+
+    // Initialize sandbox if configured
+    if (this.config.sandbox) {
+      this.sandbox = new ToolSandbox(this.config.sandbox);
+    }
 
     // Register built-in tools
     this.registerBuiltinTools();
@@ -276,6 +285,14 @@ export class ToolRouter {
     logger.debug('Calling tool', { name, params });
 
     try {
+      // Sandbox pre-validation
+      if (this.sandbox) {
+        const workDir = this.config.workDir
+          ? this.config.workDir
+          : this.config.baseDir + '/workspace';
+        await this.sandbox.validate(name, params, workDir);
+      }
+
       // Execute with timeout
       const result = await Promise.race([
         tool.execute(params),

@@ -1,6 +1,15 @@
 import { z } from 'zod';
 
 /**
+ * Tool call schema for checkpoint messages
+ */
+const CheckpointToolCallSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  parameters: z.record(z.unknown()),
+});
+
+/**
  * Checkpoint schema - agent state snapshot for recovery
  */
 export const CheckpointSchema = z.object({
@@ -18,6 +27,10 @@ export const CheckpointSchema = z.object({
     messages: z.array(z.object({
       role: z.enum(['user', 'assistant', 'system', 'tool']),
       content: z.string(),
+      /** Tool call ID for tool result messages */
+      toolCallId: z.string().optional(),
+      /** Tool calls for assistant messages */
+      toolCalls: z.array(CheckpointToolCallSchema).optional(),
     })),
     /** Current context */
     context: z.record(z.unknown()).optional(),
