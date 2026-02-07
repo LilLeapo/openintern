@@ -158,41 +158,54 @@ export class MemoryStore {
       const index = await this.loadKeywordIndex();
       const queryLower = query.toLowerCase();
 
-      // Find matching memory IDs from index
-      const matchingIds = new Set<string>();
+      // Split query into individual words for matching
+      const queryWords = queryLower
+        .split(/\s+/)
+        .map((w) => w.replace(/[^a-z0-9\u4e00-\u9fff]/g, ''))
+        .filter((w) => w.length >= 2);
 
-      // Search through index keywords for substring matches
+      // Find matching memory IDs from index
+      const matchScores = new Map<string, number>();
+
+      // Search through index keywords for word-level matches
       for (const [keyword, ids] of Object.entries(index)) {
-        if (keyword.includes(queryLower)) {
-          for (const id of ids) {
-            matchingIds.add(id);
+        for (const word of queryWords) {
+          if (keyword.includes(word) || word.includes(keyword)) {
+            for (const id of ids) {
+              matchScores.set(id, (matchScores.get(id) ?? 0) + 1);
+            }
           }
         }
       }
 
-      // Performance note: Fallback content search is O(n) where n is total items.
-      // This is acceptable for MVP with <1000 items, but for production consider:
-      // 1. Only search indexed keywords (remove fallback)
-      // 2. Add full-text search index (e.g., using lunr.js)
-      // 3. Limit fallback to recently updated items
-      // Also do direct content search for items not in index
+      // Fallback: direct content search with word-level matching
       const allItemIds = await this.listAllItemIds();
       for (const id of allItemIds) {
-        if (matchingIds.size >= topK * 2) {
-          // Limit search scope
+        if (matchScores.size >= topK * 2) {
           break;
         }
-        if (!matchingIds.has(id)) {
+        if (!matchScores.has(id)) {
           const item = await this.get(id);
-          if (item && item.content.toLowerCase().includes(queryLower)) {
-            matchingIds.add(id);
+          if (item) {
+            const contentLower = item.content.toLowerCase();
+            for (const word of queryWords) {
+              if (contentLower.includes(word)) {
+                matchScores.set(id, (matchScores.get(id) ?? 0) + 1);
+              }
+            }
           }
         }
       }
 
-      // Load and return matching items (up to topK)
+      // Sort by score (descending) and return top K
+      const sortedIds = [...matchScores.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, topK)
+        .map(([id]) => id);
+
+      // Load and return matching items
       const results: MemoryItem[] = [];
-      for (const id of matchingIds) {
+      for (const id of sortedIds) {
         if (results.length >= topK) {
           break;
         }

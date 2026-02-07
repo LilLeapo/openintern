@@ -8,6 +8,7 @@
  */
 
 import type { QueuedRun } from '../../types/api.js';
+import type { LLMConfig, AgentLoopConfig } from '../../types/agent.js';
 import type { Event } from '../../types/events.js';
 import { AgentLoop } from '../agent/agent-loop.js';
 import { ProjectionStore } from '../store/projection-store.js';
@@ -21,13 +22,16 @@ export interface AgentExecutorConfig {
   baseDir: string;
   sseManager: SSEManager;
   maxSteps?: number;
+  defaultModelConfig?: LLMConfig;
+  /** Custom working directory for file tools */
+  workDir?: string;
 }
 
 /**
  * Create an agent executor function for the RunQueue
  */
 export function createAgentExecutor(config: AgentExecutorConfig): (run: QueuedRun) => Promise<void> {
-  const { baseDir, sseManager, maxSteps = 10 } = config;
+  const { baseDir, sseManager, maxSteps = 10, defaultModelConfig, workDir } = config;
 
   return async (run: QueuedRun): Promise<void> => {
     logger.info('Agent executor starting', {
@@ -35,11 +39,31 @@ export function createAgentExecutor(config: AgentExecutorConfig): (run: QueuedRu
       sessionKey: run.session_key,
     });
 
+    // Build modelConfig: request-level llm_config overrides server-level default
+    const loopConfig: Partial<AgentLoopConfig> = { maxSteps };
+    if (workDir) {
+      loopConfig.workDir = workDir;
+    }
+
+    if (run.llm_config) {
+      const mc: LLMConfig = {
+        provider: run.llm_config.provider ?? defaultModelConfig?.provider ?? 'mock',
+        model: run.llm_config.model ?? defaultModelConfig?.model ?? 'mock-model',
+      };
+      const temp = run.llm_config.temperature ?? defaultModelConfig?.temperature;
+      if (temp !== undefined) mc.temperature = temp;
+      const maxTok = run.llm_config.max_tokens ?? defaultModelConfig?.maxTokens;
+      if (maxTok !== undefined) mc.maxTokens = maxTok;
+      loopConfig.modelConfig = mc;
+    } else if (defaultModelConfig) {
+      loopConfig.modelConfig = defaultModelConfig;
+    }
+
     // Create AgentLoop
     const agentLoop = new AgentLoop(
       run.run_id,
       run.session_key,
-      { maxSteps },
+      loopConfig,
       baseDir
     );
 

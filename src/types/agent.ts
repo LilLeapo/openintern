@@ -52,6 +52,7 @@ export const MessageSchema = z.object({
   content: z.string(),
   toolCallId: z.string().optional(),
   name: z.string().optional(),
+  toolCalls: z.array(ToolCallSchema).optional(),
 });
 
 export type Message = z.infer<typeof MessageSchema>;
@@ -111,12 +112,9 @@ export type LLMContext = z.infer<typeof LLMContextSchema>;
 export interface AgentLoopConfig {
   maxSteps: number;
   timeout?: number;
-  modelConfig?: {
-    provider: 'openai' | 'anthropic' | 'mock';
-    model: string;
-    temperature?: number;
-    maxTokens?: number;
-  };
+  modelConfig?: LLMConfig;
+  /** Custom working directory for file tools */
+  workDir?: string;
 }
 
 /**
@@ -127,6 +125,8 @@ export interface ContextConfig {
   systemPrompt: string;
   includeMemory: boolean;
   maxMessages?: number;
+  /** Working directory path to include in system prompt */
+  workDir?: string;
 }
 
 /**
@@ -136,6 +136,32 @@ export interface LLMConfig {
   provider: 'openai' | 'anthropic' | 'mock';
   model: string;
   apiKey?: string;
+  baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+}
+
+/**
+ * Top-level agent configuration (loaded from agent.config.ts/js/json)
+ */
+export interface AgentConfig {
+  llm?: {
+    provider?: 'openai' | 'anthropic' | 'mock';
+    model?: string;
+    apiKey?: string;
+    baseUrl?: string;
+    temperature?: number;
+    maxTokens?: number;
+  };
+  server?: {
+    port?: number;
+    baseDir?: string;
+    corsOrigins?: string | string[];
+  };
+  agent?: {
+    maxSteps?: number;
+    timeout?: number;
+    /** Working directory for file tools (absolute path) */
+    workDir?: string;
+  };
 }

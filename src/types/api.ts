@@ -3,12 +3,25 @@ import { RunMetaSchema, RunStatusSchema } from './run.js';
 import { EventSchema } from './events.js';
 
 /**
+ * LLM config schema for API requests
+ */
+export const LLMConfigRequestSchema = z.object({
+  provider: z.enum(['openai', 'anthropic', 'mock']).optional(),
+  model: z.string().min(1).optional(),
+  temperature: z.number().min(0).max(2).optional(),
+  max_tokens: z.number().positive().optional(),
+}).optional();
+
+export type LLMConfigRequest = z.infer<typeof LLMConfigRequestSchema>;
+
+/**
  * Create run request schema
  */
 export const CreateRunRequestSchema = z.object({
   session_key: z.string().regex(/^s_[a-zA-Z0-9_]+$/),
   input: z.string().min(1),
   agent_id: z.string().min(1).optional(),
+  llm_config: LLMConfigRequestSchema,
 });
 
 export type CreateRunRequest = z.infer<typeof CreateRunRequestSchema>;
@@ -69,6 +82,7 @@ export const QueuedRunSchema = z.object({
   agent_id: z.string(),
   created_at: z.string().datetime(),
   status: z.enum(['pending', 'running', 'completed', 'failed']),
+  llm_config: LLMConfigRequestSchema,
 });
 
 export type QueuedRun = z.infer<typeof QueuedRunSchema>;

@@ -16,6 +16,8 @@ import type {
   ToolCall,
 } from '../../types/agent.js';
 import { logger } from '../../utils/logger.js';
+import { OpenAIClient } from './openai-client.js';
+import { AnthropicClient } from './anthropic-client.js';
 
 /**
  * Abstract LLM Client interface
@@ -201,12 +203,9 @@ export function createLLMClient(config: LLMConfig): ILLMClient {
     case 'mock':
       return new MockLLMClient(config);
     case 'openai':
+      return new OpenAIClient(config);
     case 'anthropic':
-      // For MVP, fall back to mock
-      logger.warn('Real LLM providers not implemented, using mock', {
-        provider: config.provider,
-      });
-      return new MockLLMClient(config);
+      return new AnthropicClient(config);
     default: {
       const exhaustiveCheck: never = config.provider;
       throw new Error(`Unknown LLM provider: ${String(exhaustiveCheck)}`);

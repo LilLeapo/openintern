@@ -1,0 +1,18 @@
+{
+  "llm": {
+    "provider": "openai",
+    "model": "DeepSeek-V3.2",
+    "baseUrl": "https://aiping.cn/api/v1",
+    "temperature": 0.7,
+    "maxTokens": 2000,
+    "apiKey": "QC-29e2dd8b2f697075ba7627a68e152628-b8a7fa72726fe987319276bc599bedc3"
+  },
+  "server": {
+    "port": 3000,
+    "baseDir": "data"
+  },
+  "agent": {
+    "maxSteps": 10,
+    "timeout": 300000
+  }
+}

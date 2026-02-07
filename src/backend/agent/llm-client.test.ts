@@ -2,8 +2,10 @@
  * LLM Client tests
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { MockLLMClient, createLLMClient } from './llm-client.js';
+import { OpenAIClient } from './openai-client.js';
+import { AnthropicClient } from './anthropic-client.js';
 import type { Message, ToolDefinition } from '../../types/agent.js';
 
 describe('MockLLMClient', () => {
@@ -108,21 +110,45 @@ describe('MockLLMClient with tools', () => {
 });
 
 describe('createLLMClient', () => {
+  const originalOpenAIKey = process.env.OPENAI_API_KEY;
+  const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
+
+  afterEach(() => {
+    if (originalOpenAIKey !== undefined) {
+      process.env.OPENAI_API_KEY = originalOpenAIKey;
+    } else {
+      delete process.env.OPENAI_API_KEY;
+    }
+    if (originalAnthropicKey !== undefined) {
+      process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
+    } else {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
   it('should create mock client', () => {
     const client = createLLMClient({
       provider: 'mock',
       model: 'test-model',
     });
-
-    expect(client).toBeDefined();
+    expect(client).toBeInstanceOf(MockLLMClient);
   });
 
-  it('should fall back to mock for unsupported providers', () => {
+  it('should create OpenAI client', () => {
     const client = createLLMClient({
       provider: 'openai',
       model: 'gpt-4',
+      apiKey: 'test-key',
     });
+    expect(client).toBeInstanceOf(OpenAIClient);
+  });
 
-    expect(client).toBeDefined();
+  it('should create Anthropic client', () => {
+    const client = createLLMClient({
+      provider: 'anthropic',
+      model: 'claude-3-sonnet',
+      apiKey: 'test-key',
+    });
+    expect(client).toBeInstanceOf(AnthropicClient);
   });
 });

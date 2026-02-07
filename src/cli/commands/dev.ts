@@ -6,6 +6,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import { createServer, type ServerInstance } from '../../backend/server.js';
+import { loadConfig, toLLMConfig } from '../../config/loader.js';
 import { logger } from '../../utils/logger.js';
 import * as output from '../utils/output.js';
 
@@ -13,6 +14,8 @@ export interface DevOptions {
   port: number;
   mcpStdio: boolean;
   web: boolean;
+  provider?: string;
+  model?: string;
 }
 
 /**
@@ -46,15 +49,46 @@ export async function devCommand(options: DevOptions): Promise<void> {
   process.on('SIGTERM', () => void shutdown());
 
   try {
+    // Load config file + env vars
+    const agentConfig = await loadConfig();
+
+    // Build server config: config file < CLI options
+    const serverConfig: Parameters<typeof createServer>[0] = {
+      port: agentConfig.server?.port ?? options.port,
+      baseDir: agentConfig.server?.baseDir ?? 'data',
+    };
+    if (agentConfig.server?.corsOrigins) {
+      serverConfig.corsOrigins = agentConfig.server.corsOrigins;
+    }
+
+    // LLM config: config file as base, CLI options override
+    if (options.provider) {
+      const provider = options.provider as 'openai' | 'anthropic' | 'mock';
+      serverConfig.defaultModelConfig = {
+        provider,
+        model: options.model ?? (provider === 'openai' ? 'gpt-4o' : 'claude-sonnet-4-20250514'),
+      };
+    } else {
+      const llmConfig = toLLMConfig(agentConfig);
+      if (llmConfig) {
+        serverConfig.defaultModelConfig = llmConfig;
+      }
+    }
+
+    // Agent config
+    if (agentConfig.agent?.maxSteps) {
+      serverConfig.maxSteps = agentConfig.agent.maxSteps;
+    }
+    if (agentConfig.agent?.workDir) {
+      serverConfig.workDir = agentConfig.agent.workDir;
+    }
+
     // Start Backend Server
     output.progress('Starting Backend Server');
-    server = createServer({
-      port: options.port,
-      baseDir: 'data',
-    });
+    server = createServer(serverConfig);
     await server.start();
     output.progressDone();
-    output.success(`Backend Server started at http://localhost:${options.port}`);
+    output.success(`Backend Server started at http://localhost:${serverConfig.port ?? options.port}`);
 
     // Start MCP Server if stdio mode
     if (options.mcpStdio) {

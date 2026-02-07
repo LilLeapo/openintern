@@ -86,3 +86,18 @@ export class NotFoundError extends AgentError {
     this.name = 'NotFoundError';
   }
 }
+
+/**
+ * Error for LLM API operations
+ */
+export class LLMError extends AgentError {
+  constructor(
+    message: string,
+    public provider: string,
+    public httpStatus?: number,
+    details?: Record<string, unknown>
+  ) {
+    super(message, 'LLM_ERROR', 502, { ...details, provider, httpStatus });
+    this.name = 'LLMError';
+  }
+}

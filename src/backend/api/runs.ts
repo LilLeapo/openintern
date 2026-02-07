@@ -60,7 +60,7 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
         );
       }
 
-      const { session_key, input, agent_id } = parseResult.data;
+      const { session_key, input, agent_id, llm_config } = parseResult.data;
       const runId = generateRunId();
       const createdAt = new Date().toISOString();
 
@@ -72,6 +72,7 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
         agent_id: agent_id ?? 'main',
         created_at: createdAt,
         status: 'pending',
+        llm_config,
       };
 
       // Enqueue the run

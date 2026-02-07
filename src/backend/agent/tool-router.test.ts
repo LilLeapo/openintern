@@ -38,7 +38,7 @@ describe('ToolRouter', () => {
       });
 
       expect(router.hasTool('custom.tool')).toBe(true);
-      expect(router.getToolCount()).toBe(4); // 3 built-in + 1 custom
+      expect(router.getToolCount()).toBe(8); // 3 memory + 4 file + 1 custom
     });
 
     it('should unregister tool', () => {

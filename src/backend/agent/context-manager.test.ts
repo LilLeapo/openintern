@@ -65,19 +65,19 @@ describe('ContextManager', () => {
   });
 
   describe('Context building', () => {
-    it('should build context with messages', () => {
+    it('should build context with messages', async () => {
       contextManager.addMessage('user', 'Hello');
       contextManager.addMessage('assistant', 'Hi');
 
-      const context = contextManager.buildContext();
+      const context = await contextManager.buildContext();
 
       expect(context.systemPrompt).toBeDefined();
       expect(context.messages).toHaveLength(2);
       expect(context.totalTokens).toBeGreaterThan(0);
     });
 
-    it('should include system prompt', () => {
-      const context = contextManager.buildContext();
+    it('should include system prompt', async () => {
+      const context = await contextManager.buildContext();
       expect(context.systemPrompt).toContain('AI assistant');
     });
   });

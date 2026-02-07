@@ -9,9 +9,11 @@
  * - Event emission
  */
 
+import path from 'node:path';
 import type {
   AgentLoopConfig,
   AgentStatus,
+  LLMConfig,
   StepResult,
   ToolCall,
   Message,
@@ -24,15 +26,33 @@ import { createLLMClient, type ILLMClient } from './llm-client.js';
 import { generateSpanId, generateStepId } from '../../utils/ids.js';
 import { logger } from '../../utils/logger.js';
 
+/**
+ * Resolve default model config from environment variables
+ */
+function resolveDefaultModelConfig(): LLMConfig {
+  const provider = process.env['LLM_PROVIDER'] as 'openai' | 'anthropic' | 'mock' | undefined;
+  const model = process.env['LLM_MODEL'];
+
+  // If env vars specify a real provider, use it
+  if (provider && provider !== 'mock' && model) {
+    return { provider, model, temperature: 0.7, maxTokens: 2000 };
+  }
+
+  // Auto-detect from API key env vars
+  if (process.env['OPENAI_API_KEY'] && !provider) {
+    return { provider: 'openai', model: model ?? 'gpt-4o', temperature: 0.7, maxTokens: 2000 };
+  }
+  if (process.env['ANTHROPIC_API_KEY'] && !provider) {
+    return { provider: 'anthropic', model: model ?? 'claude-sonnet-4-20250514', temperature: 0.7, maxTokens: 2000 };
+  }
+
+  return { provider: 'mock', model: 'mock-model', temperature: 0.7, maxTokens: 2000 };
+}
+
 const DEFAULT_CONFIG: AgentLoopConfig = {
   maxSteps: 10,
   timeout: 300000, // 5 minutes
-  modelConfig: {
-    provider: 'mock',
-    model: 'mock-model',
-    temperature: 0.7,
-    maxTokens: 2000,
-  },
+  modelConfig: resolveDefaultModelConfig(),
 };
 
 /**
@@ -80,8 +100,19 @@ export class AgentLoop {
 
     // Initialize components
     this.eventStore = new EventStore(sessionKey, runId, baseDir);
-    this.contextManager = new ContextManager(runId, sessionKey, {}, baseDir);
-    this.toolRouter = new ToolRouter({ memoryBaseDir: `${baseDir}/memory/shared` });
+    // Compute the resolved workDir for context manager
+    const resolvedWorkDir = this.config.workDir
+      ? path.resolve(this.config.workDir)
+      : path.resolve(baseDir, 'workspace');
+    this.contextManager = new ContextManager(runId, sessionKey, { workDir: resolvedWorkDir }, baseDir);
+    const toolRouterConfig: Partial<import('./tool-router.js').ToolRouterConfig> = {
+      memoryBaseDir: `${baseDir}/memory/shared`,
+      baseDir,
+    };
+    if (this.config.workDir) {
+      toolRouterConfig.workDir = this.config.workDir;
+    }
+    this.toolRouter = new ToolRouter(toolRouterConfig);
 
     // Initialize LLM client
     const modelConfig = this.config.modelConfig ?? DEFAULT_CONFIG.modelConfig!;
@@ -209,7 +240,7 @@ export class AgentLoop {
     } as Event);
 
     // Build context
-    const context = this.contextManager.buildContext();
+    const context = await this.contextManager.buildContext();
 
     // Get available tools
     const tools = this.toolRouter.listTools();
@@ -242,6 +273,8 @@ export class AgentLoop {
     let result: StepResult;
 
     if (response.toolCalls && response.toolCalls.length > 0) {
+      // Add assistant message with tool_calls to context BEFORE executing tools
+      this.contextManager.addMessage('assistant', response.content, undefined, response.toolCalls);
       // Handle tool calls
       result = await this.handleToolCalls(stepId, response.toolCalls);
     } else {

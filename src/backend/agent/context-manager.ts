@@ -19,12 +19,12 @@ import { CheckpointStore } from '../store/checkpoint-store.js';
 import { MemoryStore } from '../store/memory-store.js';
 import { logger } from '../../utils/logger.js';
 
-const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant. You can use tools to help complete tasks.
+const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant. You have access to tools that are provided via the function calling interface — use them when appropriate.
 
-When you need to remember something for later, use the memory.write tool.
-When you need to recall information, use the memory.search tool.
-
-Always provide clear and helpful responses.`;
+Guidelines:
+- You do NOT have built-in memory across conversations. If the user asks a personal question (like your name) or references past information, you MUST call memory.search first before answering. Never guess or make up information.
+- For file operations, all paths are relative to your working directory.
+- Always respond in the same language as the user's message.`;
 
 const DEFAULT_CONFIG: ContextConfig = {
   maxTokens: 4000,
@@ -83,10 +83,13 @@ export class ContextManager {
   /**
    * Add a message to the context
    */
-  addMessage(role: Message['role'], content: string, toolCallId?: string): void {
+  addMessage(role: Message['role'], content: string, toolCallId?: string, toolCalls?: Message['toolCalls']): void {
     const message: Message = { role, content };
     if (toolCallId) {
       message.toolCallId = toolCallId;
+    }
+    if (toolCalls && toolCalls.length > 0) {
+      message.toolCalls = toolCalls;
     }
     this.messages.push(message);
     logger.debug('Message added to context', { role, contentLength: content.length });
@@ -188,9 +191,30 @@ export class ContextManager {
   /**
    * Build the LLM context
    */
-  buildContext(): LLMContext {
+  async buildContext(): Promise<LLMContext> {
+    // Auto-retrieve relevant memories based on last user message
+    let memoryContext = '';
+    if (this.config.includeMemory) {
+      const lastUserMsg = [...this.messages].reverse().find((m) => m.role === 'user');
+      if (lastUserMsg) {
+        const memories = await this.retrieveMemory(lastUserMsg.content);
+        if (memories.length > 0) {
+          const memoryLines = memories.map((m) => `- ${m.content}`).join('\n');
+          memoryContext = `\n\nRelevant memories:\n${memoryLines}`;
+        }
+      }
+    }
+
+    // Inject working directory info
+    let workDirContext = '';
+    if (this.config.workDir) {
+      workDirContext = `\n\nFile tools working directory: ${this.config.workDir}\nAll file paths are relative to this directory. You can only access files within this directory.`;
+    }
+
+    const systemPrompt = this.config.systemPrompt + workDirContext + memoryContext;
+
     // Reserve tokens for system prompt
-    const systemTokens = this.estimateTokens(this.config.systemPrompt);
+    const systemTokens = this.estimateTokens(systemPrompt);
     const availableTokens = this.config.maxTokens - systemTokens;
 
     // Trim messages to fit
@@ -208,7 +232,7 @@ export class ContextManager {
     });
 
     return {
-      systemPrompt: this.config.systemPrompt,
+      systemPrompt: systemPrompt,
       messages: trimmedMessages,
       totalTokens,
     };
@@ -227,7 +251,7 @@ export class ContextManager {
       step_id: stepId,
       state: {
         messages: this.messages.map((m) => ({
-          role: m.role as 'user' | 'assistant' | 'system',
+          role: m.role as 'user' | 'assistant' | 'system' | 'tool',
           content: m.content,
         })),
       },

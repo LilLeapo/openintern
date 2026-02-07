@@ -5,12 +5,15 @@
  */
 
 import type { CreateRunResponse } from '../../types/api.js';
+import { loadConfig } from '../../config/loader.js';
 import * as output from '../utils/output.js';
 
 export interface RunOptions {
   session: string;
   wait: boolean;
   stream: boolean;
+  provider?: string;
+  model?: string;
 }
 
 /**
@@ -26,6 +29,31 @@ export async function runCommand(
     : `s_${options.session}`;
 
   try {
+    // Load config file + env vars
+    const agentConfig = await loadConfig();
+
+    // Build request body
+    const requestBody: Record<string, unknown> = {
+      session_key: sessionKey,
+      input: text,
+    };
+
+    // LLM config: CLI options override config file
+    if (options.provider) {
+      requestBody.llm_config = {
+        provider: options.provider,
+        model: options.model,
+      };
+    } else if (agentConfig.llm?.provider) {
+      const llmReq: Record<string, unknown> = {
+        provider: agentConfig.llm.provider,
+      };
+      if (agentConfig.llm.model) llmReq.model = agentConfig.llm.model;
+      if (agentConfig.llm.temperature !== undefined) llmReq.temperature = agentConfig.llm.temperature;
+      if (agentConfig.llm.maxTokens !== undefined) llmReq.max_tokens = agentConfig.llm.maxTokens;
+      requestBody.llm_config = llmReq;
+    }
+
     // Create run via API
     output.progress('Creating run');
     const response = await fetch(`${baseUrl}/api/runs`, {
@@ -33,10 +61,7 @@ export async function runCommand(
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        session_key: sessionKey,
-        input: text,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {

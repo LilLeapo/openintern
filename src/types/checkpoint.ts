@@ -16,7 +16,7 @@ export const CheckpointSchema = z.object({
   state: z.object({
     /** Conversation messages */
     messages: z.array(z.object({
-      role: z.enum(['user', 'assistant', 'system']),
+      role: z.enum(['user', 'assistant', 'system', 'tool']),
       content: z.string(),
     })),
     /** Current context */

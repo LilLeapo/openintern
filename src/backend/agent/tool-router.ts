@@ -13,6 +13,7 @@ import { MemoryStore } from '../store/memory-store.js';
 import { ToolError } from '../../utils/errors.js';
 import { generateMemoryId } from '../../utils/ids.js';
 import { logger } from '../../utils/logger.js';
+import { createFileTools } from './file-tools.js';
 
 /**
  * Tool interface with execute function
@@ -29,11 +30,16 @@ export interface ToolRouterConfig {
   defaultTimeoutMs: number;
   /** Memory store base directory */
   memoryBaseDir: string;
+  /** Base data directory (for file tools workspace) */
+  baseDir: string;
+  /** Custom working directory for file tools (absolute path, overrides baseDir/workspace) */
+  workDir?: string;
 }
 
 const DEFAULT_CONFIG: ToolRouterConfig = {
   defaultTimeoutMs: 30000, // 30 seconds
   memoryBaseDir: 'data/memory/shared',
+  baseDir: 'data',
 };
 
 /**
@@ -50,6 +56,12 @@ export class ToolRouter {
 
     // Register built-in tools
     this.registerBuiltinTools();
+
+    // Register file tools
+    const fileTools = createFileTools(this.config.baseDir, this.config.workDir);
+    for (const tool of fileTools) {
+      this.registerTool(tool);
+    }
   }
 
   /**

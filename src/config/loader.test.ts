@@ -1,0 +1,184 @@
+/**
+ * Config Loader tests
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { loadConfig, clearConfigCache, toLLMConfig } from './loader.js';
+import type { AgentConfig } from '../types/agent.js';
+import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
+
+vi.mock('fs', () => ({
+  existsSync: vi.fn(() => false),
+}));
+
+vi.mock('fs/promises', () => ({
+  readFile: vi.fn(),
+}));
+
+const mockExistsSync = vi.mocked(existsSync);
+const mockReadFile = vi.mocked(readFile);
+
+const ENV_KEYS = [
+  'LLM_PROVIDER', 'LLM_MODEL', 'LLM_BASE_URL', 'LLM_API_KEY',
+  'LLM_TEMPERATURE', 'LLM_MAX_TOKENS',
+  'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+  'PORT', 'DATA_DIR',
+];
+
+let savedEnv: Record<string, string | undefined>;
+
+beforeEach(() => {
+  clearConfigCache();
+  savedEnv = {};
+  for (const key of ENV_KEYS) {
+    savedEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  mockExistsSync.mockReturnValue(false);
+});
+
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    if (savedEnv[key] !== undefined) {
+      process.env[key] = savedEnv[key];
+    } else {
+      delete process.env[key];
+    }
+  }
+});
+
+describe('loadConfig', () => {
+  it('should return empty config when no file and no env vars', async () => {
+    const config = await loadConfig('/tmp/test');
+    expect(config).toEqual({});
+  });
+
+  it('should load JSON config file', async () => {
+    mockExistsSync.mockImplementation((p) =>
+      String(p).endsWith('agent.config.json')
+    );
+    const fileContent: AgentConfig = {
+      llm: { provider: 'openai', model: 'gpt-4o', baseUrl: 'https://custom.api/v1' },
+      server: { port: 8080 },
+    };
+    mockReadFile.mockResolvedValue(JSON.stringify(fileContent));
+
+    const config = await loadConfig('/tmp/test');
+
+    expect(config.llm?.provider).toBe('openai');
+    expect(config.llm?.model).toBe('gpt-4o');
+    expect(config.llm?.baseUrl).toBe('https://custom.api/v1');
+    expect(config.server?.port).toBe(8080);
+  });
+
+  it('should apply LLM env var overrides', async () => {
+    process.env['LLM_PROVIDER'] = 'anthropic';
+    process.env['LLM_MODEL'] = 'claude-3-opus';
+    process.env['LLM_BASE_URL'] = 'https://my-proxy/v1';
+    process.env['LLM_TEMPERATURE'] = '0.5';
+
+    const config = await loadConfig('/tmp/test');
+
+    expect(config.llm?.provider).toBe('anthropic');
+    expect(config.llm?.model).toBe('claude-3-opus');
+    expect(config.llm?.baseUrl).toBe('https://my-proxy/v1');
+    expect(config.llm?.temperature).toBe(0.5);
+  });
+
+  it('should apply server env var overrides', async () => {
+    process.env['PORT'] = '9090';
+    process.env['DATA_DIR'] = '/custom/data';
+
+    const config = await loadConfig('/tmp/test');
+
+    expect(config.server?.port).toBe(9090);
+    expect(config.server?.baseDir).toBe('/custom/data');
+  });
+
+  it('should auto-detect from OPENAI_API_KEY', async () => {
+    process.env['OPENAI_API_KEY'] = 'sk-test';
+
+    const config = await loadConfig('/tmp/test');
+
+    expect(config.llm?.provider).toBe('openai');
+    expect(config.llm?.apiKey).toBe('sk-test');
+    expect(config.llm?.model).toBe('gpt-4o');
+  });
+
+  it('should auto-detect from ANTHROPIC_API_KEY', async () => {
+    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test';
+
+    const config = await loadConfig('/tmp/test');
+
+    expect(config.llm?.provider).toBe('anthropic');
+    expect(config.llm?.apiKey).toBe('sk-ant-test');
+    expect(config.llm?.model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('should let env vars override file config', async () => {
+    mockExistsSync.mockImplementation((p) =>
+      String(p).endsWith('agent.config.json')
+    );
+    const fileContent: AgentConfig = {
+      llm: { provider: 'openai', model: 'gpt-4o' },
+    };
+    mockReadFile.mockResolvedValue(JSON.stringify(fileContent));
+
+    process.env['LLM_MODEL'] = 'gpt-4-turbo';
+
+    const config = await loadConfig('/tmp/test');
+
+    expect(config.llm?.provider).toBe('openai');
+    expect(config.llm?.model).toBe('gpt-4-turbo');
+  });
+
+  it('should cache config after first load', async () => {
+    const config1 = await loadConfig('/tmp/test');
+    process.env['LLM_PROVIDER'] = 'anthropic';
+    const config2 = await loadConfig('/tmp/test');
+
+    expect(config1).toBe(config2);
+  });
+});
+
+describe('toLLMConfig', () => {
+  it('should return undefined when no llm config', () => {
+    expect(toLLMConfig({})).toBeUndefined();
+  });
+
+  it('should return undefined when no provider', () => {
+    expect(toLLMConfig({ llm: { model: 'gpt-4o' } })).toBeUndefined();
+  });
+
+  it('should convert AgentConfig.llm to LLMConfig', () => {
+    const config: AgentConfig = {
+      llm: {
+        provider: 'openai',
+        model: 'gpt-4o',
+        baseUrl: 'https://custom.api/v1',
+        apiKey: 'sk-test',
+        temperature: 0.5,
+        maxTokens: 4000,
+      },
+    };
+
+    const result = toLLMConfig(config);
+
+    expect(result).toEqual({
+      provider: 'openai',
+      model: 'gpt-4o',
+      baseUrl: 'https://custom.api/v1',
+      apiKey: 'sk-test',
+      temperature: 0.5,
+      maxTokens: 4000,
+    });
+  });
+
+  it('should use default model for provider', () => {
+    const result = toLLMConfig({ llm: { provider: 'anthropic' } });
+
+    expect(result?.provider).toBe('anthropic');
+    expect(result?.model).toBe('claude-sonnet-4-20250514');
+  });
+});

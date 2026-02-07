@@ -2,7 +2,7 @@
  * useChat - React hook for chat functionality
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { apiClient } from '../api/client';
 import { useSSE } from './useSSE';
 import type { ChatMessage } from '../types/events';
@@ -26,17 +26,20 @@ export function useChat(sessionKey: string): UseChatResult {
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  const { events } = useSSE(currentRunId);
+  const { events, clearEvents } = useSSE(currentRunId);
+  const processedRunIds = useRef<Set<string>>(new Set());
 
   // Process SSE events to update messages
   useEffect(() => {
     if (!currentRunId || events.length === 0) return;
+    if (processedRunIds.current.has(currentRunId)) return;
 
     const lastEvent = events[events.length - 1];
     if (!lastEvent) return;
 
     if (lastEvent.type === 'run.completed') {
       const payload = lastEvent.payload as { output: string };
+      processedRunIds.current.add(currentRunId);
       setMessages((prev) => [
         ...prev,
         {
@@ -49,8 +52,10 @@ export function useChat(sessionKey: string): UseChatResult {
       ]);
       setIsRunning(false);
       setCurrentRunId(null);
+      clearEvents();
     } else if (lastEvent.type === 'run.failed') {
       const payload = lastEvent.payload as { error: { message: string } };
+      processedRunIds.current.add(currentRunId);
       setMessages((prev) => [
         ...prev,
         {
@@ -63,8 +68,9 @@ export function useChat(sessionKey: string): UseChatResult {
       ]);
       setIsRunning(false);
       setCurrentRunId(null);
+      clearEvents();
     }
-  }, [events, currentRunId]);
+  }, [events, currentRunId, clearEvents]);
 
   const sendMessage = useCallback(
     async (input: string) => {

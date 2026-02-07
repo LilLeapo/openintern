@@ -17,6 +17,7 @@ import { RunQueue } from './queue/run-queue.js';
 import { SSEManager } from './api/sse.js';
 import { createAgentExecutor } from './agent/executor.js';
 import { AgentError } from '../utils/errors.js';
+import type { LLMConfig } from '../types/agent.js';
 import { logger } from '../utils/logger.js';
 import type { ErrorResponse } from '../types/api.js';
 
@@ -27,6 +28,9 @@ export interface ServerConfig {
   port: number;
   baseDir: string;
   corsOrigins: string | string[];
+  defaultModelConfig?: LLMConfig;
+  maxSteps?: number;
+  workDir?: string;
 }
 
 const DEFAULT_CONFIG: ServerConfig = {
@@ -51,11 +55,18 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   const sseManager = new SSEManager();
 
   // Set up agent executor for the run queue
-  const agentExecutor = createAgentExecutor({
+  const executorConfig: Parameters<typeof createAgentExecutor>[0] = {
     baseDir: finalConfig.baseDir,
     sseManager,
-    maxSteps: 10,
-  });
+    maxSteps: finalConfig.maxSteps ?? 10,
+  };
+  if (finalConfig.defaultModelConfig) {
+    executorConfig.defaultModelConfig = finalConfig.defaultModelConfig;
+  }
+  if (finalConfig.workDir) {
+    executorConfig.workDir = finalConfig.workDir;
+  }
+  const agentExecutor = createAgentExecutor(executorConfig);
   runQueue.setExecutor(agentExecutor);
 
   // Middleware: CORS

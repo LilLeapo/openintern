@@ -3,6 +3,7 @@
  * Agent CLI - Command line interface for Agent System
  *
  * Commands:
+ * - agent init     Initialize configuration file
  * - agent dev      Start development server
  * - agent run      Create and execute a run
  * - agent tail     Stream events from a run
@@ -14,6 +15,7 @@
 import { Command } from 'commander';
 import { devCommand } from './commands/dev.js';
 import { runCommand } from './commands/run.js';
+import { initCommand } from './commands/init.js';
 import { tailCommand } from './commands/tail.js';
 import { exportCommand } from './commands/export.js';
 import { skillsListCommand } from './commands/skills.js';
@@ -26,21 +28,35 @@ program
   .description('CLI for Agent System')
   .version('1.0.0');
 
+// agent init
+program
+  .command('init')
+  .description('Generate agent.config.json configuration file')
+  .option('--force', 'Overwrite existing config file', false)
+  .action((options: { force: boolean }) => {
+    void initCommand(options);
+  });
+
 // agent dev
 program
   .command('dev')
   .description('Start development server with Backend + MCP Server')
   .option('-p, --port <number>', 'Backend port', '3000')
+  .option('--provider <provider>', 'LLM provider (openai|anthropic|mock)')
+  .option('--model <model>', 'LLM model name')
   .option('--mcp-stdio', 'Use stdio mode for MCP (default)', true)
   .option('--no-mcp-stdio', 'Disable MCP Server')
   .option('--web', 'Show Web UI info', true)
   .option('--no-web', 'Hide Web UI info')
-  .action((options: { port: string; mcpStdio: boolean; web: boolean }) => {
-    void devCommand({
+  .action((options: { port: string; provider?: string; model?: string; mcpStdio: boolean; web: boolean }) => {
+    const devOpts: Parameters<typeof devCommand>[0] = {
       port: parseInt(options.port, 10),
       mcpStdio: options.mcpStdio,
       web: options.web,
-    });
+    };
+    if (options.provider) devOpts.provider = options.provider;
+    if (options.model) devOpts.model = options.model;
+    void devCommand(devOpts);
   });
 
 // agent run
@@ -51,12 +67,21 @@ program
   .option('-s, --session <key>', 'Session key', 'default')
   .option('-w, --wait', 'Wait for completion', false)
   .option('--stream', 'Stream events in real-time', false)
+  .option('--provider <provider>', 'LLM provider (openai|anthropic|mock)')
+  .option('--model <model>', 'LLM model name')
   .action(
     (
       text: string,
-      options: { session: string; wait: boolean; stream: boolean }
+      options: { session: string; wait: boolean; stream: boolean; provider?: string; model?: string }
     ) => {
-      void runCommand(text, options);
+      const runOpts: Parameters<typeof runCommand>[1] = {
+        session: options.session,
+        wait: options.wait,
+        stream: options.stream,
+      };
+      if (options.provider) runOpts.provider = options.provider;
+      if (options.model) runOpts.model = options.model;
+      void runCommand(text, runOpts);
     }
   );
 
