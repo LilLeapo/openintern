@@ -50,7 +50,7 @@ export interface MCPClientConfig {
 }
 
 const DEFAULT_CONFIG: Required<MCPClientConfig> = {
-  pythonPath: 'python',
+  pythonPath: 'python3',
   serverModule: 'mcp_server.server',
   cwd: 'python',
   timeout: 30000,
