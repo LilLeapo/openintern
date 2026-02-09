@@ -10,11 +10,36 @@ import type {
   Event,
 } from '../types/events';
 
+interface ScopeConfig {
+  orgId: string;
+  userId: string;
+  projectId?: string;
+}
+
 export class APIClient {
   private baseURL: string;
+  private scope: ScopeConfig;
 
-  constructor(baseURL: string = '') {
+  constructor(
+    baseURL: string = '',
+    scope: ScopeConfig = {
+      orgId: import.meta.env.VITE_ORG_ID ?? 'org_default',
+      userId: import.meta.env.VITE_USER_ID ?? 'user_default',
+      ...(import.meta.env.VITE_PROJECT_ID
+        ? { projectId: import.meta.env.VITE_PROJECT_ID }
+        : {}),
+    }
+  ) {
     this.baseURL = baseURL;
+    this.scope = scope;
+  }
+
+  private buildScopeHeaders(): Record<string, string> {
+    return {
+      'x-org-id': this.scope.orgId,
+      'x-user-id': this.scope.userId,
+      ...(this.scope.projectId ? { 'x-project-id': this.scope.projectId } : {}),
+    };
   }
 
   /**
@@ -23,8 +48,17 @@ export class APIClient {
   async createRun(sessionKey: string, input: string): Promise<CreateRunResponse> {
     const response = await fetch(`${this.baseURL}/api/runs`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_key: sessionKey, input }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({
+        org_id: this.scope.orgId,
+        user_id: this.scope.userId,
+        ...(this.scope.projectId ? { project_id: this.scope.projectId } : {}),
+        session_key: sessionKey,
+        input,
+      }),
     });
 
     if (!response.ok) {
@@ -39,7 +73,9 @@ export class APIClient {
    * Get run details
    */
   async getRun(runId: string): Promise<RunMeta> {
-    const response = await fetch(`${this.baseURL}/api/runs/${runId}`);
+    const response = await fetch(`${this.baseURL}/api/runs/${runId}`, {
+      headers: this.buildScopeHeaders(),
+    });
 
     if (!response.ok) {
       const error = await response.json();
@@ -58,7 +94,9 @@ export class APIClient {
     limit: number = 20
   ): Promise<ListRunsResponse> {
     const url = `${this.baseURL}/api/sessions/${sessionKey}/runs?page=${page}&limit=${limit}`;
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: this.buildScopeHeaders(),
+    });
 
     if (!response.ok) {
       const error = await response.json();
@@ -77,7 +115,9 @@ export class APIClient {
       url += `?type=${encodeURIComponent(type)}`;
     }
 
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: this.buildScopeHeaders(),
+    });
 
     if (!response.ok) {
       const error = await response.json();
@@ -94,6 +134,7 @@ export class APIClient {
   async cancelRun(runId: string): Promise<void> {
     const response = await fetch(`${this.baseURL}/api/runs/${runId}/cancel`, {
       method: 'POST',
+      headers: this.buildScopeHeaders(),
     });
 
     if (!response.ok) {

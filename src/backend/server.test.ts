@@ -17,7 +17,9 @@ interface HealthResponse {
   sse: { clients: number };
 }
 
-describe('Server', () => {
+const describeIfDatabase = process.env['DATABASE_URL'] ? describe : describe.skip;
+
+describeIfDatabase('Server', () => {
   let testDir: string;
 
   beforeEach(async () => {

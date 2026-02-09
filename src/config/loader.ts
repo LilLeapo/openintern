@@ -115,10 +115,12 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
   // Server env overrides
   const envPort = process.env['PORT'];
   const envDataDir = process.env['DATA_DIR'];
-  if (envPort || envDataDir) {
+  const envDatabaseUrl = process.env['DATABASE_URL'];
+  if (envPort || envDataDir || envDatabaseUrl) {
     if (!result.server) result.server = {};
     if (envPort) result.server.port = parseInt(envPort, 10);
     if (envDataDir) result.server.baseDir = envDataDir;
+    if (envDatabaseUrl) result.server.databaseUrl = envDatabaseUrl;
   }
 
   // Embedding env overrides

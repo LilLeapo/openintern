@@ -9,6 +9,8 @@ import type { QueuedRun } from '../../types/api.js';
 function createMockRun(overrides: Partial<QueuedRun> = {}): QueuedRun {
   return {
     run_id: `run_${Math.random().toString(36).substring(2, 14)}`,
+    org_id: 'org_test',
+    user_id: 'user_test',
     session_key: 's_test',
     input: 'test input',
     agent_id: 'main',

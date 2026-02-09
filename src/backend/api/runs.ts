@@ -1,186 +1,181 @@
 /**
- * Runs API - REST endpoints for run management
+ * Runs API - Postgres-backed run lifecycle endpoints
  *
  * Endpoints:
- * - POST /api/runs - Create a new run
- * - GET /api/runs/:run_id - Get run details
- * - GET /api/sessions/:session_key/runs - List runs for a session
- * - GET /api/runs/:run_id/events - Get run events
- * - GET /api/runs/:run_id/stream - SSE event stream
- * - POST /api/runs/:run_id/cancel - Cancel a run
+ * - POST /api/runs
+ * - GET /api/runs/:run_id
+ * - GET /api/sessions/:session_key/runs
+ * - GET /api/runs/:run_id/events?cursor&limit
+ * - GET /api/runs/:run_id/stream
+ * - POST /api/runs/:run_id/cancel
  */
 
-import { Router, type Request, type Response, type NextFunction } from 'express';
-import fs from 'node:fs';
-import path from 'node:path';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import {
   CreateRunRequestSchema,
   type CreateRunResponse,
-  type ListRunsResponse,
+  type ErrorResponse,
   type GetRunEventsResponse,
+  type ListRunsResponse,
   type QueuedRun,
 } from '../../types/api.js';
 import type { RunMeta } from '../../types/run.js';
-import { EventStore } from '../store/event-store.js';
-import { ProjectionStore } from '../store/projection-store.js';
 import { generateRunId } from '../../utils/ids.js';
-import { NotFoundError, ValidationError, AgentError } from '../../utils/errors.js';
+import { AgentError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 import { RunQueue } from '../queue/run-queue.js';
 import { SSEManager } from './sse.js';
+import { EventService } from '../runtime/event-service.js';
+import { resolveRequestScope } from '../runtime/request-scope.js';
+import { RunRepository } from '../runtime/run-repository.js';
 
-/**
- * Runs router configuration
- */
 export interface RunsRouterConfig {
-  baseDir: string;
   runQueue: RunQueue;
   sseManager: SSEManager;
+  runRepository: RunRepository;
+  eventService: EventService;
 }
 
-/**
- * Create the runs router
- */
+function parsePositiveInt(
+  raw: string | undefined,
+  fallback: number,
+  field: string,
+  min: number,
+  max: number
+): number {
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed) || parsed < min || parsed > max) {
+    throw new ValidationError(`${field} must be between ${min} and ${max}`, field);
+  }
+  return parsed;
+}
+
+function mapRunToMeta(
+  run: Awaited<ReturnType<RunRepository['requireRun']>>,
+  counters: { eventCount: number; toolCalls: number }
+): RunMeta {
+  const startedAt = run.startedAt ?? run.createdAt;
+  const endedAt = run.endedAt;
+  const durationMs =
+    endedAt && startedAt ? new Date(endedAt).getTime() - new Date(startedAt).getTime() : null;
+  return {
+    run_id: run.id,
+    session_key: run.sessionKey,
+    status: run.status,
+    started_at: startedAt,
+    ended_at: endedAt,
+    duration_ms: durationMs,
+    event_count: counters.eventCount,
+    tool_call_count: counters.toolCalls,
+  };
+}
+
+function sendError(res: Response, error: ErrorResponse, status: number): void {
+  res.status(status).json(error);
+}
+
 export function createRunsRouter(config: RunsRouterConfig): Router {
   const router = Router();
-  const { baseDir, runQueue, sseManager } = config;
+  const { runQueue, sseManager, runRepository, eventService } = config;
 
-  /**
-   * POST /api/runs - Create a new run
-   */
   router.post('/runs', (req: Request, res: Response, next: NextFunction) => {
-    try {
-      // Validate request body
-      const parseResult = CreateRunRequestSchema.safeParse(req.body);
-      if (!parseResult.success) {
-        const firstError = parseResult.error.errors[0];
-        throw new ValidationError(
-          firstError?.message ?? 'Invalid request',
-          firstError?.path.join('.') ?? 'body'
-        );
-      }
-
-      const { session_key, input, agent_id, llm_config } = parseResult.data;
-      const runId = generateRunId();
-      const createdAt = new Date().toISOString();
-
-      // Create queued run
-      const queuedRun: QueuedRun = {
-        run_id: runId,
-        session_key,
-        input,
-        agent_id: agent_id ?? 'main',
-        created_at: createdAt,
-        status: 'pending',
-        llm_config,
-      };
-
-      // Enqueue the run
-      runQueue.enqueue(queuedRun);
-
-      // Return response
-      const response: CreateRunResponse = {
-        run_id: runId,
-        status: 'pending',
-        created_at: createdAt,
-      };
-
-      logger.info('Run created', { runId, sessionKey: session_key });
-      res.status(201).json(response);
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  /**
-   * GET /api/runs/:run_id - Get run details
-   */
-  router.get('/runs/:run_id', (req: Request, res: Response, next: NextFunction) => {
     void (async () => {
       try {
-        const { run_id } = req.params;
-
-        if (!run_id) {
-          throw new ValidationError('run_id is required', 'run_id');
+        const parseResult = CreateRunRequestSchema.safeParse(req.body);
+        if (!parseResult.success) {
+          const firstError = parseResult.error.errors[0];
+          throw new ValidationError(
+            firstError?.message ?? 'Invalid request',
+            firstError?.path.join('.') ?? 'body'
+          );
         }
 
-        // Try to find the run in the queue first
-        const queuedRun = runQueue.getRun(run_id);
+        const scope = resolveRequestScope(req);
+        const runId = generateRunId();
+        const sessionKey = parseResult.data.session_key ?? 's_default';
+        const agentId = parseResult.data.agent_id ?? 'main';
 
-        // Try to load from projection store
-        const runMeta = await findRunMeta(baseDir, run_id);
-
-        if (!runMeta && !queuedRun) {
-          throw new NotFoundError('Run', run_id);
-        }
-
-        // Merge queue status with stored meta if available
-        if (runMeta && queuedRun) {
-          runMeta.status = queuedRun.status;
-        }
-
-        res.json(runMeta ?? {
-          run_id: queuedRun?.run_id,
-          session_key: queuedRun?.session_key,
-          status: queuedRun?.status,
-          started_at: queuedRun?.created_at,
-          ended_at: null,
-          duration_ms: null,
-          event_count: 0,
-          tool_call_count: 0,
+        const created = await runRepository.createRun({
+          id: runId,
+          scope,
+          sessionKey,
+          input: parseResult.data.input,
+          agentId,
+          llmConfig: parseResult.data.llm_config ?? null,
         });
+
+        const queuedRun: QueuedRun = {
+          run_id: created.id,
+          org_id: created.orgId,
+          user_id: created.userId,
+          ...(created.projectId ? { project_id: created.projectId } : {}),
+          session_key: created.sessionKey,
+          input: created.input,
+          agent_id: created.agentId,
+          created_at: created.createdAt,
+          status: 'pending',
+          llm_config: created.llmConfig ?? undefined,
+        };
+        runQueue.enqueue(queuedRun);
+
+        const response: CreateRunResponse = {
+          run_id: created.id,
+          status: created.status,
+          created_at: created.createdAt,
+        };
+
+        res.status(201).json(response);
       } catch (error) {
         next(error);
       }
     })();
   });
 
-  /**
-   * GET /api/sessions/:session_key/runs - List runs for a session
-   */
+  router.get('/runs/:run_id', (req: Request, res: Response, next: NextFunction) => {
+    void (async () => {
+      try {
+        const { run_id: runId } = req.params;
+        if (!runId) {
+          throw new ValidationError('run_id is required', 'run_id');
+        }
+        const scope = resolveRequestScope(req);
+        const run = await runRepository.requireRun(runId, scope);
+        const counters = await runRepository.countEventsAndTools(runId);
+        res.json(mapRunToMeta(run, counters));
+      } catch (error) {
+        next(error);
+      }
+    })();
+  });
+
   router.get(
     '/sessions/:session_key/runs',
     (req: Request, res: Response, next: NextFunction) => {
       void (async () => {
         try {
-          const { session_key } = req.params;
-          const pageStr = req.query['page'] as string | undefined;
-          const limitStr = req.query['limit'] as string | undefined;
-          const page = pageStr !== undefined ? parseInt(pageStr) : 1;
-          const limit = limitStr !== undefined ? parseInt(limitStr) : 20;
-
-          if (!session_key) {
+          const { session_key: sessionKey } = req.params;
+          if (!sessionKey) {
             throw new ValidationError('session_key is required', 'session_key');
           }
-
-          // Validate pagination
-          if (isNaN(page) || page < 1) {
-            throw new ValidationError('page must be >= 1', 'page');
-          }
-          if (isNaN(limit) || limit < 1 || limit > 100) {
-            throw new ValidationError('limit must be between 1 and 100', 'limit');
-          }
-
-          // List runs from file system
-          const runs = await listSessionRuns(baseDir, session_key);
-
-          // Sort by started_at descending
-          runs.sort((a, b) =>
-            new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
+          const scope = resolveRequestScope(req);
+          const page = parsePositiveInt(req.query['page'] as string | undefined, 1, 'page', 1, 10_000);
+          const limit = parsePositiveInt(
+            req.query['limit'] as string | undefined,
+            20,
+            'limit',
+            1,
+            100
           );
-
-          // Paginate
-          const total = runs.length;
-          const startIndex = (page - 1) * limit;
-          const paginatedRuns = runs.slice(startIndex, startIndex + limit);
-
+          const result = await runRepository.listRunsBySession(scope, sessionKey, page, limit);
           const response: ListRunsResponse = {
-            runs: paginatedRuns,
-            total,
+            runs: result.runs,
+            total: result.total,
             page,
             limit,
           };
-
           res.json(response);
         } catch (error) {
           next(error);
@@ -189,53 +184,36 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
     }
   );
 
-  /**
-   * GET /api/runs/:run_id/events - Get run events
-   */
   router.get(
     '/runs/:run_id/events',
     (req: Request, res: Response, next: NextFunction) => {
       void (async () => {
         try {
-          const { run_id } = req.params;
-          const eventType = req.query['type'] as string | undefined;
-          const after = req.query['after'] as string | undefined;
-
-          if (!run_id) {
+          const { run_id: runId } = req.params;
+          if (!runId) {
             throw new ValidationError('run_id is required', 'run_id');
           }
 
-          // Find the run's session key
-          const runInfo = await findRunInfo(baseDir, run_id);
-          if (!runInfo) {
-            throw new NotFoundError('Run', run_id);
-          }
-
-          const eventStore = new EventStore(
-            runInfo.sessionKey,
-            run_id,
-            baseDir
+          const scope = resolveRequestScope(req);
+          const cursor = req.query['cursor'] as string | undefined;
+          const limit = parsePositiveInt(
+            req.query['limit'] as string | undefined,
+            200,
+            'limit',
+            1,
+            1000
           );
+          const typeFilter = req.query['type'] as string | undefined;
 
-          // Read and filter events
-          let events = await eventStore.readAll();
-
-          // Filter by type if specified
-          if (eventType) {
-            events = events.filter((e) => e.type === eventType);
-          }
-
-          // Filter by timestamp if specified
-          if (after) {
-            const afterDate = new Date(after);
-            events = events.filter((e) => new Date(e.ts) > afterDate);
-          }
-
+          const page = await eventService.list(runId, scope, cursor, limit);
+          const events = typeFilter
+            ? page.events.filter((event) => event.type === typeFilter)
+            : page.events;
           const response: GetRunEventsResponse = {
             events,
             total: events.length,
+            next_cursor: page.next_cursor,
           };
-
           res.json(response);
         } catch (error) {
           next(error);
@@ -244,159 +222,98 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
     }
   );
 
-  /**
-   * GET /api/runs/:run_id/stream - SSE event stream
-   */
   router.get(
     '/runs/:run_id/stream',
     (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const { run_id } = req.params;
-        const lastEventId = req.headers['last-event-id'] as string | undefined;
+      void (async () => {
+        try {
+          const { run_id: runId } = req.params;
+          if (!runId) {
+            throw new ValidationError('run_id is required', 'run_id');
+          }
+          const scope = resolveRequestScope(req);
+          await runRepository.requireRun(runId, scope);
 
-        if (!run_id) {
-          throw new ValidationError('run_id is required', 'run_id');
+          const clientId = sseManager.addClient(runId, res);
+
+          const cursor = req.query['cursor'] as string | undefined;
+          if (cursor) {
+            const page = await eventService.list(runId, scope, cursor, 500);
+            for (const event of page.events) {
+              res.write(`id: ${event.span_id}\n`);
+              res.write('event: run.event\n');
+              res.write(`data: ${JSON.stringify(event)}\n\n`);
+            }
+          }
+
+          req.on('close', () => {
+            sseManager.removeClient(clientId);
+          });
+        } catch (error) {
+          next(error);
         }
-
-        // Add client to SSE manager
-        const clientId = sseManager.addClient(run_id, res, lastEventId);
-
-        // Handle client disconnect
-        req.on('close', () => {
-          sseManager.removeClient(clientId);
-        });
-
-        // Keep connection open (don't call res.end())
-      } catch (error) {
-        next(error);
-      }
+      })();
     }
   );
 
-  /**
-   * POST /api/runs/:run_id/cancel - Cancel a run
-   */
   router.post(
     '/runs/:run_id/cancel',
     (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const { run_id } = req.params;
-
-        if (!run_id) {
-          throw new ValidationError('run_id is required', 'run_id');
-        }
-
-        const cancelled = runQueue.cancel(run_id);
-
-        if (!cancelled) {
-          // Check if run exists but is not cancellable
-          const status = runQueue.getStatus(run_id);
-          if (status === 'running') {
-            throw new AgentError(
-              'Cannot cancel a running run',
-              'RUN_NOT_CANCELLABLE',
-              400
-            );
+      void (async () => {
+        try {
+          const { run_id: runId } = req.params;
+          if (!runId) {
+            throw new ValidationError('run_id is required', 'run_id');
           }
-          if (status === 'completed' || status === 'failed') {
-            throw new AgentError(
-              'Run has already finished',
-              'RUN_ALREADY_FINISHED',
-              400
-            );
-          }
-          throw new NotFoundError('Run', run_id);
-        }
+          const scope = resolveRequestScope(req);
+          const run = await runRepository.requireRun(runId, scope);
 
-        logger.info('Run cancelled', { runId: run_id });
-        res.json({ success: true, run_id });
-      } catch (error) {
-        next(error);
-      }
+          if (run.status === 'pending') {
+            const removed = runQueue.cancel(runId);
+            if (!removed) {
+              const queueStatus = runQueue.getStatus(runId);
+              if (queueStatus === 'running') {
+                throw new AgentError('Cannot cancel a running run', 'RUN_NOT_CANCELLABLE', 400);
+              }
+            }
+            await runRepository.setRunCancelled(runId);
+            res.json({ success: true, run_id: runId });
+            return;
+          }
+
+          if (run.status === 'running') {
+            throw new AgentError('Cannot cancel a running run', 'RUN_NOT_CANCELLABLE', 400);
+          }
+          if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
+            throw new AgentError('Run has already finished', 'RUN_ALREADY_FINISHED', 400);
+          }
+
+          throw new NotFoundError('Run', runId);
+        } catch (error) {
+          next(error);
+        }
+      })();
     }
   );
 
+  router.use((err: Error, _req: Request, res: Response, next: NextFunction) => {
+    if (err instanceof NotFoundError) {
+      sendError(
+        res,
+        {
+          error: {
+            code: err.code,
+            message: err.message,
+            details: err.details,
+          },
+        },
+        err.statusCode
+      );
+      return;
+    }
+    next(err);
+  });
+
+  logger.info('Runs router initialized (postgres mode)');
   return router;
-}
-
-/**
- * Find run metadata by run_id (searches all sessions)
- */
-async function findRunMeta(
-  baseDir: string,
-  runId: string
-): Promise<RunMeta | null> {
-  const runInfo = await findRunInfo(baseDir, runId);
-  if (!runInfo) {
-    return null;
-  }
-
-  const projectionStore = new ProjectionStore(
-    runInfo.sessionKey,
-    runId,
-    baseDir
-  );
-
-  return projectionStore.loadRunMeta();
-}
-
-/**
- * Find run info (session key) by run_id
- */
-async function findRunInfo(
-  baseDir: string,
-  runId: string
-): Promise<{ sessionKey: string } | null> {
-  const sessionsDir = path.join(baseDir, 'sessions');
-
-  try {
-    const sessions = await fs.promises.readdir(sessionsDir);
-
-    for (const sessionKey of sessions) {
-      const runsDir = path.join(sessionsDir, sessionKey, 'runs');
-
-      try {
-        const runs = await fs.promises.readdir(runsDir);
-        if (runs.includes(runId)) {
-          return { sessionKey };
-        }
-      } catch {
-        // Session has no runs directory
-        continue;
-      }
-    }
-  } catch {
-    // Sessions directory doesn't exist
-    return null;
-  }
-
-  return null;
-}
-
-/**
- * List all runs for a session
- */
-async function listSessionRuns(
-  baseDir: string,
-  sessionKey: string
-): Promise<RunMeta[]> {
-  const runsDir = path.join(baseDir, 'sessions', sessionKey, 'runs');
-  const runs: RunMeta[] = [];
-
-  try {
-    const runIds = await fs.promises.readdir(runsDir);
-
-    for (const runId of runIds) {
-      const projectionStore = new ProjectionStore(sessionKey, runId, baseDir);
-      const meta = await projectionStore.loadRunMeta();
-
-      if (meta) {
-        runs.push(meta);
-      }
-    }
-  } catch {
-    // Runs directory doesn't exist - return empty array
-  }
-
-  return runs;
 }

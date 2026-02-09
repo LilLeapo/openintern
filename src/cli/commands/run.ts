@@ -16,6 +16,31 @@ export interface RunOptions {
   model?: string;
 }
 
+interface ScopePayload {
+  org_id: string;
+  user_id: string;
+  project_id?: string;
+}
+
+function resolveScope(): ScopePayload {
+  const orgId = process.env['AGENT_ORG_ID'] ?? 'org_default';
+  const userId = process.env['AGENT_USER_ID'] ?? 'user_default';
+  const projectId = process.env['AGENT_PROJECT_ID'];
+  return {
+    org_id: orgId,
+    user_id: userId,
+    ...(projectId ? { project_id: projectId } : {}),
+  };
+}
+
+function scopeHeaders(scope: ScopePayload): Record<string, string> {
+  return {
+    'x-org-id': scope.org_id,
+    'x-user-id': scope.user_id,
+    ...(scope.project_id ? { 'x-project-id': scope.project_id } : {}),
+  };
+}
+
 /**
  * Execute the run command
  */
@@ -27,6 +52,7 @@ export async function runCommand(
   const sessionKey = options.session.startsWith('s_')
     ? options.session
     : `s_${options.session}`;
+  const scope = resolveScope();
 
   try {
     // Load config file + env vars
@@ -34,6 +60,7 @@ export async function runCommand(
 
     // Build request body
     const requestBody: Record<string, unknown> = {
+      ...scope,
       session_key: sessionKey,
       input: text,
     };
@@ -60,6 +87,7 @@ export async function runCommand(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...scopeHeaders(scope),
       },
       body: JSON.stringify(requestBody),
     });
@@ -80,18 +108,19 @@ export async function runCommand(
     output.print('');
     output.keyValue('Run ID', data.run_id);
     output.keyValue('Session', sessionKey);
+    output.keyValue('Scope', `${scope.org_id}/${scope.user_id}${scope.project_id ? `/${scope.project_id}` : ''}`);
     output.keyValue('Status', data.status);
     output.print('');
 
     // Stream mode
     if (options.stream) {
-      await streamEvents(baseUrl, data.run_id);
+      await streamEvents(baseUrl, data.run_id, scope);
       return;
     }
 
     // Wait mode
     if (options.wait) {
-      await waitForCompletion(baseUrl, data.run_id);
+      await waitForCompletion(baseUrl, data.run_id, scope);
       return;
     }
   } catch (err) {
@@ -113,12 +142,14 @@ export async function runCommand(
 /**
  * Stream events from SSE endpoint
  */
-async function streamEvents(baseUrl: string, runId: string): Promise<void> {
+async function streamEvents(baseUrl: string, runId: string, scope: ScopePayload): Promise<void> {
   output.info('Streaming events (Ctrl+C to stop)...');
   output.print('');
 
   try {
-    const response = await fetch(`${baseUrl}/api/runs/${runId}/stream`);
+    const response = await fetch(`${baseUrl}/api/runs/${runId}/stream`, {
+      headers: scopeHeaders(scope),
+    });
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -170,7 +201,8 @@ async function streamEvents(baseUrl: string, runId: string): Promise<void> {
  */
 async function waitForCompletion(
   baseUrl: string,
-  runId: string
+  runId: string,
+  scope: ScopePayload
 ): Promise<void> {
   output.info('Waiting for completion...');
 
@@ -180,7 +212,9 @@ async function waitForCompletion(
 
   while (Date.now() - startTime < maxWait) {
     try {
-      const response = await fetch(`${baseUrl}/api/runs/${runId}`);
+      const response = await fetch(`${baseUrl}/api/runs/${runId}`, {
+        headers: scopeHeaders(scope),
+      });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }

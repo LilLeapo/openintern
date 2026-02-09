@@ -10,6 +10,17 @@ export interface TailOptions {
   format: 'json' | 'pretty';
 }
 
+function scopeHeaders(): Record<string, string> {
+  const orgId = process.env['AGENT_ORG_ID'] ?? 'org_default';
+  const userId = process.env['AGENT_USER_ID'] ?? 'user_default';
+  const projectId = process.env['AGENT_PROJECT_ID'];
+  return {
+    'x-org-id': orgId,
+    'x-user-id': userId,
+    ...(projectId ? { 'x-project-id': projectId } : {}),
+  };
+}
+
 /**
  * Execute the tail command
  */
@@ -29,7 +40,9 @@ export async function tailCommand(
     output.info(`Streaming events for ${runId}...`);
     output.print('');
 
-    const response = await fetch(`${baseUrl}/api/runs/${runId}/stream`);
+    const response = await fetch(`${baseUrl}/api/runs/${runId}/stream`, {
+      headers: scopeHeaders(),
+    });
 
     if (!response.ok) {
       if (response.status === 404) {

@@ -176,6 +176,7 @@ export interface AgentConfig {
     port?: number;
     baseDir?: string;
     corsOrigins?: string | string[];
+    databaseUrl?: string;
   };
   agent?: {
     maxSteps?: number;
