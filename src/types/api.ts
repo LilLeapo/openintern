@@ -18,7 +18,10 @@ export type LLMConfigRequest = z.infer<typeof LLMConfigRequestSchema>;
  * Create run request schema
  */
 export const CreateRunRequestSchema = z.object({
-  session_key: z.string().regex(/^s_[a-zA-Z0-9_]+$/),
+  org_id: z.string().min(1).optional(),
+  user_id: z.string().min(1).optional(),
+  project_id: z.string().min(1).optional(),
+  session_key: z.string().regex(/^s_[a-zA-Z0-9_]+$/).optional(),
   input: z.string().min(1),
   agent_id: z.string().min(1).optional(),
   llm_config: LLMConfigRequestSchema,
@@ -55,6 +58,7 @@ export type ListRunsResponse = z.infer<typeof ListRunsResponseSchema>;
 export const GetRunEventsResponseSchema = z.object({
   events: z.array(EventSchema),
   total: z.number().nonnegative(),
+  next_cursor: z.string().nullable().optional(),
 });
 
 export type GetRunEventsResponse = z.infer<typeof GetRunEventsResponseSchema>;
@@ -77,6 +81,9 @@ export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
  */
 export const QueuedRunSchema = z.object({
   run_id: z.string().regex(/^run_[a-zA-Z0-9]+$/),
+  org_id: z.string().min(1),
+  user_id: z.string().min(1),
+  project_id: z.string().optional(),
   session_key: z.string().regex(/^s_[a-zA-Z0-9_]+$/),
   input: z.string(),
   agent_id: z.string(),

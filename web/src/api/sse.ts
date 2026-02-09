@@ -33,7 +33,14 @@ export class SSEClient {
       this.disconnect();
     }
 
-    const url = `${this.baseURL}/api/runs/${runId}/stream`;
+    const params = new URLSearchParams({
+      org_id: import.meta.env.VITE_ORG_ID ?? 'org_default',
+      user_id: import.meta.env.VITE_USER_ID ?? 'user_default',
+    });
+    if (import.meta.env.VITE_PROJECT_ID) {
+      params.set('project_id', import.meta.env.VITE_PROJECT_ID);
+    }
+    const url = `${this.baseURL}/api/runs/${runId}/stream?${params.toString()}`;
     this.eventSource = new EventSource(url);
 
     // Handle connection open

@@ -15,12 +15,14 @@ import cors from 'cors';
 import { createRunsRouter } from './api/runs.js';
 import { RunQueue } from './queue/run-queue.js';
 import { SSEManager } from './api/sse.js';
-import { createAgentExecutor } from './agent/executor.js';
 import { AgentError } from '../utils/errors.js';
 import type { LLMConfig } from '../types/agent.js';
 import type { EmbeddingConfig } from '../types/embedding.js';
 import { logger } from '../utils/logger.js';
 import type { ErrorResponse } from '../types/api.js';
+import { createEmbeddingProvider } from './store/embedding-provider.js';
+import { CheckpointService, createRuntimeExecutor, EventService, MemoryService, RunRepository } from './runtime/index.js';
+import { closeSharedPostgresPool, getPostgresPool, runPostgresMigrations } from './db/index.js';
 
 /**
  * Server configuration
@@ -33,6 +35,15 @@ export interface ServerConfig {
   maxSteps?: number;
   workDir?: string;
   embedding?: EmbeddingConfig;
+  databaseUrl?: string;
+  embeddingConfig?: EmbeddingConfig;
+  mcp?: {
+    enabled: boolean;
+    pythonPath?: string;
+    serverModule?: string;
+    cwd?: string;
+    timeoutMs?: number;
+  };
 }
 
 const DEFAULT_CONFIG: ServerConfig = {
@@ -48,6 +59,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   app: Express;
   runQueue: RunQueue;
   sseManager: SSEManager;
+  dbReady: Promise<void>;
 } {
   const finalConfig = { ...DEFAULT_CONFIG, ...config };
   const app = express();
@@ -56,23 +68,47 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   const runQueue = new RunQueue({ persistDir: finalConfig.baseDir });
   const sseManager = new SSEManager();
 
-  // Set up agent executor for the run queue
-  const executorConfig: Parameters<typeof createAgentExecutor>[0] = {
-    baseDir: finalConfig.baseDir,
+  const pool = getPostgresPool(
+    finalConfig.databaseUrl ? { connectionString: finalConfig.databaseUrl } : {}
+  );
+  const dbReady = runPostgresMigrations(pool);
+  const runRepository = new RunRepository(pool);
+  const eventService = new EventService(runRepository);
+  const checkpointService = new CheckpointService(runRepository);
+  const requestedEmbedding = finalConfig.embeddingConfig ?? finalConfig.embedding ?? {
+    provider: 'hash',
+    dimension: 256,
+    alpha: 0.6,
+  };
+  if (requestedEmbedding.dimension !== 256) {
+    logger.warn('Embedding dimension overridden to 256 to match pgvector schema', {
+      requested: requestedEmbedding.dimension,
+    });
+  }
+  const embeddingProvider = createEmbeddingProvider({
+    ...requestedEmbedding,
+    dimension: 256,
+  });
+  const memoryService = new MemoryService(pool, embeddingProvider);
+
+  // Set up runtime executor for the run queue
+  const runtimeExecutor = createRuntimeExecutor({
+    runRepository,
+    eventService,
+    checkpointService,
+    memoryService,
     sseManager,
     maxSteps: finalConfig.maxSteps ?? 10,
-  };
-  if (finalConfig.defaultModelConfig) {
-    executorConfig.defaultModelConfig = finalConfig.defaultModelConfig;
-  }
-  if (finalConfig.workDir) {
-    executorConfig.workDir = finalConfig.workDir;
-  }
-  if (finalConfig.embedding) {
-    executorConfig.embedding = finalConfig.embedding;
-  }
-  const agentExecutor = createAgentExecutor(executorConfig);
-  runQueue.setExecutor(agentExecutor);
+    defaultModelConfig: finalConfig.defaultModelConfig ?? {
+      provider: 'mock',
+      model: 'mock-model',
+      temperature: 0.7,
+      maxTokens: 2000,
+    },
+    workDir: finalConfig.workDir ?? `${finalConfig.baseDir}/workspace`,
+    ...(finalConfig.mcp ? { mcp: finalConfig.mcp } : {}),
+  });
+  runQueue.setExecutor(runtimeExecutor);
 
   // Middleware: CORS
   app.use(
@@ -112,9 +148,10 @@ export function createApp(config: Partial<ServerConfig> = {}): {
 
   // API routes
   const runsRouter = createRunsRouter({
-    baseDir: finalConfig.baseDir,
     runQueue,
     sseManager,
+    runRepository,
+    eventService,
   });
   app.use('/api', runsRouter);
 
@@ -132,7 +169,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     res.status(404).json(response);
   });
 
-  return { app, runQueue, sseManager };
+  return { app, runQueue, sseManager, dbReady };
 }
 
 /**
@@ -184,15 +221,15 @@ export interface ServerInstance {
  */
 export function createServer(config: Partial<ServerConfig> = {}): ServerInstance {
   const finalConfig = { ...DEFAULT_CONFIG, ...config };
-  const { app, runQueue, sseManager } = createApp(config);
+  const { app, runQueue, sseManager, dbReady } = createApp(config);
 
   let server: ReturnType<typeof app.listen> | null = null;
 
   return {
     async start(): Promise<void> {
+      await dbReady;
       // Restore pending runs from disk
       await runQueue.restore();
-
       return new Promise((resolve) => {
         // Start SSE heartbeat
         sseManager.startHeartbeat();
@@ -220,12 +257,18 @@ export function createServer(config: Partial<ServerConfig> = {}): ServerInstance
             if (err) {
               reject(err);
             } else {
-              logger.info('Server stopped');
-              resolve();
+              void closeSharedPostgresPool()
+                .then(() => {
+                  logger.info('Server stopped');
+                  resolve();
+                })
+                .catch(reject);
             }
           });
         } else {
-          resolve();
+          void closeSharedPostgresPool()
+            .then(resolve)
+            .catch(reject);
         }
       });
     },
@@ -238,8 +281,13 @@ const isMainModule = import.meta.url === `file://${process.argv[1]}`;
 if (isMainModule) {
   const port = parseInt(process.env['PORT'] ?? '3000');
   const baseDir = process.env['DATA_DIR'] ?? 'data';
+  const databaseUrl = process.env['DATABASE_URL'];
 
-  const server = createServer({ port, baseDir });
+  const server = createServer({
+    port,
+    baseDir,
+    ...(databaseUrl ? { databaseUrl } : {}),
+  });
 
   // Graceful shutdown handlers
   process.on('SIGINT', () => {

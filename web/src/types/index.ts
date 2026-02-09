@@ -3,7 +3,7 @@
  */
 
 // Run status
-export type RunStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 // Run metadata
 export interface RunMeta {

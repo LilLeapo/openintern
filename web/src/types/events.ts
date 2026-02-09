@@ -76,7 +76,7 @@ export type Event =
 // API response types
 export interface CreateRunResponse {
   run_id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   created_at: string;
 }
 

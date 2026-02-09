@@ -10,7 +10,9 @@ import os from 'node:os';
 import { createApp } from '../server.js';
 import type { CreateRunResponse, ListRunsResponse, ErrorResponse } from '../../types/api.js';
 
-describe('Runs API', () => {
+const describeIfDatabase = process.env['DATABASE_URL'] ? describe : describe.skip;
+
+describeIfDatabase('Runs API', () => {
   let app: ReturnType<typeof createApp>['app'];
   let sseManager: ReturnType<typeof createApp>['sseManager'];
   let testDir: string;
