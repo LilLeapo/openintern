@@ -28,48 +28,110 @@ export function useChat(sessionKey: string): UseChatResult {
 
   const { events, clearEvents } = useSSE(currentRunId);
   const processedRunIds = useRef<Set<string>>(new Set());
+  const streamingMsgId = useRef<string | null>(null);
+  const lastProcessedIdx = useRef<number>(0);
 
-  // Process SSE events to update messages
+  // Process SSE events to update messages (supports streaming tokens)
   useEffect(() => {
     if (!currentRunId || events.length === 0) return;
     if (processedRunIds.current.has(currentRunId)) return;
 
-    const lastEvent = events[events.length - 1];
-    if (!lastEvent) return;
+    // Process only new events since last check
+    for (let i = lastProcessedIdx.current; i < events.length; i++) {
+      const event = events[i];
+      if (!event) continue;
 
-    if (lastEvent.type === 'run.completed') {
-      const payload = lastEvent.payload as { output: string };
-      processedRunIds.current.add(currentRunId);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: 'assistant',
-          content: payload.output,
-          timestamp: lastEvent.ts,
-          runId: currentRunId,
-        },
-      ]);
-      setIsRunning(false);
-      setCurrentRunId(null);
-      clearEvents();
-    } else if (lastEvent.type === 'run.failed') {
-      const payload = lastEvent.payload as { error: { message: string } };
-      processedRunIds.current.add(currentRunId);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: 'assistant',
-          content: `Error: ${payload.error.message}`,
-          timestamp: lastEvent.ts,
-          runId: currentRunId,
-        },
-      ]);
-      setIsRunning(false);
-      setCurrentRunId(null);
-      clearEvents();
+      if (event.type === 'llm.token') {
+        const payload = event.payload as { token: string };
+        if (!streamingMsgId.current) {
+          // Create a new streaming assistant message
+          const msgId = generateId();
+          streamingMsgId.current = msgId;
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: msgId,
+              role: 'assistant',
+              content: payload.token,
+              timestamp: event.ts,
+              runId: currentRunId,
+            },
+          ]);
+        } else {
+          // Append token to existing streaming message
+          const msgId = streamingMsgId.current;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === msgId
+                ? { ...m, content: m.content + payload.token }
+                : m,
+            ),
+          );
+        }
+      } else if (event.type === 'run.completed') {
+        const payload = event.payload as { output: string };
+        processedRunIds.current.add(currentRunId);
+        if (streamingMsgId.current) {
+          // Replace streaming message with final output
+          const msgId = streamingMsgId.current;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === msgId
+                ? { ...m, content: payload.output, timestamp: event.ts }
+                : m,
+            ),
+          );
+        } else {
+          // No streaming happened, add complete message
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              role: 'assistant',
+              content: payload.output,
+              timestamp: event.ts,
+              runId: currentRunId,
+            },
+          ]);
+        }
+        streamingMsgId.current = null;
+        lastProcessedIdx.current = 0;
+        setIsRunning(false);
+        setCurrentRunId(null);
+        clearEvents();
+        return;
+      } else if (event.type === 'run.failed') {
+        const payload = event.payload as { error: { message: string } };
+        processedRunIds.current.add(currentRunId);
+        const content = `Error: ${payload.error.message}`;
+        if (streamingMsgId.current) {
+          const msgId = streamingMsgId.current;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === msgId ? { ...m, content } : m,
+            ),
+          );
+        } else {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              role: 'assistant',
+              content,
+              timestamp: event.ts,
+              runId: currentRunId,
+            },
+          ]);
+        }
+        streamingMsgId.current = null;
+        lastProcessedIdx.current = 0;
+        setIsRunning(false);
+        setCurrentRunId(null);
+        clearEvents();
+        return;
+      }
     }
+    lastProcessedIdx.current = events.length;
   }, [events, currentRunId, clearEvents]);
 
   const sendMessage = useCallback(
@@ -97,6 +159,12 @@ export function useChat(sessionKey: string): UseChatResult {
     },
     [sessionKey, isRunning]
   );
+
+  // Reset streaming state when runId changes
+  useEffect(() => {
+    lastProcessedIdx.current = 0;
+    streamingMsgId.current = null;
+  }, [currentRunId]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);

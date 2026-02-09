@@ -124,6 +124,14 @@ export const StepRetriedPayloadSchema = z.object({
 });
 
 /**
+ * LLM token streaming event payload
+ */
+export const LLMTokenPayloadSchema = z.object({
+  token: z.string(),
+  tokenIndex: z.number().nonnegative(),
+});
+
+/**
  * Event type enum
  */
 export const EventTypeSchema = z.enum([
@@ -135,6 +143,7 @@ export const EventTypeSchema = z.enum([
   'step.completed',
   'step.retried',
   'llm.called',
+  'llm.token',
   'tool.called',
   'tool.result',
 ]);
@@ -242,6 +251,16 @@ export const LLMCalledEventSchema = BaseEventSchema.extend({
 export type LLMCalledEvent = z.infer<typeof LLMCalledEventSchema>;
 
 /**
+ * LLM token streaming event
+ */
+export const LLMTokenEventSchema = BaseEventSchema.extend({
+  type: z.literal('llm.token'),
+  payload: LLMTokenPayloadSchema,
+});
+
+export type LLMTokenEvent = z.infer<typeof LLMTokenEventSchema>;
+
+/**
  * Union of all event schemas
  */
 export const EventSchema = z.discriminatedUnion('type', [
@@ -255,6 +274,7 @@ export const EventSchema = z.discriminatedUnion('type', [
   StepCompletedEventSchema,
   StepRetriedEventSchema,
   LLMCalledEventSchema,
+  LLMTokenEventSchema,
 ]);
 
 export type Event = z.infer<typeof EventSchema>;

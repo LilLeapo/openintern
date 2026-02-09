@@ -9,6 +9,7 @@
 
 import type { QueuedRun } from '../../types/api.js';
 import type { LLMConfig, AgentLoopConfig } from '../../types/agent.js';
+import type { EmbeddingConfig } from '../../types/embedding.js';
 import type { Event } from '../../types/events.js';
 import { AgentLoop } from '../agent/agent-loop.js';
 import { ProjectionStore } from '../store/projection-store.js';
@@ -27,13 +28,15 @@ export interface AgentExecutorConfig {
   workDir?: string;
   /** Whether to attempt resuming from checkpoint */
   resume?: boolean;
+  /** Embedding configuration for hybrid search */
+  embedding?: EmbeddingConfig;
 }
 
 /**
  * Create an agent executor function for the RunQueue
  */
 export function createAgentExecutor(config: AgentExecutorConfig): (run: QueuedRun) => Promise<void> {
-  const { baseDir, sseManager, maxSteps = 10, defaultModelConfig, workDir, resume: shouldResume } = config;
+  const { baseDir, sseManager, maxSteps = 10, defaultModelConfig, workDir, resume: shouldResume, embedding } = config;
 
   return async (run: QueuedRun): Promise<void> => {
     logger.info('Agent executor starting', {
@@ -45,6 +48,9 @@ export function createAgentExecutor(config: AgentExecutorConfig): (run: QueuedRu
     const loopConfig: Partial<AgentLoopConfig> = { maxSteps };
     if (workDir) {
       loopConfig.workDir = workDir;
+    }
+    if (embedding) {
+      loopConfig.embedding = embedding;
     }
 
     if (run.llm_config) {

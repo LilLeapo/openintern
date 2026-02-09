@@ -173,8 +173,9 @@ export class ContextManager {
     }
 
     try {
-      const memories = await this.memoryStore.search(query, topK);
-      logger.debug('Memory retrieved', { query, count: memories.length });
+      const hybridResults = await this.memoryStore.searchHybrid(query, topK);
+      const memories = hybridResults.map((hr) => hr.item);
+      logger.debug('Memory retrieved (hybrid)', { query, count: memories.length });
       return memories;
     } catch (error) {
       logger.warn('Failed to retrieve memory', {

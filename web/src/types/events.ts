@@ -12,6 +12,7 @@ import type {
   StepStartedPayload,
   StepCompletedPayload,
   LLMCalledPayload,
+  LLMTokenPayload,
 } from './index';
 
 // Specific event types
@@ -55,6 +56,11 @@ export interface LLMCalledEvent extends BaseEvent {
   payload: LLMCalledPayload;
 }
 
+export interface LLMTokenEvent extends BaseEvent {
+  type: 'llm.token';
+  payload: LLMTokenPayload;
+}
+
 // Union type for all events
 export type Event =
   | RunStartedEvent
@@ -64,7 +70,8 @@ export type Event =
   | ToolResultEvent
   | StepStartedEvent
   | StepCompletedEvent
-  | LLMCalledEvent;
+  | LLMCalledEvent
+  | LLMTokenEvent;
 
 // API response types
 export interface CreateRunResponse {

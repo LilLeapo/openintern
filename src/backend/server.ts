@@ -18,6 +18,7 @@ import { SSEManager } from './api/sse.js';
 import { createAgentExecutor } from './agent/executor.js';
 import { AgentError } from '../utils/errors.js';
 import type { LLMConfig } from '../types/agent.js';
+import type { EmbeddingConfig } from '../types/embedding.js';
 import { logger } from '../utils/logger.js';
 import type { ErrorResponse } from '../types/api.js';
 
@@ -31,6 +32,7 @@ export interface ServerConfig {
   defaultModelConfig?: LLMConfig;
   maxSteps?: number;
   workDir?: string;
+  embedding?: EmbeddingConfig;
 }
 
 const DEFAULT_CONFIG: ServerConfig = {
@@ -51,7 +53,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   const app = express();
 
   // Create shared instances
-  const runQueue = new RunQueue();
+  const runQueue = new RunQueue({ persistDir: finalConfig.baseDir });
   const sseManager = new SSEManager();
 
   // Set up agent executor for the run queue
@@ -65,6 +67,9 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   }
   if (finalConfig.workDir) {
     executorConfig.workDir = finalConfig.workDir;
+  }
+  if (finalConfig.embedding) {
+    executorConfig.embedding = finalConfig.embedding;
   }
   const agentExecutor = createAgentExecutor(executorConfig);
   runQueue.setExecutor(agentExecutor);
@@ -185,6 +190,9 @@ export function createServer(config: Partial<ServerConfig> = {}): ServerInstance
 
   return {
     async start(): Promise<void> {
+      // Restore pending runs from disk
+      await runQueue.restore();
+
       return new Promise((resolve) => {
         // Start SSE heartbeat
         sseManager.startHeartbeat();

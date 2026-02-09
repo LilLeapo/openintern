@@ -126,6 +126,8 @@ export interface AgentLoopConfig {
   workDir?: string;
   /** Retry policy for transient errors */
   retry?: RetryConfig;
+  /** Embedding configuration for hybrid search */
+  embedding?: import('./embedding.js').EmbeddingConfig;
 }
 
 /**

@@ -2,7 +2,8 @@
  * RunQueue tests
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
 import { RunQueue } from './run-queue.js';
 import type { QueuedRun } from '../../types/api.js';
 
@@ -231,6 +232,74 @@ describe('RunQueue', () => {
     it('should return false when queue has items', () => {
       queue.enqueue(createMockRun());
       expect(queue.isEmpty()).toBe(false);
+    });
+  });
+
+  describe('persistence', () => {
+    const persistDir = '/tmp/test-queue-persist-' + Date.now();
+
+    afterEach(async () => {
+      await fs.promises.rm(persistDir, { recursive: true, force: true });
+    });
+
+    it('should persist enqueued runs to JSONL file', async () => {
+      const pQueue = new RunQueue({ autoProcess: false, persistDir });
+      const run = createMockRun({ run_id: 'run_persist1' });
+      pQueue.enqueue(run);
+
+      const content = await fs.promises.readFile(
+        `${persistDir}/queue.jsonl`, 'utf-8',
+      );
+      const lines = content.trim().split('\n');
+      expect(lines).toHaveLength(1);
+
+      const parsed = JSON.parse(lines[0]!) as QueuedRun;
+      expect(parsed.run_id).toBe('run_persist1');
+    });
+
+    it('should restore pending runs from disk', async () => {
+      // Write a JSONL file manually
+      await fs.promises.mkdir(persistDir, { recursive: true });
+      const runs = [
+        JSON.stringify(createMockRun({ run_id: 'run_r1', status: 'pending' })),
+        JSON.stringify(createMockRun({ run_id: 'run_r2', status: 'pending' })),
+        JSON.stringify(createMockRun({ run_id: 'run_done', status: 'completed' })),
+      ];
+      await fs.promises.writeFile(
+        `${persistDir}/queue.jsonl`,
+        runs.join('\n') + '\n',
+        'utf-8',
+      );
+
+      const pQueue = new RunQueue({ autoProcess: false, persistDir });
+      const restored = await pQueue.restore();
+
+      expect(restored).toBe(2);
+      expect(pQueue.getQueueLength()).toBe(2);
+      expect(pQueue.getStatus('run_r1')).toBe('pending');
+      expect(pQueue.getStatus('run_done')).toBeNull();
+    });
+
+    it('should return 0 when no persist file exists', async () => {
+      const pQueue = new RunQueue({ autoProcess: false, persistDir });
+      const restored = await pQueue.restore();
+      expect(restored).toBe(0);
+    });
+
+    it('should rewrite file after run completes', async () => {
+      const pQueue = new RunQueue({ autoProcess: false, persistDir });
+      pQueue.setExecutor(async () => {});
+
+      pQueue.enqueue(createMockRun({ run_id: 'run_x1' }));
+      pQueue.enqueue(createMockRun({ run_id: 'run_x2' }));
+
+      await pQueue.processQueue();
+
+      const content = await fs.promises.readFile(
+        `${persistDir}/queue.jsonl`, 'utf-8',
+      );
+      // Both runs completed, file should be empty
+      expect(content.trim()).toBe('');
     });
   });
 });

@@ -9,6 +9,8 @@
  */
 
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { QueuedRun } from '../../types/api.js';
 import { logger } from '../../utils/logger.js';
 
@@ -42,12 +44,15 @@ export interface QueueConfig {
   timeoutMs: number;
   /** Whether to auto-process queue */
   autoProcess: boolean;
+  /** Base directory for JSONL persistence (null = no persistence) */
+  persistDir: string | null;
 }
 
 const DEFAULT_CONFIG: QueueConfig = {
   maxSize: 100,
   timeoutMs: 300000, // 5 minutes
   autoProcess: true,
+  persistDir: null,
 };
 
 /**
@@ -60,10 +65,14 @@ export class RunQueue extends EventEmitter {
   private config: QueueConfig;
   private executor: RunExecutor | null = null;
   private processing = false;
+  private persistPath: string | null = null;
 
   constructor(config: Partial<QueueConfig> = {}) {
     super();
     this.config = { ...DEFAULT_CONFIG, ...config };
+    if (this.config.persistDir) {
+      this.persistPath = path.join(this.config.persistDir, 'queue.jsonl');
+    }
   }
 
   /**
@@ -89,6 +98,7 @@ export class RunQueue extends EventEmitter {
     };
 
     this.queue.push(queuedRun);
+    this.persistAppend(queuedRun);
     this.emit('run.enqueued', queuedRun);
     logger.info('Run enqueued', { runId: run.run_id, queueLength: this.queue.length });
 
@@ -258,6 +268,7 @@ export class RunQueue extends EventEmitter {
       });
     } finally {
       this.runningRun = null;
+      this.persistRewrite();
     }
   }
 
@@ -289,6 +300,7 @@ export class RunQueue extends EventEmitter {
     }
 
     this.queue.splice(index, 1);
+    this.persistRewrite();
     logger.info('Run cancelled', { runId });
     return true;
   }
@@ -305,5 +317,85 @@ export class RunQueue extends EventEmitter {
    */
   getCompletedRuns(): QueuedRun[] {
     return Array.from(this.completedRuns.values());
+  }
+
+  /**
+   * Append a single run to the JSONL persistence file
+   */
+  private persistAppend(run: QueuedRun): void {
+    if (!this.persistPath) return;
+    try {
+      const dir = path.dirname(this.persistPath);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(this.persistPath, JSON.stringify(run) + '\n', 'utf-8');
+    } catch (err) {
+      logger.warn('Failed to persist queue append', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Rewrite the entire JSONL file with current pending queue
+   */
+  private persistRewrite(): void {
+    if (!this.persistPath) return;
+    try {
+      const dir = path.dirname(this.persistPath);
+      fs.mkdirSync(dir, { recursive: true });
+      const lines = this.queue.map((r) => JSON.stringify(r)).join('\n');
+      const content = lines ? lines + '\n' : '';
+      const tmpPath = this.persistPath + '.tmp';
+      fs.writeFileSync(tmpPath, content, 'utf-8');
+      fs.renameSync(tmpPath, this.persistPath);
+    } catch (err) {
+      logger.warn('Failed to persist queue rewrite', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Restore pending runs from JSONL file on startup.
+   * Only restores runs with status 'pending' or 'running' (treated as pending).
+   */
+  async restore(): Promise<number> {
+    if (!this.persistPath) return 0;
+    try {
+      const content = await fs.promises.readFile(this.persistPath, 'utf-8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      let restored = 0;
+
+      for (const line of lines) {
+        try {
+          const run = JSON.parse(line) as QueuedRun;
+          if (run.status === 'pending' || run.status === 'running') {
+            run.status = 'pending';
+            this.queue.push(run);
+            restored++;
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+
+      if (restored > 0) {
+        logger.info('Queue restored from disk', { restored });
+        this.persistRewrite();
+      }
+      return restored;
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        'code' in err &&
+        (err as NodeJS.ErrnoException).code === 'ENOENT'
+      ) {
+        return 0;
+      }
+      logger.warn('Failed to restore queue', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 0;
+    }
   }
 }

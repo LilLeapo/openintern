@@ -10,7 +10,7 @@ import type {
   ToolCall,
 } from '../../types/agent.js';
 import { LLMError } from '../../utils/errors.js';
-import type { ILLMClient } from './llm-client.js';
+import type { ILLMClient, LLMStreamChunk } from './llm-client.js';
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -166,6 +166,142 @@ export class AnthropicClient implements ILLMClient {
       name: tool.name,
       description: tool.description,
       input_schema: tool.parameters,
+    };
+  }
+
+  async *chatStream(
+    messages: Message[],
+    tools?: ToolDefinition[],
+  ): AsyncIterable<LLMStreamChunk> {
+    const body = this.buildRequestBody(messages, tools);
+    (body as Record<string, unknown>).stream = true;
+
+    const response = await fetch(`${this.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'Unknown error');
+      throw new LLMError(
+        `Anthropic API error: ${response.status} ${errorBody}`,
+        'anthropic',
+        response.status,
+      );
+    }
+
+    if (!response.body) {
+      throw new LLMError('Anthropic streaming response has no body', 'anthropic');
+    }
+
+    yield* this.parseAnthropicSSE(response.body);
+  }
+
+  private async *parseAnthropicSSE(
+    body: ReadableStream<Uint8Array>,
+  ): AsyncIterable<LLMStreamChunk> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const toolCalls: ToolCall[] = [];
+    let currentToolId = '';
+    let currentToolName = '';
+    let currentToolJson = '';
+    let usage: LLMResponse['usage'] | undefined;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const payload = trimmed.slice(6);
+
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(payload) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          const eventType = data.type as string;
+
+          if (eventType === 'content_block_delta') {
+            const delta = data.delta as Record<string, unknown>;
+            if (delta.type === 'text_delta') {
+              yield { delta: delta.text as string, done: false };
+            } else if (delta.type === 'input_json_delta') {
+              currentToolJson += delta.partial_json as string;
+            }
+          } else if (eventType === 'content_block_start') {
+            const block = data.content_block as Record<string, unknown>;
+            if (block.type === 'tool_use') {
+              currentToolId = block.id as string;
+              currentToolName = block.name as string;
+              currentToolJson = '';
+            }
+          } else if (eventType === 'content_block_stop') {
+            if (currentToolId) {
+              let parameters: Record<string, unknown> = {};
+              try {
+                parameters = JSON.parse(currentToolJson) as Record<string, unknown>;
+              } catch { /* partial JSON */ }
+              toolCalls.push({ id: currentToolId, name: currentToolName, parameters });
+              currentToolId = '';
+              currentToolName = '';
+              currentToolJson = '';
+            }
+          } else if (eventType === 'message_delta') {
+            const u = data.usage as Record<string, number> | undefined;
+            if (u) {
+              const outputTokens = u.output_tokens ?? 0;
+              usage = {
+                promptTokens: usage?.promptTokens ?? 0,
+                completionTokens: outputTokens,
+                totalTokens: (usage?.promptTokens ?? 0) + outputTokens,
+              };
+            }
+          } else if (eventType === 'message_start') {
+            const msg = data.message as Record<string, unknown> | undefined;
+            const u = msg?.usage as Record<string, number> | undefined;
+            if (u) {
+              usage = {
+                promptTokens: u.input_tokens ?? 0,
+                completionTokens: u.output_tokens ?? 0,
+                totalTokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+              };
+            }
+          } else if (eventType === 'message_stop') {
+            yield {
+              delta: '',
+              done: true,
+              usage,
+              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            };
+            return;
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    yield {
+      delta: '',
+      done: true,
+      usage,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     };
   }
 

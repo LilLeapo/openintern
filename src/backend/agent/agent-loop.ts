@@ -22,7 +22,7 @@ import type { Event } from '../../types/events.js';
 import { EventStore } from '../store/event-store.js';
 import { ContextManager } from './context-manager.js';
 import { ToolRouter } from './tool-router.js';
-import { createLLMClient, type ILLMClient } from './llm-client.js';
+import { createLLMClient, type ILLMClient, type LLMStreamChunk } from './llm-client.js';
 import { RetryPolicy } from './retry-policy.js';
 import { detectOrphanedToolCalls, generateSyntheticResults } from './orphan-detector.js';
 import { generateSpanId, generateStepId } from '../../utils/ids.js';
@@ -114,6 +114,9 @@ export class AgentLoop {
     };
     if (this.config.workDir) {
       toolRouterConfig.workDir = this.config.workDir;
+    }
+    if (this.config.embedding) {
+      toolRouterConfig.embedding = this.config.embedding;
     }
     this.toolRouter = new ToolRouter(toolRouterConfig);
 
@@ -352,12 +355,28 @@ export class AgentLoop {
       ...context.messages,
     ];
 
-    // Call LLM with retry policy
+    // Call LLM - use streaming if available
     const llmStartTime = Date.now();
-    const { result: response, attempts } = await this.retryPolicy.execute(
-      () => this.llmClient.chat(messages, tools),
-      `llm.chat step ${stepNumber}`,
-    );
+    let response: import('../../types/agent.js').LLMResponse;
+    let attempts = 1;
+
+    if (this.llmClient.chatStream) {
+      // Streaming path
+      const streamResult = await this.retryPolicy.execute(
+        () => this.callLLMStream(stepId, messages, tools),
+        `llm.chatStream step ${stepNumber}`,
+      );
+      response = streamResult.result;
+      attempts = streamResult.attempts;
+    } else {
+      // Non-streaming fallback
+      const nonStreamResult = await this.retryPolicy.execute(
+        () => this.llmClient.chat(messages, tools),
+        `llm.chat step ${stepNumber}`,
+      );
+      response = nonStreamResult.result;
+      attempts = nonStreamResult.attempts;
+    }
     const llmDuration = Date.now() - llmStartTime;
 
     // Emit step.retried event if retries occurred
@@ -423,6 +442,51 @@ export class AgentLoop {
     await this.contextManager.saveCheckpoint();
 
     return result;
+  }
+
+  /**
+   * Call LLM with streaming, emitting llm.token events for each chunk.
+   * Returns a full LLMResponse assembled from the stream.
+   */
+  private async callLLMStream(
+    stepId: string,
+    messages: Message[],
+    tools: import('../../types/agent.js').ToolDefinition[],
+  ): Promise<import('../../types/agent.js').LLMResponse> {
+    const stream = this.llmClient.chatStream!(messages, tools);
+    let fullContent = '';
+    let tokenIndex = 0;
+    let finalToolCalls: ToolCall[] | undefined;
+    let finalUsage: import('../../types/agent.js').LLMResponse['usage'] = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    };
+
+    for await (const chunk of stream) {
+      if (chunk.delta) {
+        fullContent += chunk.delta;
+        // Emit llm.token event (fire-and-forget for speed)
+        void this.emitEvent({
+          ...this.createBaseEvent(stepId, this.rootSpanId),
+          type: 'llm.token',
+          payload: { token: chunk.delta, tokenIndex },
+        } as Event);
+        tokenIndex++;
+      }
+      if (chunk.toolCalls) {
+        finalToolCalls = chunk.toolCalls;
+      }
+      if (chunk.usage) {
+        finalUsage = chunk.usage;
+      }
+    }
+
+    return {
+      content: fullContent,
+      toolCalls: finalToolCalls,
+      usage: finalUsage,
+    };
   }
 
   /**

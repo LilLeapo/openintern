@@ -25,6 +25,7 @@ export type EventType =
   | 'step.started'
   | 'step.completed'
   | 'llm.called'
+  | 'llm.token'
   | 'tool.called'
   | 'tool.result';
 
@@ -93,4 +94,9 @@ export interface LLMCalledPayload {
   completionTokens: number;
   totalTokens: number;
   duration_ms: number;
+}
+
+export interface LLMTokenPayload {
+  token: string;
+  tokenIndex: number;
 }

@@ -183,4 +183,100 @@ describe('OpenAIClient', () => {
       ).rejects.toThrow(LLMError);
     });
   });
+
+  describe('chatStream', () => {
+    let client: OpenAIClient;
+
+    beforeEach(() => {
+      client = new OpenAIClient({
+        provider: 'openai',
+        model: 'gpt-4',
+        apiKey: MOCK_API_KEY,
+        baseUrl: 'https://test.openai.com/v1',
+      });
+    });
+
+    function createSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
+      const encoder = new TextEncoder();
+      return new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) {
+            controller.enqueue(encoder.encode(chunk));
+          }
+          controller.close();
+        },
+      });
+    }
+
+    it('should stream text tokens', async () => {
+      const sseData = [
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+        'data: [DONE]\n\n',
+      ];
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        body: createSSEStream(sseData),
+      }) as typeof globalThis.fetch;
+
+      const tokens: string[] = [];
+      for await (const chunk of client.chatStream!(
+        [{ role: 'user', content: 'Hi' }],
+      )) {
+        if (chunk.delta) tokens.push(chunk.delta);
+        if (chunk.done) {
+          expect(chunk.usage).toBeDefined();
+        }
+      }
+
+      expect(tokens.join('')).toBe('Hello world');
+    });
+
+    it('should stream tool calls', async () => {
+      const sseData = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tc_1","function":{"name":"get_weather","arguments":""}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"Beijing\\"}"}}]}}]}\n\n',
+        'data: [DONE]\n\n',
+      ];
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        body: createSSEStream(sseData),
+      }) as typeof globalThis.fetch;
+
+      let finalToolCalls: unknown;
+      for await (const chunk of client.chatStream!(
+        [{ role: 'user', content: 'weather?' }],
+      )) {
+        if (chunk.done && chunk.toolCalls) {
+          finalToolCalls = chunk.toolCalls;
+        }
+      }
+
+      expect(finalToolCalls).toEqual([
+        { id: 'tc_1', name: 'get_weather', parameters: { city: 'Beijing' } },
+      ]);
+    });
+
+    it('should throw on API error', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        text: () => Promise.resolve('Unauthorized'),
+      }) as typeof globalThis.fetch;
+
+      await expect(async () => {
+        for await (const _chunk of client.chatStream!(
+          [{ role: 'user', content: 'Hi' }],
+        )) {
+          // consume
+        }
+      }).rejects.toThrow(LLMError);
+    });
+  });
 });

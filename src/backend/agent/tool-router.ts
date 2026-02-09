@@ -9,12 +9,16 @@
  */
 
 import type { ToolDefinition, ToolResult } from '../../types/agent.js';
+import type { EmbeddingConfig } from '../../types/embedding.js';
 import { MemoryStore } from '../store/memory-store.js';
 import { ToolError, SandboxError } from '../../utils/errors.js';
 import { generateMemoryId } from '../../utils/ids.js';
 import { logger } from '../../utils/logger.js';
 import { createFileTools } from './file-tools.js';
 import { ToolSandbox, type ToolSandboxConfig } from './sandbox/index.js';
+import { createEmbeddingProvider } from '../store/embedding-provider.js';
+import { VectorIndex } from '../store/vector-index.js';
+import { HybridSearcher } from '../store/hybrid-searcher.js';
 
 /**
  * Tool interface with execute function
@@ -37,6 +41,8 @@ export interface ToolRouterConfig {
   workDir?: string;
   /** Sandbox configuration */
   sandbox?: ToolSandboxConfig;
+  /** Embedding configuration for hybrid search */
+  embedding?: EmbeddingConfig;
 }
 
 const DEFAULT_CONFIG: ToolRouterConfig = {
@@ -58,6 +64,9 @@ export class ToolRouter {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.memoryStore = new MemoryStore(this.config.memoryBaseDir);
 
+    // Initialize hybrid search (vector + keyword)
+    this.initHybridSearch();
+
     // Initialize sandbox if configured
     if (this.config.sandbox) {
       this.sandbox = new ToolSandbox(this.config.sandbox);
@@ -70,6 +79,47 @@ export class ToolRouter {
     const fileTools = createFileTools(this.config.baseDir, this.config.workDir);
     for (const tool of fileTools) {
       this.registerTool(tool);
+    }
+  }
+
+  /**
+   * Initialize hybrid search with embedding provider and vector index
+   */
+  private initHybridSearch(): void {
+    const embeddingConfig: EmbeddingConfig = this.config.embedding ?? {
+      provider: 'hash',
+      dimension: 256,
+      alpha: 0.6,
+    };
+
+    try {
+      const embeddingProvider = createEmbeddingProvider(embeddingConfig);
+      const vectorIndex = new VectorIndex(
+        this.config.memoryBaseDir,
+        embeddingConfig.dimension,
+      );
+      const searcher = new HybridSearcher(
+        vectorIndex,
+        embeddingProvider,
+        embeddingConfig.alpha,
+      );
+
+      // Load persisted vector index (non-blocking)
+      void searcher.load().catch((err) => {
+        logger.warn('Failed to load vector index', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+      this.memoryStore.setHybridSearcher(searcher);
+      logger.info('Hybrid search initialized', {
+        provider: embeddingConfig.provider,
+        dimension: embeddingConfig.dimension,
+      });
+    } catch (err) {
+      logger.warn('Failed to initialize hybrid search, using keyword-only', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -190,12 +240,13 @@ export class ToolRouter {
       throw new ToolError('query is required and must be a string', 'memory.search');
     }
 
-    const items = await this.memoryStore.search(query, topK);
+    // Use hybrid search (vector + keyword) when available
+    const hybridResults = await this.memoryStore.searchHybrid(query, topK);
 
-    const results = items.map((item, index) => ({
-      id: item.id,
-      content: item.content,
-      score: 1 - index * 0.1, // Simple scoring based on order
+    const results = hybridResults.map((hr) => ({
+      id: hr.item.id,
+      content: hr.item.content,
+      score: hr.score,
     }));
 
     logger.debug('Memory search completed', { query, resultCount: results.length });

@@ -20,10 +20,28 @@ import { OpenAIClient } from './openai-client.js';
 import { AnthropicClient } from './anthropic-client.js';
 
 /**
+ * Streaming chunk from LLM
+ */
+export interface LLMStreamChunk {
+  /** Incremental text content */
+  delta: string;
+  /** Tool calls discovered so far (only on final chunk or when complete) */
+  toolCalls?: ToolCall[] | undefined;
+  /** Usage info (only on final chunk) */
+  usage?: LLMResponse['usage'] | undefined;
+  /** Whether this is the final chunk */
+  done: boolean;
+}
+
+/**
  * Abstract LLM Client interface
  */
 export interface ILLMClient {
   chat(messages: Message[], tools?: ToolDefinition[]): Promise<LLMResponse>;
+  chatStream?(
+    messages: Message[],
+    tools?: ToolDefinition[],
+  ): AsyncIterable<LLMStreamChunk>;
 }
 
 /**

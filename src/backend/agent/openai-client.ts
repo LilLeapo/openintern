@@ -10,7 +10,7 @@ import type {
   ToolCall,
 } from '../../types/agent.js';
 import { LLMError } from '../../utils/errors.js';
-import type { ILLMClient } from './llm-client.js';
+import type { ILLMClient, LLMStreamChunk } from './llm-client.js';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 
@@ -116,6 +116,146 @@ export class OpenAIClient implements ILLMClient {
         parameters: tool.parameters,
       },
     };
+  }
+
+  async *chatStream(
+    messages: Message[],
+    tools?: ToolDefinition[],
+  ): AsyncIterable<LLMStreamChunk> {
+    const body = this.buildRequestBody(messages, tools);
+    (body as Record<string, unknown>).stream = true;
+    (body as Record<string, unknown>).stream_options = { include_usage: true };
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'Unknown error');
+      throw new LLMError(
+        `OpenAI API error: ${response.status} ${errorBody}`,
+        'openai',
+        response.status,
+      );
+    }
+
+    if (!response.body) {
+      throw new LLMError('OpenAI streaming response has no body', 'openai');
+    }
+
+    yield* this.parseSSEStream(response.body);
+  }
+
+  private async *parseSSEStream(
+    body: ReadableStream<Uint8Array>,
+  ): AsyncIterable<LLMStreamChunk> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullContent = '';
+    // Accumulate tool call fragments: index -> { id, name, arguments }
+    const toolCallAccum = new Map<number, { id: string; name: string; arguments: string }>();
+    let usage: LLMResponse['usage'] | undefined;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const payload = trimmed.slice(6);
+          if (payload === '[DONE]') {
+            yield { delta: '', done: true, usage, toolCalls: this.buildToolCalls(toolCallAccum) };
+            return;
+          }
+
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(payload) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          // Extract usage if present
+          const u = data.usage as Record<string, number> | undefined;
+          if (u) {
+            usage = {
+              promptTokens: u.prompt_tokens ?? 0,
+              completionTokens: u.completion_tokens ?? 0,
+              totalTokens: u.total_tokens ?? 0,
+            };
+          }
+
+          const choices = data.choices as Array<Record<string, unknown>> | undefined;
+          if (!choices || choices.length === 0) continue;
+
+          const choice = choices[0]!;
+          const delta = choice.delta as Record<string, unknown> | undefined;
+          if (!delta) continue;
+
+          // Text content delta
+          const textDelta = (delta.content as string) ?? '';
+          if (textDelta) {
+            fullContent += textDelta;
+            yield { delta: textDelta, done: false };
+          }
+
+          // Tool call deltas
+          const tcDeltas = delta.tool_calls as Array<Record<string, unknown>> | undefined;
+          if (tcDeltas) {
+            for (const tcd of tcDeltas) {
+              const idx = tcd.index as number;
+              const fn = tcd.function as Record<string, unknown> | undefined;
+              if (!toolCallAccum.has(idx)) {
+                toolCallAccum.set(idx, {
+                  id: (tcd.id as string) ?? '',
+                  name: fn?.name as string ?? '',
+                  arguments: '',
+                });
+              }
+              const acc = toolCallAccum.get(idx)!;
+              if (tcd.id) acc.id = tcd.id as string;
+              if (fn?.name) acc.name = fn.name as string;
+              if (fn?.arguments) acc.arguments += fn.arguments as string;
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    // If we exit without [DONE], emit final chunk
+    yield { delta: '', done: true, usage, toolCalls: this.buildToolCalls(toolCallAccum) };
+  }
+
+  private buildToolCalls(
+    accum: Map<number, { id: string; name: string; arguments: string }>,
+  ): ToolCall[] | undefined {
+    if (accum.size === 0) return undefined;
+    const result: ToolCall[] = [];
+    const sorted = [...accum.entries()].sort((a, b) => a[0] - b[0]);
+    for (const [, tc] of sorted) {
+      let parameters: Record<string, unknown> = {};
+      try {
+        parameters = JSON.parse(tc.arguments) as Record<string, unknown>;
+      } catch {
+        // partial or invalid JSON
+      }
+      result.push({ id: tc.id, name: tc.name, parameters });
+    }
+    return result.length > 0 ? result : undefined;
   }
 
   private parseResponse(data: Record<string, unknown>): LLMResponse {
