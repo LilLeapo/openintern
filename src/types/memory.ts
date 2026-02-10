@@ -31,6 +31,8 @@ export const MemoryScopeSchema = z.object({
   org_id: z.string().min(1),
   user_id: z.string().min(1),
   project_id: z.string().min(1).optional(),
+  group_id: z.string().min(1).optional(),
+  agent_instance_id: z.string().min(1).optional(),
 });
 export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
 
@@ -68,3 +70,24 @@ export const MemoryGetResponseSchema = z.object({
   updated_at: z.string().datetime(),
 });
 export type MemoryGetResponse = z.infer<typeof MemoryGetResponseSchema>;
+
+export const BlackboardWriteRequestSchema = z.object({
+  type: MemoryTypeSchema,
+  scope: MemoryScopeSchema,
+  group_id: z.string().min(1),
+  text: z.string().min(1),
+  metadata: z.record(z.unknown()).optional(),
+  importance: z.number().min(0).max(1).optional(),
+  role_id: z.string().min(1),
+  is_lead: z.boolean(),
+});
+export type BlackboardWriteRequest = z.infer<typeof BlackboardWriteRequestSchema>;
+
+export const TieredSearchInputSchema = z.object({
+  query: z.string().min(1),
+  top_k: z.number().int().positive().max(50).default(8),
+  scope: MemoryScopeSchema,
+  group_id: z.string().min(1).optional(),
+  agent_instance_id: z.string().min(1).optional(),
+});
+export type TieredSearchInput = z.infer<typeof TieredSearchInputSchema>;

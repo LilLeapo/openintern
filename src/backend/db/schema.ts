@@ -183,4 +183,45 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
       ALTER TABLE events ADD COLUMN message_type TEXT;
     END IF;
   END $$`,
+
+  // ─── Phase 3: Shared Blackboard + Personal Memory ─────────
+  // Add group_id and agent_instance_id to memories table
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'memories' AND column_name = 'group_id'
+    ) THEN
+      ALTER TABLE memories ADD COLUMN group_id TEXT;
+    END IF;
+  END $$`,
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'memories' AND column_name = 'agent_instance_id'
+    ) THEN
+      ALTER TABLE memories ADD COLUMN agent_instance_id TEXT;
+    END IF;
+  END $$`,
+  `CREATE INDEX IF NOT EXISTS memories_group_idx ON memories (group_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS memories_agent_instance_idx ON memories (agent_instance_id, created_at DESC)`,
+
+  // Add group_id and agent_instance_id to memory_chunks table
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'memory_chunks' AND column_name = 'group_id'
+    ) THEN
+      ALTER TABLE memory_chunks ADD COLUMN group_id TEXT;
+    END IF;
+  END $$`,
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'memory_chunks' AND column_name = 'agent_instance_id'
+    ) THEN
+      ALTER TABLE memory_chunks ADD COLUMN agent_instance_id TEXT;
+    END IF;
+  END $$`,
+  `CREATE INDEX IF NOT EXISTS memory_chunks_group_idx ON memory_chunks (group_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS memory_chunks_agent_instance_idx ON memory_chunks (agent_instance_id, created_at DESC)`,
 ];

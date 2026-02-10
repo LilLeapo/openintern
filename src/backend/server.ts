@@ -15,6 +15,7 @@ import cors from 'cors';
 import { createRunsRouter } from './api/runs.js';
 import { createRolesRouter } from './api/roles.js';
 import { createGroupsRouter } from './api/groups.js';
+import { createBlackboardRouter } from './api/blackboard.js';
 import { createSkillsRouter } from './api/skills.js';
 import { RunQueue } from './queue/run-queue.js';
 import { SSEManager } from './api/sse.js';
@@ -172,6 +173,10 @@ export function createApp(config: Partial<ServerConfig> = {}): {
 
   const groupsRouter = createGroupsRouter({ groupRepository, roleRepository, runRepository, runQueue });
   app.use('/api', groupsRouter);
+
+  // Blackboard API routes (Phase 3)
+  const blackboardRouter = createBlackboardRouter({ groupRepository, roleRepository, memoryService });
+  app.use('/api', blackboardRouter);
 
   // Skills API routes (Phase 2)
   const skillsRouter = createSkillsRouter({ skillRepository });

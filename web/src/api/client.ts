@@ -2,7 +2,7 @@
  * API Client - handles all REST API calls to the backend
  */
 
-import type { RunMeta } from '../types';
+import type { RunMeta, BlackboardMemory } from '../types';
 import type {
   CreateRunResponse,
   ListRunsResponse,
@@ -141,6 +141,74 @@ export class APIClient {
       const error = await response.json();
       throw new APIError(error.error?.message ?? 'Failed to cancel run', response.status);
     }
+  }
+
+  /**
+   * List blackboard memories for a group
+   */
+  async getBlackboard(groupId: string): Promise<BlackboardMemory[]> {
+    const response = await fetch(
+      `${this.baseURL}/api/groups/${groupId}/blackboard`,
+      { headers: this.buildScopeHeaders() }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new APIError(error.error?.message ?? 'Failed to get blackboard', response.status);
+    }
+
+    const data: { memories: BlackboardMemory[] } = await response.json();
+    return data.memories;
+  }
+
+  /**
+   * Get a single blackboard memory
+   */
+  async getBlackboardMemory(groupId: string, memoryId: string): Promise<BlackboardMemory> {
+    const response = await fetch(
+      `${this.baseURL}/api/groups/${groupId}/blackboard/${memoryId}`,
+      { headers: this.buildScopeHeaders() }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new APIError(error.error?.message ?? 'Failed to get memory', response.status);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Write to group blackboard
+   */
+  async writeBlackboard(
+    groupId: string,
+    body: {
+      type: string;
+      text: string;
+      role_id: string;
+      metadata?: Record<string, unknown>;
+      importance?: number;
+    }
+  ): Promise<{ id: string }> {
+    const response = await fetch(
+      `${this.baseURL}/api/groups/${groupId}/blackboard`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...this.buildScopeHeaders(),
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new APIError(error.error?.message ?? 'Failed to write to blackboard', response.status);
+    }
+
+    return response.json();
   }
 }
 

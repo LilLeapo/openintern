@@ -4,6 +4,7 @@ import { SSEManager } from '../api/sse.js';
 import { logger } from '../../utils/logger.js';
 import { SingleAgentRunner } from './agent-runner.js';
 import { CheckpointService } from './checkpoint-service.js';
+import { EpisodicGenerator } from './episodic-generator.js';
 import { EventService } from './event-service.js';
 import { GroupRepository } from './group-repository.js';
 import { MemoryService } from './memory-service.js';
@@ -166,7 +167,7 @@ async function executeGroupRun(
     sessionKey: run.session_key,
     scope,
   })) {
-    await processEvent(config, run.run_id, event);
+    await processEvent(config, run.run_id, event, groupId, scope);
   }
 }
 
@@ -175,13 +176,32 @@ async function executeGroupRun(
 async function processEvent(
   config: RuntimeExecutorConfig,
   runId: string,
-  event: import('../../types/events.js').Event
+  event: import('../../types/events.js').Event,
+  groupId?: string,
+  scope?: { orgId: string; userId: string; projectId: string | null }
 ): Promise<void> {
   await config.eventService.write(event);
   config.sseManager.broadcastToRun(runId, event);
 
   if (event.type === 'run.completed') {
     await config.runRepository.setRunCompleted(runId, event.payload.output);
+
+    // Auto-generate episodic memories for group runs
+    if (groupId && scope) {
+      try {
+        const generator = new EpisodicGenerator(
+          config.memoryService,
+          config.eventService
+        );
+        await generator.generateFromRun(runId, groupId, scope);
+      } catch (err) {
+        logger.error('Failed to generate episodic memories', {
+          runId,
+          groupId,
+          error: String(err),
+        });
+      }
+    }
   } else if (event.type === 'run.failed') {
     await config.runRepository.setRunFailed(runId, {
       code: event.payload.error.code,

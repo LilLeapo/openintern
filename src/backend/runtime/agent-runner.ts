@@ -14,6 +14,8 @@ export interface RunnerContext {
   sessionKey: string;
   scope: ScopeContext;
   agentId: string;
+  groupId?: string;
+  agentInstanceId?: string;
 }
 
 export interface RunnerResult {
@@ -77,15 +79,24 @@ export class SingleAgentRunner implements AgentRunner {
         });
 
         const memoryQuery = this.buildMemoryQuery(messages);
-        const memoryHits = await this.config.memoryService.memory_search({
-          query: memoryQuery,
-          scope: {
-            org_id: ctx.scope.orgId,
-            user_id: ctx.scope.userId,
-            ...(ctx.scope.projectId ? { project_id: ctx.scope.projectId } : {}),
-          },
-          top_k: 6,
-        });
+        const memoryScope = {
+          org_id: ctx.scope.orgId,
+          user_id: ctx.scope.userId,
+          ...(ctx.scope.projectId ? { project_id: ctx.scope.projectId } : {}),
+        };
+        const memoryHits = ctx.groupId
+          ? await this.config.memoryService.memory_search_tiered({
+              query: memoryQuery,
+              scope: memoryScope,
+              top_k: 6,
+              group_id: ctx.groupId,
+              agent_instance_id: ctx.agentInstanceId,
+            })
+          : await this.config.memoryService.memory_search({
+              query: memoryQuery,
+              scope: memoryScope,
+              top_k: 6,
+            });
         const contextMessages = this.buildModelMessages(messages, memoryHits);
         const tools = this.config.toolRouter.listTools();
 

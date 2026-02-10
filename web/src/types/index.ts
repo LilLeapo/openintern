@@ -100,3 +100,17 @@ export interface LLMTokenPayload {
   token: string;
   tokenIndex: number;
 }
+
+// Blackboard memory types
+export type MemoryType = 'core' | 'episodic' | 'archival';
+export type EpisodicType = 'DECISION' | 'EVIDENCE' | 'TODO';
+
+export interface BlackboardMemory {
+  id: string;
+  type: MemoryType;
+  text: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  group_id: string;
+}

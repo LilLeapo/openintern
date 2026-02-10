@@ -1,14 +1,22 @@
 import type { Pool, PoolClient } from 'pg';
 import type {
+  BlackboardWriteRequest,
   MemoryGetResponse,
   MemoryScope,
   MemorySearchResult,
   MemoryType,
   MemoryWriteRequest,
+  TieredSearchInput,
 } from '../../types/memory.js';
 import type { IEmbeddingProvider } from '../store/embedding-provider.js';
 import { splitIntoChunks } from './text-chunker.js';
-import { appendScopePredicate, toScopeContext } from './scope.js';
+import {
+  appendScopePredicate,
+  appendMemoryScopePredicate,
+  toScopeContext,
+  toMemoryScopeContext,
+  type MemoryScopeContext,
+} from './scope.js';
 
 interface MemoryRow {
   id: string;
@@ -78,7 +86,7 @@ export class MemoryService {
   ) {}
 
   async memory_write(input: MemoryWriteRequest): Promise<{ id: string }> {
-    const scope = toScopeContext(input.scope);
+    const scope = toMemoryScopeContext(input.scope);
     const chunks = splitIntoChunks(input.text);
     const chunkTexts = chunks.map((chunk) => chunk.text);
     const embeddings = chunkTexts.length > 0
@@ -93,16 +101,20 @@ export class MemoryService {
           org_id,
           user_id,
           project_id,
+          group_id,
+          agent_instance_id,
           type,
           text,
           metadata,
           importance
-        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
         RETURNING id::text AS id`,
         [
           scope.orgId,
           scope.userId,
           scope.projectId,
+          scope.groupId,
+          scope.agentInstanceId,
           input.type,
           input.text,
           JSON.stringify(input.metadata ?? {}),
@@ -125,6 +137,8 @@ export class MemoryService {
           orgId: scope.orgId,
           userId: scope.userId,
           projectId: scope.projectId,
+          groupId: scope.groupId,
+          agentInstanceId: scope.agentInstanceId,
           chunkIndex: chunk.index,
           chunkText: chunk.text,
           snippet: chunk.snippet,
@@ -171,7 +185,7 @@ export class MemoryService {
   }
 
   async memory_search(input: MemorySearchInput): Promise<MemorySearchResult[]> {
-    const scope = toScopeContext(input.scope);
+    const scope = toMemoryScopeContext(input.scope);
     const topK = Math.max(1, Math.min(input.top_k, 50));
     const typeFilters = extractTypeFilter(input.filters);
     const embedding = await this.embeddingProvider.embed(input.query);
@@ -210,15 +224,153 @@ export class MemoryService {
       .slice(0, topK);
   }
 
+  /**
+   * Tiered memory search across group blackboard, project core,
+   * personal episodic, and archival scopes.
+   */
+  async memory_search_tiered(input: TieredSearchInput): Promise<MemorySearchResult[]> {
+    const topK = Math.max(1, Math.min(input.top_k, 50));
+    const baseScope = input.scope;
+    const groupId = input.group_id;
+    const agentInstanceId = input.agent_instance_id;
+
+    // Allocate budget per tier
+    const tier1K = Math.ceil(topK / 2);       // group blackboard
+    const remaining = topK - tier1K;
+    const tier2K = Math.ceil(remaining / 3);   // project core
+    const tier3K = Math.ceil(remaining / 3);   // personal episodic
+    const tier4K = remaining - tier2K - tier3K; // archival
+
+    const merged = new Map<string, MemorySearchResult>();
+
+    const addResults = (results: MemorySearchResult[]): void => {
+      for (const r of results) {
+        const existing = merged.get(r.id);
+        if (!existing || r.score > existing.score) {
+          merged.set(r.id, r);
+        }
+      }
+    };
+
+    // Tier 1: Group blackboard (core + episodic with group_id)
+    if (groupId) {
+      const t1 = await this.memory_search({
+        query: input.query,
+        scope: { ...baseScope, group_id: groupId },
+        top_k: tier1K,
+        filters: { types: ['core', 'episodic'] },
+      });
+      addResults(t1);
+    }
+
+    // Tier 2: Project core
+    const t2 = await this.memory_search({
+      query: input.query,
+      scope: { ...baseScope, group_id: undefined, agent_instance_id: undefined },
+      top_k: tier2K,
+      filters: { type: 'core' },
+    });
+    addResults(t2);
+
+    // Tier 3: Personal episodic
+    if (agentInstanceId) {
+      const t3 = await this.memory_search({
+        query: input.query,
+        scope: { ...baseScope, agent_instance_id: agentInstanceId, group_id: undefined },
+        top_k: tier3K,
+        filters: { type: 'episodic' },
+      });
+      addResults(t3);
+    }
+
+    // Tier 4: Archival
+    const t4 = await this.memory_search({
+      query: input.query,
+      scope: { ...baseScope, group_id: undefined, agent_instance_id: undefined },
+      top_k: tier4K,
+      filters: { type: 'archival' },
+    });
+    addResults(t4);
+
+    return [...merged.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
+  /**
+   * Write to group blackboard with role-based access control.
+   * Only leads can write core/decision-tagged memories.
+   */
+  async blackboard_write(input: BlackboardWriteRequest): Promise<{ id: string }> {
+    const isCoreOrDecision =
+      input.type === 'core' ||
+      (input.metadata && input.metadata['episodic_type'] === 'DECISION');
+
+    if (isCoreOrDecision && !input.is_lead) {
+      throw new Error('Only lead roles can write core/decision memories to the blackboard');
+    }
+
+    return this.memory_write({
+      type: input.type,
+      scope: {
+        ...input.scope,
+        group_id: input.group_id,
+      },
+      text: input.text,
+      metadata: {
+        ...input.metadata,
+        blackboard: true,
+        role_id: input.role_id,
+      },
+      importance: input.importance,
+    });
+  }
+
+  /**
+   * List blackboard memories for a group.
+   */
+  async blackboard_list(
+    groupId: string,
+    scope: MemoryScope,
+    limit: number = 50
+  ): Promise<Array<MemoryGetResponse & { group_id: string }>> {
+    const scopeCtx = toScopeContext(scope);
+    const predicates: string[] = [];
+    const params: unknown[] = [];
+    appendScopePredicate(predicates, params, scopeCtx);
+    const groupIdx = params.push(groupId);
+    predicates.push(`group_id = $${groupIdx}`);
+    const limitIdx = params.push(limit);
+
+    const result = await this.pool.query<MemoryRow & { group_id: string }>(
+      `SELECT id::text AS id, type, text, metadata, created_at, updated_at, group_id
+      FROM memories
+      WHERE ${predicates.join(' AND ')}
+      ORDER BY created_at DESC
+      LIMIT $${limitIdx}`,
+      params
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      text: row.text,
+      metadata: row.metadata ?? {},
+      created_at: toIso(row.created_at),
+      updated_at: toIso(row.updated_at),
+      group_id: row.group_id,
+    }));
+  }
+
   private async vectorSearch(
-    scope: ReturnType<typeof toScopeContext>,
+    scope: MemoryScopeContext,
     vectorLiteral: string,
     topK: number,
     typeFilters: MemoryType[]
   ): Promise<SearchRow[]> {
     const predicates: string[] = [];
     const params: unknown[] = [];
-    appendScopePredicate(predicates, params, scope, 'mc');
+    appendMemoryScopePredicate(predicates, params, scope, 'mc');
     if (typeFilters.length > 0) {
       const filterIndex = params.push(typeFilters);
       predicates.push(`m.type = ANY($${filterIndex}::text[])`);
@@ -249,14 +401,14 @@ export class MemoryService {
   }
 
   private async ftsSearch(
-    scope: ReturnType<typeof toScopeContext>,
+    scope: MemoryScopeContext,
     query: string,
     topK: number,
     typeFilters: MemoryType[]
   ): Promise<SearchRow[]> {
     const predicates: string[] = [];
     const params: unknown[] = [];
-    appendScopePredicate(predicates, params, scope, 'mc');
+    appendMemoryScopePredicate(predicates, params, scope, 'mc');
     if (typeFilters.length > 0) {
       const filterIndex = params.push(typeFilters);
       predicates.push(`m.type = ANY($${filterIndex}::text[])`);
@@ -312,6 +464,8 @@ export class MemoryService {
       orgId: string;
       userId: string;
       projectId: string | null;
+      groupId: string | null;
+      agentInstanceId: string | null;
       chunkIndex: number;
       chunkText: string;
       snippet: string;
@@ -324,16 +478,20 @@ export class MemoryService {
         org_id,
         user_id,
         project_id,
+        group_id,
+        agent_instance_id,
         chunk_index,
         chunk_text,
         snippet,
         embedding
-      ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::vector)`,
+      ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)`,
       [
         input.memoryId,
         input.orgId,
         input.userId,
         input.projectId,
+        input.groupId,
+        input.agentInstanceId,
         input.chunkIndex,
         input.chunkText,
         input.snippet,

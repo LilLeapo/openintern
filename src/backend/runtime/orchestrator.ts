@@ -223,6 +223,8 @@ export class SerialOrchestrator {
       sessionKey: ctx.sessionKey,
       scope: ctx.scope,
       agentId: slot.member.agentInstanceId,
+      groupId: this.config.groupId,
+      agentInstanceId: slot.member.agentInstanceId,
     };
 
     logger.info('Running agent slot', {
