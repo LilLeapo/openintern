@@ -7,6 +7,9 @@ import { logger } from '../../utils/logger.js';
 import { MCPClient } from '../agent/mcp-client.js';
 import type { EventService } from './event-service.js';
 import type { MemoryService } from './memory-service.js';
+import type { AgentContext } from './tool-policy.js';
+import { ToolPolicy } from './tool-policy.js';
+import type { SkillRegistry } from './skill-registry.js';
 
 type ToolHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -21,24 +24,104 @@ interface MCPToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+const MCP_RETRYABLE_ERROR_MARKERS = [
+  'MCP server closed',
+  'MCP Client not started',
+  'Request timeout:',
+  'EPIPE',
+  'ERR_STREAM_DESTROYED',
+  'stream is not writable',
+  'Cannot call write after a stream was destroyed',
+];
+
 function extractString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function parseMcpContent(result: unknown): unknown {
+interface McpToolPayload {
+  isError?: boolean;
+  content?: unknown;
+  structuredContent?: unknown;
+  error?: { message?: string };
+}
+
+function parseFirstTextContent(result: unknown): unknown {
   if (!result || typeof result !== 'object') {
-    return result;
+    return undefined;
   }
   const value = result as { content?: Array<{ type?: string; text?: string }> };
   const first = value.content?.[0];
   if (!first || first.type !== 'text' || !first.text) {
-    return result;
+    return undefined;
   }
   try {
     return JSON.parse(first.text) as unknown;
   } catch {
     return first.text;
   }
+}
+
+function parseMcpContent(result: unknown): unknown {
+  if (!result || typeof result !== 'object') {
+    return result;
+  }
+
+  const payload = result as McpToolPayload;
+  const parsedText = parseFirstTextContent(result);
+  const hasStructured = 'structuredContent' in payload;
+  const hasIsError = payload.isError === true;
+
+  // Keep the full envelope when tool reports isError to preserve context.
+  if (hasIsError) {
+    return {
+      isError: true,
+      ...(hasStructured ? { structuredContent: payload.structuredContent } : {}),
+      ...(parsedText !== undefined ? { content: parsedText } : {}),
+    };
+  }
+
+  // Prefer structured content when available.
+  if (hasStructured) {
+    return payload.structuredContent;
+  }
+
+  if (parsedText !== undefined) {
+    return parsedText;
+  }
+
+  return result;
+}
+
+function isMcpErrorPayload(value: unknown): value is McpToolPayload & { isError: true } {
+  return Boolean(value && typeof value === 'object' && (value as McpToolPayload).isError === true);
+}
+
+function extractMcpErrorMessage(value: McpToolPayload & { isError: true }): string {
+  const directError = value.error?.message;
+  if (typeof directError === 'string' && directError.trim()) {
+    return directError.trim();
+  }
+
+  const structured = value.structuredContent;
+  if (structured && typeof structured === 'object') {
+    const message = (structured as { message?: unknown })['message'];
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+  }
+
+  const content = value.content;
+  if (typeof content === 'string' && content.trim()) {
+    return content.trim();
+  }
+  if (content && typeof content === 'object') {
+    const message = (content as { message?: unknown })['message'];
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+  }
+
+  return 'MCP tool returned isError=true';
 }
 
 function resolveWithinWorkDir(workDir: string, requestedPath: string): string {
@@ -63,6 +146,7 @@ export interface RuntimeToolRouterConfig {
     timeoutMs?: number;
   };
   timeoutMs?: number;
+  skillRegistry?: SkillRegistry;
 }
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -71,9 +155,13 @@ export class RuntimeToolRouter {
   private readonly tools = new Map<string, RuntimeTool>();
   private readonly timeoutMs: number;
   private readonly mcpClient: MCPClient | null;
+  private readonly toolPolicy: ToolPolicy;
+  private readonly skillRegistry: SkillRegistry | null;
 
   constructor(private readonly config: RuntimeToolRouterConfig) {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.toolPolicy = new ToolPolicy();
+    this.skillRegistry = config.skillRegistry ?? null;
     this.mcpClient = config.mcp?.enabled
       ? new MCPClient({
           ...(config.mcp.pythonPath ? { pythonPath: config.mcp.pythonPath } : {}),
@@ -90,19 +178,7 @@ export class RuntimeToolRouter {
       return;
     }
     await this.mcpClient.start();
-    const tools = await this.mcpClient.listTools() as MCPToolDefinition[];
-    for (const tool of tools) {
-      if (!this.tools.has(tool.name)) {
-        this.tools.set(tool.name, {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema,
-          source: 'mcp',
-          handler: async (params) => this.callMcpTool(tool.name, params),
-        });
-      }
-    }
-    logger.info('MCP tools registered', { count: tools.length });
+    await this.refreshMcpTools();
   }
 
   async stop(): Promise<void> {
@@ -119,7 +195,11 @@ export class RuntimeToolRouter {
     }));
   }
 
-  async callTool(name: string, params: Record<string, unknown>): Promise<ToolResult> {
+  async callTool(
+    name: string,
+    params: Record<string, unknown>,
+    agentContext?: AgentContext
+  ): Promise<ToolResult> {
     const started = Date.now();
     const tool = this.tools.get(name);
     if (!tool) {
@@ -130,11 +210,38 @@ export class RuntimeToolRouter {
       };
     }
 
+    // Policy check when agent context is provided
+    if (agentContext) {
+      const policyResult = this.checkPolicy(name, tool, agentContext);
+      if (!policyResult.allowed) {
+        logger.warn('Tool call blocked by policy', {
+          tool: name,
+          agentId: agentContext.agentId,
+          roleId: agentContext.roleId,
+          reason: policyResult.reason,
+        });
+        return {
+          success: false,
+          error: `Blocked: ${policyResult.reason}`,
+          duration: Date.now() - started,
+          blocked: true,
+        };
+      }
+    }
+
     try {
       const result = await Promise.race([
         tool.handler(params),
         this.timeout(name),
       ]);
+      if (tool.source === 'mcp' && isMcpErrorPayload(result)) {
+        return {
+          success: false,
+          result,
+          error: extractMcpErrorMessage(result),
+          duration: Date.now() - started,
+        };
+      }
       return {
         success: true,
         result,
@@ -148,6 +255,19 @@ export class RuntimeToolRouter {
         duration: Date.now() - started,
       };
     }
+  }
+
+  private checkPolicy(
+    toolName: string,
+    tool: RuntimeTool,
+    agent: AgentContext
+  ): { allowed: boolean; reason: string } {
+    const toolMeta = this.skillRegistry?.getToolMeta(toolName) ?? {
+      name: toolName,
+      riskLevel: 'low' as const,
+      source: tool.source,
+    };
+    return this.toolPolicy.check(agent, toolMeta);
   }
 
   private registerBuiltinTools(): void {
@@ -320,7 +440,59 @@ export class RuntimeToolRouter {
     if (!this.mcpClient) {
       throw new ToolError('MCP client is not enabled', name);
     }
-    const result = await this.mcpClient.callTool(name, params);
-    return parseMcpContent(result);
+    try {
+      const result = await this.mcpClient.callTool(name, params);
+      return parseMcpContent(result);
+    } catch (error) {
+      if (!this.isRecoverableMcpError(error)) {
+        throw error;
+      }
+      logger.warn('MCP call failed, retrying after reconnect', {
+        toolName: name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await this.reconnectMcpClient();
+      const result = await this.mcpClient.callTool(name, params);
+      return parseMcpContent(result);
+    }
+  }
+
+  private async reconnectMcpClient(): Promise<void> {
+    if (!this.mcpClient) {
+      throw new Error('MCP client is not enabled');
+    }
+
+    await this.mcpClient.stop().catch(() => undefined);
+    await this.mcpClient.start();
+    await this.refreshMcpTools();
+  }
+
+  private async refreshMcpTools(): Promise<void> {
+    if (!this.mcpClient) {
+      return;
+    }
+    const tools = (await this.mcpClient.listTools()) as MCPToolDefinition[];
+    const seen = new Set<string>();
+    for (const tool of tools) {
+      seen.add(tool.name);
+      this.tools.set(tool.name, {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+        source: 'mcp',
+        handler: async (params) => this.callMcpTool(tool.name, params),
+      });
+    }
+    for (const [name, tool] of this.tools.entries()) {
+      if (tool.source === 'mcp' && !seen.has(name)) {
+        this.tools.delete(name);
+      }
+    }
+    logger.info('MCP tools registered', { count: tools.length });
+  }
+
+  private isRecoverableMcpError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return MCP_RETRYABLE_ERROR_MARKERS.some((marker) => message.includes(marker));
   }
 }

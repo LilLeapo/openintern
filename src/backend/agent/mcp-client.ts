@@ -63,6 +63,7 @@ export class MCPClient extends EventEmitter {
   private process: ChildProcess | null = null;
   private requestId = 0;
   private config: Required<MCPClientConfig>;
+  private initialized = false;
   private buffer = '';
   private pendingRequests = new Map<
     number,
@@ -120,6 +121,13 @@ export class MCPClient extends EventEmitter {
 
     this.process.on('close', (code) => {
       logger.info('MCP server closed', { code });
+      this.process = null;
+      this.initialized = false;
+      for (const [id, pending] of this.pendingRequests) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error('MCP server closed'));
+        this.pendingRequests.delete(id);
+      }
       this.emit('close', code);
     });
 
@@ -198,10 +206,37 @@ export class MCPClient extends EventEmitter {
   }
 
   /**
+   * Send a JSON-RPC notification (no response expected).
+   */
+  private notify(method: string, params?: Record<string, unknown>): void {
+    if (!this.process) {
+      throw new Error('MCP Client not started');
+    }
+
+    const notification: Record<string, unknown> = {
+      jsonrpc: '2.0',
+      method,
+    };
+    if (params !== undefined) {
+      notification['params'] = params;
+    }
+    this.process.stdin?.write(JSON.stringify(notification) + '\n');
+  }
+
+  /**
    * Initialize the MCP connection
    */
   private async initialize(): Promise<void> {
-    await this.request('initialize', {});
+    await this.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: {
+        name: 'agent-system',
+        version: '1.0.0',
+      },
+    });
+    this.notify('notifications/initialized', {});
+    this.initialized = true;
     logger.info('MCP connection initialized');
   }
 
@@ -243,6 +278,7 @@ export class MCPClient extends EventEmitter {
 
     this.process.kill();
     this.process = null;
+    this.initialized = false;
     logger.info('MCP server stopped');
   }
 
@@ -250,6 +286,6 @@ export class MCPClient extends EventEmitter {
    * Check if the client is running
    */
   isRunning(): boolean {
-    return this.process !== null;
+    return this.process !== null && this.initialized;
   }
 }

@@ -90,6 +90,7 @@ export const QueuedRunSchema = z.object({
   created_at: z.string().datetime(),
   status: z.enum(['pending', 'running', 'completed', 'failed']),
   llm_config: LLMConfigRequestSchema,
+  group_id: z.string().min(1).optional(),
 });
 
 export type QueuedRun = z.infer<typeof QueuedRunSchema>;

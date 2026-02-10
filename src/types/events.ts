@@ -24,6 +24,17 @@ export const BaseEventSchema = z.object({
   redaction: z.object({
     contains_secrets: z.boolean(),
   }),
+  /** Group identifier (multi-role orchestration) */
+  group_id: z.string().min(1).optional(),
+  /** Structured message type (multi-role orchestration) */
+  message_type: z.enum(['TASK', 'PROPOSAL', 'DECISION', 'EVIDENCE', 'STATUS']).optional(),
+  /** Target agent identifier */
+  to_agent_id: z.string().min(1).optional(),
+  /** Artifact references */
+  artifact_refs: z.array(z.object({
+    type: z.string(),
+    id: z.string(),
+  })).optional(),
 });
 
 export type BaseEvent = z.infer<typeof BaseEventSchema>;
@@ -79,6 +90,28 @@ export const ToolResultPayloadSchema = z.object({
 });
 
 /**
+ * Tool blocked event payload - tool call denied by policy
+ */
+export const ToolBlockedPayloadSchema = z.object({
+  toolName: z.string(),
+  args: z.record(z.unknown()),
+  reason: z.string(),
+  role_id: z.string().optional(),
+  risk_level: z.string().optional(),
+});
+
+/**
+ * Tool requires approval event payload - tool call needs human approval
+ */
+export const ToolRequiresApprovalPayloadSchema = z.object({
+  toolName: z.string(),
+  args: z.record(z.unknown()),
+  reason: z.string(),
+  role_id: z.string().optional(),
+  risk_level: z.string().optional(),
+});
+
+/**
  * Step started event payload
  */
 export const StepStartedPayloadSchema = z.object({
@@ -131,6 +164,56 @@ export const LLMTokenPayloadSchema = z.object({
   tokenIndex: z.number().nonnegative(),
 });
 
+// ─── Structured Message Payloads (Multi-role Orchestration) ──
+
+/**
+ * TASK message payload - assign a task to an agent
+ */
+export const TaskMessagePayloadSchema = z.object({
+  goal: z.string(),
+  inputs: z.record(z.unknown()).default({}),
+  expected_output: z.string().optional(),
+  constraints: z.array(z.string()).default([]),
+  priority: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+});
+
+/**
+ * PROPOSAL message payload - agent proposes a plan
+ */
+export const ProposalMessagePayloadSchema = z.object({
+  plan: z.string(),
+  risks: z.array(z.string()).default([]),
+  dependencies: z.array(z.string()).default([]),
+  evidence_refs: z.array(z.object({ type: z.string(), id: z.string() })).default([]),
+});
+
+/**
+ * DECISION message payload - lead makes a decision
+ */
+export const DecisionMessagePayloadSchema = z.object({
+  decision: z.string(),
+  rationale: z.string(),
+  next_actions: z.array(z.string()).default([]),
+  evidence_refs: z.array(z.object({ type: z.string(), id: z.string() })).default([]),
+});
+
+/**
+ * EVIDENCE message payload - agent provides evidence
+ */
+export const EvidenceMessagePayloadSchema = z.object({
+  refs: z.array(z.object({ type: z.string(), id: z.string() })),
+  summary: z.string(),
+});
+
+/**
+ * STATUS message payload - agent reports status
+ */
+export const StatusMessagePayloadSchema = z.object({
+  state: z.enum(['working', 'blocked', 'done', 'error']),
+  progress: z.number().min(0).max(1).optional(),
+  blockers: z.array(z.string()).default([]),
+});
+
 /**
  * Event type enum
  */
@@ -146,6 +229,13 @@ export const EventTypeSchema = z.enum([
   'llm.token',
   'tool.called',
   'tool.result',
+  'tool.blocked',
+  'tool.requires_approval',
+  'message.task',
+  'message.proposal',
+  'message.decision',
+  'message.evidence',
+  'message.status',
 ]);
 
 export type EventType = z.infer<typeof EventTypeSchema>;
@@ -211,6 +301,26 @@ export const ToolResultEventSchema = BaseEventSchema.extend({
 export type ToolResultEvent = z.infer<typeof ToolResultEventSchema>;
 
 /**
+ * Tool blocked event
+ */
+export const ToolBlockedEventSchema = BaseEventSchema.extend({
+  type: z.literal('tool.blocked'),
+  payload: ToolBlockedPayloadSchema,
+});
+
+export type ToolBlockedEvent = z.infer<typeof ToolBlockedEventSchema>;
+
+/**
+ * Tool requires approval event
+ */
+export const ToolRequiresApprovalEventSchema = BaseEventSchema.extend({
+  type: z.literal('tool.requires_approval'),
+  payload: ToolRequiresApprovalPayloadSchema,
+});
+
+export type ToolRequiresApprovalEvent = z.infer<typeof ToolRequiresApprovalEventSchema>;
+
+/**
  * Step started event
  */
 export const StepStartedEventSchema = BaseEventSchema.extend({
@@ -260,6 +370,43 @@ export const LLMTokenEventSchema = BaseEventSchema.extend({
 
 export type LLMTokenEvent = z.infer<typeof LLMTokenEventSchema>;
 
+// ─── Structured Message Events (Multi-role Orchestration) ────
+
+export const MessageTaskEventSchema = BaseEventSchema.extend({
+  type: z.literal('message.task'),
+  payload: TaskMessagePayloadSchema,
+});
+
+export type MessageTaskEvent = z.infer<typeof MessageTaskEventSchema>;
+
+export const MessageProposalEventSchema = BaseEventSchema.extend({
+  type: z.literal('message.proposal'),
+  payload: ProposalMessagePayloadSchema,
+});
+
+export type MessageProposalEvent = z.infer<typeof MessageProposalEventSchema>;
+
+export const MessageDecisionEventSchema = BaseEventSchema.extend({
+  type: z.literal('message.decision'),
+  payload: DecisionMessagePayloadSchema,
+});
+
+export type MessageDecisionEvent = z.infer<typeof MessageDecisionEventSchema>;
+
+export const MessageEvidenceEventSchema = BaseEventSchema.extend({
+  type: z.literal('message.evidence'),
+  payload: EvidenceMessagePayloadSchema,
+});
+
+export type MessageEvidenceEvent = z.infer<typeof MessageEvidenceEventSchema>;
+
+export const MessageStatusEventSchema = BaseEventSchema.extend({
+  type: z.literal('message.status'),
+  payload: StatusMessagePayloadSchema,
+});
+
+export type MessageStatusEvent = z.infer<typeof MessageStatusEventSchema>;
+
 /**
  * Union of all event schemas
  */
@@ -270,11 +417,18 @@ export const EventSchema = z.discriminatedUnion('type', [
   RunResumedEventSchema,
   ToolCalledEventSchema,
   ToolResultEventSchema,
+  ToolBlockedEventSchema,
+  ToolRequiresApprovalEventSchema,
   StepStartedEventSchema,
   StepCompletedEventSchema,
   StepRetriedEventSchema,
   LLMCalledEventSchema,
   LLMTokenEventSchema,
+  MessageTaskEventSchema,
+  MessageProposalEventSchema,
+  MessageDecisionEventSchema,
+  MessageEvidenceEventSchema,
+  MessageStatusEventSchema,
 ]);
 
 export type Event = z.infer<typeof EventSchema>;

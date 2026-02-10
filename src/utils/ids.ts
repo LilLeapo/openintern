@@ -43,3 +43,38 @@ export function generateMemoryId(): string {
 export function generateStepId(stepNumber: number): string {
   return `step_${stepNumber.toString().padStart(4, '0')}`;
 }
+
+/**
+ * Generate a role ID (format: role_<alphanumeric>)
+ */
+export function generateRoleId(): string {
+  return `role_${randomAlphanumeric(12)}`;
+}
+
+/**
+ * Generate a group ID (format: grp_<alphanumeric>)
+ */
+export function generateGroupId(): string {
+  return `grp_${randomAlphanumeric(12)}`;
+}
+
+/**
+ * Generate a group member ID (format: gm_<alphanumeric>)
+ */
+export function generateGroupMemberId(): string {
+  return `gm_${randomAlphanumeric(12)}`;
+}
+
+/**
+ * Generate an agent instance ID (format: ai_<alphanumeric>)
+ */
+export function generateAgentInstanceId(): string {
+  return `ai_${randomAlphanumeric(12)}`;
+}
+
+/**
+ * Generate a skill ID (format: skill_<alphanumeric>)
+ */
+export function generateSkillId(): string {
+  return `skill_${randomAlphanumeric(12)}`;
+}

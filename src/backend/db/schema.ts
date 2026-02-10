@@ -90,4 +90,97 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
     ON memory_chunks USING GIN (search_tsv)`,
   `CREATE INDEX IF NOT EXISTS memory_chunks_embedding_idx
     ON memory_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`,
+
+  // ─── Phase 0: Orchestrator tables ──────────────────────────
+
+  `CREATE TABLE IF NOT EXISTS roles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL,
+    allowed_tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+    denied_tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+    style_constraints JSONB NOT NULL DEFAULT '{}'::jsonb,
+    is_lead BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    project_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS groups_project_idx ON groups (project_id)`,
+
+  `CREATE TABLE IF NOT EXISTS agent_instances (
+    id TEXT PRIMARY KEY,
+    role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    project_id TEXT,
+    preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
+    state JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS agent_instances_role_idx ON agent_instances (role_id)`,
+  `CREATE INDEX IF NOT EXISTS agent_instances_project_idx ON agent_instances (project_id)`,
+
+  `CREATE TABLE IF NOT EXISTS group_members (
+    id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    agent_instance_id TEXT REFERENCES agent_instances(id) ON DELETE SET NULL,
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS group_members_group_idx ON group_members (group_id, ordinal)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS group_members_group_role_idx ON group_members (group_id, role_id)`,
+
+  // ─── Phase 2: Skills table ───────────────────────────────────
+
+  `CREATE TABLE IF NOT EXISTS skills (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+    risk_level TEXT NOT NULL DEFAULT 'low' CHECK (risk_level IN ('low', 'medium', 'high')),
+    provider TEXT NOT NULL DEFAULT 'builtin' CHECK (provider IN ('builtin', 'mcp')),
+    health_status TEXT NOT NULL DEFAULT 'unknown' CHECK (health_status IN ('healthy', 'unhealthy', 'unknown')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS skills_provider_idx ON skills (provider)`,
+  `CREATE INDEX IF NOT EXISTS skills_risk_level_idx ON skills (risk_level)`,
+
+  // Add group_id to runs table (idempotent)
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'runs' AND column_name = 'group_id'
+    ) THEN
+      ALTER TABLE runs ADD COLUMN group_id TEXT;
+    END IF;
+  END $$`,
+  `CREATE INDEX IF NOT EXISTS runs_group_idx ON runs (group_id)`,
+
+  // Add group_id and message_type to events table (idempotent)
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'events' AND column_name = 'group_id'
+    ) THEN
+      ALTER TABLE events ADD COLUMN group_id TEXT;
+    END IF;
+  END $$`,
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'events' AND column_name = 'message_type'
+    ) THEN
+      ALTER TABLE events ADD COLUMN message_type TEXT;
+    END IF;
+  END $$`,
 ];

@@ -76,6 +76,7 @@ export const ToolResultSchema = z.object({
   result: z.unknown().optional(),
   error: z.string().optional(),
   duration: z.number().nonnegative(),
+  blocked: z.boolean().optional(),
 });
 
 export type ToolResult = z.infer<typeof ToolResultSchema>;

@@ -13,6 +13,9 @@
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import { createRunsRouter } from './api/runs.js';
+import { createRolesRouter } from './api/roles.js';
+import { createGroupsRouter } from './api/groups.js';
+import { createSkillsRouter } from './api/skills.js';
 import { RunQueue } from './queue/run-queue.js';
 import { SSEManager } from './api/sse.js';
 import { AgentError } from '../utils/errors.js';
@@ -22,6 +25,9 @@ import { logger } from '../utils/logger.js';
 import type { ErrorResponse } from '../types/api.js';
 import { createEmbeddingProvider } from './store/embedding-provider.js';
 import { CheckpointService, createRuntimeExecutor, EventService, MemoryService, RunRepository } from './runtime/index.js';
+import { RoleRepository } from './runtime/role-repository.js';
+import { GroupRepository } from './runtime/group-repository.js';
+import { SkillRepository } from './runtime/skill-repository.js';
 import { closeSharedPostgresPool, getPostgresPool, runPostgresMigrations } from './db/index.js';
 
 /**
@@ -73,6 +79,9 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   );
   const dbReady = runPostgresMigrations(pool);
   const runRepository = new RunRepository(pool);
+  const roleRepository = new RoleRepository(pool);
+  const groupRepository = new GroupRepository(pool);
+  const skillRepository = new SkillRepository(pool);
   const eventService = new EventService(runRepository);
   const checkpointService = new CheckpointService(runRepository);
   const requestedEmbedding = finalConfig.embeddingConfig ?? finalConfig.embedding ?? {
@@ -98,6 +107,8 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     checkpointService,
     memoryService,
     sseManager,
+    groupRepository,
+    roleRepository,
     maxSteps: finalConfig.maxSteps ?? 10,
     defaultModelConfig: finalConfig.defaultModelConfig ?? {
       provider: 'mock',
@@ -154,6 +165,17 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     eventService,
   });
   app.use('/api', runsRouter);
+
+  // Orchestrator API routes (Phase 0)
+  const rolesRouter = createRolesRouter({ roleRepository });
+  app.use('/api', rolesRouter);
+
+  const groupsRouter = createGroupsRouter({ groupRepository, roleRepository, runRepository, runQueue });
+  app.use('/api', groupsRouter);
+
+  // Skills API routes (Phase 2)
+  const skillsRouter = createSkillsRouter({ skillRepository });
+  app.use('/api', skillsRouter);
 
   // Error handling middleware
   app.use(errorHandler);

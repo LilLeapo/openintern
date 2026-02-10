@@ -7,6 +7,7 @@ import { CheckpointService } from './checkpoint-service.js';
 import { MemoryService } from './memory-service.js';
 import { RuntimeToolRouter } from './tool-router.js';
 import type { ToolResult } from '../../types/agent.js';
+import type { AgentContext } from './tool-policy.js';
 
 export interface RunnerContext {
   runId: string;
@@ -32,6 +33,10 @@ export interface SingleAgentRunnerConfig {
   checkpointService: CheckpointService;
   memoryService: MemoryService;
   toolRouter: RuntimeToolRouter;
+  /** Custom system prompt (overrides default) */
+  systemPrompt?: string;
+  /** Agent context for tool policy checks (multi-role mode) */
+  agentContext?: AgentContext;
 }
 
 const SYSTEM_PROMPT = `You are a task-oriented coding assistant.
@@ -173,7 +178,8 @@ export class SingleAgentRunner implements AgentRunner {
       .map((message) => `${message.role}: ${message.content.slice(0, 220)}`)
       .join('\n');
 
-    const system = `${SYSTEM_PROMPT}
+    const basePrompt = this.config.systemPrompt ?? SYSTEM_PROMPT;
+    const system = `${basePrompt}
 
 Conversation summary:
 ${historySummary || '(none)'}
@@ -209,8 +215,25 @@ When you need full memory details, call memory_get(id).`;
         })
       );
 
-      const result = await this.config.toolRouter.callTool(toolCall.name, toolCall.parameters);
-      events.push(this.createToolResultEvent(ctx, stepId, rootSpan, toolCall.name, result));
+      const result = await this.config.toolRouter.callTool(
+        toolCall.name,
+        toolCall.parameters,
+        this.config.agentContext
+      );
+
+      if (result.blocked) {
+        events.push(
+          this.createEvent(ctx, stepId, rootSpan, 'tool.blocked', {
+            toolName: toolCall.name,
+            args: toolCall.parameters,
+            reason: result.error ?? 'Blocked by policy',
+            role_id: this.config.agentContext?.roleId,
+          })
+        );
+      } else {
+        events.push(this.createToolResultEvent(ctx, stepId, rootSpan, toolCall.name, result));
+      }
+
       lastResult = result.success ? result.result : result.error;
       newMessages.push({
         role: 'tool',
