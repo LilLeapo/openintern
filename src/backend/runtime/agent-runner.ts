@@ -4,9 +4,14 @@ import type { Skill } from '../../types/skill.js';
 import type { ScopeContext } from './scope.js';
 import { createLLMClient, type ILLMClient } from '../agent/llm-client.js';
 import { generateSpanId, generateStepId } from '../../utils/ids.js';
+import { logger } from '../../utils/logger.js';
 import { CheckpointService } from './checkpoint-service.js';
+import { CompactionService } from './compaction-service.js';
 import { MemoryService } from './memory-service.js';
+import { PromptComposer, type SkillInjection } from './prompt-composer.js';
 import { RuntimeToolRouter } from './tool-router.js';
+import { TokenBudgetManager } from './token-budget-manager.js';
+import { ToolCallScheduler } from './tool-scheduler.js';
 import type { ToolResult } from '../../types/agent.js';
 import type { AgentContext } from './tool-policy.js';
 
@@ -41,15 +46,22 @@ export interface SingleAgentRunnerConfig {
   systemPrompt?: string;
   /** Agent context for tool policy checks (multi-role mode) */
   agentContext?: AgentContext;
+  /** Tool call scheduler for parallel/serial execution */
+  toolScheduler?: ToolCallScheduler;
+  /** Prompt composer for layered prompt building */
+  promptComposer?: PromptComposer;
+  /** Token budget manager for context tracking */
+  budgetManager?: TokenBudgetManager;
+  /** Compaction service for context compression */
+  compactionService?: CompactionService;
+  /** Skill content injections (loaded SKILL.md content) */
+  skillInjections?: SkillInjection[];
+  /** Working directory for environment context */
+  workDir?: string;
 }
 
-const SYSTEM_PROMPT = `You are a task-oriented coding assistant.
-You can call tools.
-Memory workflow rule:
-1) Use memory_search for recall.
-2) If needed, use memory_get for full text.
-3) Use memory_write to store durable insights.
-Keep answers concise and actionable.`;
+/** Max consecutive identical tool call signatures before doom-loop breaker fires */
+const DOOM_LOOP_THRESHOLD = 3;
 
 class RunCancelledError extends Error {
   constructor(message: string = 'Run cancelled by user') {
@@ -60,9 +72,22 @@ class RunCancelledError extends Error {
 
 export class SingleAgentRunner implements AgentRunner {
   private readonly maxSteps: number;
+  private readonly toolScheduler: ToolCallScheduler;
+  private readonly promptComposer: PromptComposer;
+  private readonly budgetManager: TokenBudgetManager | null;
+  private readonly compactionService: CompactionService | null;
+  /** Tracks recent tool call signatures for doom-loop detection */
+  private readonly recentToolSignatures: string[] = [];
 
   constructor(private readonly config: SingleAgentRunnerConfig) {
     this.maxSteps = config.maxSteps;
+    this.toolScheduler = config.toolScheduler ?? new ToolCallScheduler();
+    this.promptComposer = config.promptComposer ?? new PromptComposer({
+      basePrompt: config.systemPrompt,
+      provider: config.modelConfig.provider === 'mock' ? undefined : config.modelConfig.provider,
+    });
+    this.budgetManager = config.budgetManager ?? null;
+    this.compactionService = config.compactionService ?? null;
   }
 
   private throwIfAborted(signal?: AbortSignal): void {
@@ -72,7 +97,7 @@ export class SingleAgentRunner implements AgentRunner {
   }
 
   async *run(input: string, ctx: RunnerContext): AsyncGenerator<Event, RunnerResult, void> {
-    const messages: Message[] = [{ role: 'user', content: input }];
+    let messages: Message[] = [{ role: 'user', content: input }];
     const llmClient = createLLMClient(this.config.modelConfig);
     const rootSpan = generateSpanId();
     const startedAt = Date.now();
@@ -94,6 +119,15 @@ export class SingleAgentRunner implements AgentRunner {
           stepNumber: step,
         });
 
+        // ── Context budget check & auto-compaction ──
+        const compactionEvents = yield* this.maybeCompactContext(
+          messages, ctx, stepId, rootSpan, step
+        );
+        if (compactionEvents.compacted) {
+          messages = compactionEvents.messages;
+        }
+
+        // ── Memory retrieval ──
         const memoryQuery = this.buildMemoryQuery(messages);
         const memoryScope = {
           org_id: ctx.scope.orgId,
@@ -113,10 +147,30 @@ export class SingleAgentRunner implements AgentRunner {
               scope: memoryScope,
               top_k: 6,
             });
-        const skills = this.config.toolRouter.listSkills();
-        const contextMessages = this.buildModelMessages(messages, memoryHits, skills);
-        const tools = this.config.toolRouter.listTools();
 
+        // ── Compose prompt via PromptComposer ──
+        const skills = this.config.toolRouter.listSkills();
+        const tools = this.config.toolRouter.listTools();
+        const contextMessages = this.promptComposer.compose({
+          history: messages,
+          memoryHits,
+          skills,
+          skillInjections: this.config.skillInjections,
+          agentContext: this.config.agentContext,
+          environment: this.config.workDir ? {
+            cwd: this.config.workDir,
+            date: new Date().toISOString().split('T')[0],
+            availableToolNames: tools.map((t) => t.name),
+          } : undefined,
+          budget: this.budgetManager ? {
+            utilization: this.budgetManager.utilization,
+            currentStep: step,
+            maxSteps: this.maxSteps,
+            compactionCount: this.budgetManager.currentCompactionCount,
+          } : undefined,
+        });
+
+        // ── LLM call ──
         const llmStarted = Date.now();
         const llmOptions = ctx.abortSignal ? { signal: ctx.abortSignal } : undefined;
         const response = llmClient.chatStream
@@ -124,6 +178,9 @@ export class SingleAgentRunner implements AgentRunner {
           : await llmClient.chat(contextMessages, tools, llmOptions);
         this.throwIfAborted(ctx.abortSignal);
         const llmDuration = Date.now() - llmStarted;
+
+        // Update budget tracker
+        this.budgetManager?.update(response.usage);
 
         yield this.createEvent(ctx, stepId, rootSpan, 'llm.called', {
           model: this.config.modelConfig.model,
@@ -133,22 +190,66 @@ export class SingleAgentRunner implements AgentRunner {
           duration_ms: llmDuration,
         });
 
+        // ── Tool calls via ToolCallScheduler ──
         if (response.toolCalls && response.toolCalls.length > 0) {
+          // Doom-loop detection
+          const doomDetected = this.detectRepeatedToolPattern(response.toolCalls);
+          if (doomDetected) {
+            yield this.createEvent(ctx, stepId, rootSpan, 'run.warning', {
+              code: 'DOOM_LOOP_DETECTED',
+              message: `Repeated identical tool calls detected (${DOOM_LOOP_THRESHOLD}x). Breaking loop.`,
+            });
+            messages.push({
+              role: 'assistant',
+              content: response.content,
+              toolCalls: response.toolCalls,
+            });
+            messages.push({
+              role: 'tool',
+              content: 'Error: Doom loop detected — you are repeating the same tool call with identical parameters. Try a different approach or provide a final answer.',
+              toolCallId: response.toolCalls[0].id,
+            });
+            continue;
+          }
+
           messages.push({
             role: 'assistant',
             content: response.content,
             toolCalls: response.toolCalls,
           });
-          const toolResult = await this.handleToolCalls(
-            ctx,
-            stepId,
-            rootSpan,
+
+          // Use ToolCallScheduler for batch execution
+          const batchResult = await this.toolScheduler.executeBatch(
             response.toolCalls,
-            ctx.abortSignal
+            this.config.toolRouter,
+            {
+              runId: ctx.runId,
+              sessionKey: ctx.sessionKey,
+              agentId: ctx.agentId,
+              stepId,
+              rootSpan,
+              agentContext: this.config.agentContext,
+              abortSignal: ctx.abortSignal,
+            }
           );
-          messages.push(...toolResult.newMessages);
-          lastToolResult = toolResult.lastResult;
-          yield* toolResult.events;
+
+          // Convert batch results to messages
+          for (const execResult of batchResult.results) {
+            const r = execResult.result;
+            lastToolResult = r.success ? r.result : r.error;
+            messages.push({
+              role: 'tool',
+              content: r.success
+                ? JSON.stringify(r.result)
+                : `Error: ${r.error ?? 'Unknown tool error'}`,
+              toolCallId: execResult.toolCall.id,
+            });
+          }
+
+          // Yield all batch events
+          for (const event of batchResult.events) {
+            yield event;
+          }
 
           await this.saveCheckpoint(ctx, stepId, messages, memoryHits, lastToolResult);
 
@@ -160,6 +261,7 @@ export class SingleAgentRunner implements AgentRunner {
           continue;
         }
 
+        // ── Final answer ──
         messages.push({ role: 'assistant', content: response.content });
         await this.saveCheckpoint(ctx, stepId, messages, memoryHits, lastToolResult);
 
@@ -249,110 +351,69 @@ export class SingleAgentRunner implements AgentRunner {
     return recent || 'recent context';
   }
 
-  private buildModelMessages(
-    history: Message[],
-    memoryHits: Array<{ id: string; snippet: string; score: number; type: string }>,
-    skills: Skill[]
-  ): Message[] {
-    const memoryLines = memoryHits
-      .map((item, index) => `${index + 1}. [${item.id}] (${item.type},${item.score.toFixed(3)}): ${item.snippet}`)
-      .join('\n');
-    const historySummary = history
-      .slice(-8)
-      .map((message) => `${message.role}: ${message.content.slice(0, 220)}`)
-      .join('\n');
-    const skillLines = skills
-      .slice(0, 20)
-      .map((skill) => {
-        const toolNames = skill.tools.map((tool) => tool.name).join(', ') || '(none)';
-        return `- ${skill.id} [${skill.provider}/${skill.risk_level}] ${skill.name}: ${toolNames}`;
-      })
-      .join('\n');
-    const rolePolicy = this.config.agentContext
-      ? [
-          `Allowed list: ${this.config.agentContext.allowedTools.join(', ') || '(none)'}`,
-          `Denied list: ${this.config.agentContext.deniedTools.join(', ') || '(none)'}`,
-        ].join('\n')
-      : 'Allowed list: (not restricted)\nDenied list: (none)';
+  /**
+   * Doom-loop detection: track tool call signatures and detect repeated patterns.
+   * Returns true if the same tool+params signature repeats >= DOOM_LOOP_THRESHOLD times.
+   */
+  private detectRepeatedToolPattern(toolCalls: ToolCall[]): boolean {
+    const signature = toolCalls
+      .map((tc) => `${tc.name}:${JSON.stringify(tc.parameters)}`)
+      .sort()
+      .join('|');
 
-    const basePrompt = this.config.systemPrompt ?? SYSTEM_PROMPT;
-    const system = `${basePrompt}
+    this.recentToolSignatures.push(signature);
+    if (this.recentToolSignatures.length > DOOM_LOOP_THRESHOLD * 2) {
+      this.recentToolSignatures.splice(0, this.recentToolSignatures.length - DOOM_LOOP_THRESHOLD * 2);
+    }
 
-Conversation summary:
-${historySummary || '(none)'}
-
-Retrieved memory summaries:
-${memoryLines || '(none)'}
-
-Skill catalog:
-${skillLines || '(none)'}
-
-Role tool policy:
-${rolePolicy}
-
-If you need full details for a skill, call skills_get(skill_id).
-If you need to refresh the catalog, call skills_list().
-When you need full memory details, call memory_get(id).`;
-
-    const trimmedHistory = history.slice(-12);
-    return [{ role: 'system', content: system }, ...trimmedHistory];
+    const tail = this.recentToolSignatures.slice(-DOOM_LOOP_THRESHOLD);
+    if (tail.length < DOOM_LOOP_THRESHOLD) return false;
+    return tail.every((s) => s === signature);
   }
 
-  private async handleToolCalls(
+  /**
+   * Check context budget and auto-compact if needed.
+   */
+  private async *maybeCompactContext(
+    messages: Message[],
     ctx: RunnerContext,
     stepId: string,
     rootSpan: string,
-    toolCalls: ToolCall[],
-    abortSignal?: AbortSignal
-  ): Promise<{
-    events: Event[];
-    newMessages: Message[];
-    lastResult: unknown;
-  }> {
-    const events: Event[] = [];
-    const newMessages: Message[] = [];
-    let lastResult: unknown = null;
-
-    for (const toolCall of toolCalls) {
-      this.throwIfAborted(abortSignal);
-      events.push(
-        this.createEvent(ctx, stepId, rootSpan, 'tool.called', {
-          toolName: toolCall.name,
-          args: toolCall.parameters,
-        })
-      );
-
-      const result = await this.config.toolRouter.callTool(
-        toolCall.name,
-        toolCall.parameters,
-        this.config.agentContext
-      );
-
-      if (result.blocked) {
-        events.push(
-          this.createEvent(ctx, stepId, rootSpan, 'tool.blocked', {
-            toolName: toolCall.name,
-            args: toolCall.parameters,
-            reason: result.error ?? 'Blocked by policy',
-            role_id: this.config.agentContext?.roleId,
-          })
-        );
-      } else {
-        events.push(this.createToolResultEvent(ctx, stepId, rootSpan, toolCall.name, result));
-      }
-
-      lastResult = result.success ? result.result : result.error;
-      newMessages.push({
-        role: 'tool',
-        content: result.success
-          ? JSON.stringify(result.result)
-          : `Error: ${result.error ?? 'Unknown tool error'}`,
-        toolCallId: toolCall.id,
-      });
-      this.throwIfAborted(abortSignal);
+    currentStep: number
+  ): AsyncGenerator<Event, { compacted: boolean; messages: Message[] }, void> {
+    if (!this.budgetManager || !this.compactionService) {
+      return { compacted: false, messages };
     }
 
-    return { events, newMessages, lastResult };
+    // Emit warning if approaching threshold
+    if (this.budgetManager.shouldWarn()) {
+      yield this.createEvent(ctx, stepId, rootSpan, 'run.warning', {
+        code: 'CONTEXT_HIGH_WATER',
+        message: `Context utilization at ${(this.budgetManager.utilization * 100).toFixed(0)}%`,
+        context: { step: currentStep },
+      });
+    }
+
+    // Compact if over threshold
+    if (this.budgetManager.shouldCompact()) {
+      logger.info('Triggering context compaction', {
+        runId: ctx.runId,
+        utilization: this.budgetManager.utilization,
+      });
+
+      const result = this.compactionService.compactMessages(messages);
+      this.budgetManager.recordCompaction();
+
+      yield this.createEvent(ctx, stepId, rootSpan, 'run.compacted', {
+        messages_before: result.messages_before,
+        messages_after: result.messages_after,
+        tokens_saved: result.tokens_saved_estimate,
+      });
+
+      return { compacted: true, messages: result.messages };
+    }
+
+    return { compacted: false, messages };
   }
 
   private async saveCheckpoint(
@@ -371,6 +432,7 @@ When you need full memory details, call memory_get(id).`;
           memory_hits: memoryHits,
           last_tool_result: lastToolResult,
           plan: 'single-agent-loop',
+          budget_state: this.budgetManager?.getState(),
         },
         messages,
       }

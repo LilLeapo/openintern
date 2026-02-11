@@ -64,9 +64,51 @@ export const ToolDefinitionSchema = z.object({
   name: z.string(),
   description: z.string(),
   parameters: z.record(z.unknown()),
+  /** Tool metadata for scheduling and policy decisions */
+  metadata: z.object({
+    risk_level: z.enum(['low', 'medium', 'high']).default('low'),
+    mutating: z.boolean().default(false),
+    supports_parallel: z.boolean().default(true),
+    timeout_ms: z.number().positive().optional(),
+  }).optional(),
 });
 
 export type ToolDefinition = z.infer<typeof ToolDefinitionSchema>;
+
+/**
+ * Tool batch call - a group of tool calls to be executed together
+ */
+export const ToolBatchCallSchema = z.object({
+  batch_id: z.string(),
+  calls: z.array(ToolCallSchema),
+  strategy: z.enum(['parallel', 'serial']),
+});
+
+export type ToolBatchCall = z.infer<typeof ToolBatchCallSchema>;
+
+/**
+ * Tool policy decision - three-state result
+ */
+export const ToolPolicyDecisionSchema = z.object({
+  decision: z.enum(['allow', 'deny', 'ask']),
+  reason: z.string(),
+  tool_name: z.string(),
+});
+
+export type ToolPolicyDecision = z.infer<typeof ToolPolicyDecisionSchema>;
+
+/**
+ * Budget state for context tracking
+ */
+export const BudgetStateSchema = z.object({
+  total_tokens_used: z.number().nonnegative(),
+  max_context_tokens: z.number().positive(),
+  utilization: z.number().min(0).max(1),
+  compaction_count: z.number().nonnegative(),
+  last_compacted_at: z.string().datetime().optional(),
+});
+
+export type BudgetState = z.infer<typeof BudgetStateSchema>;
 
 /**
  * Tool result schema

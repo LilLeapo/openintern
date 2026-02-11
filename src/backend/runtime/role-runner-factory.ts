@@ -2,8 +2,12 @@ import type { LLMConfig } from '../../types/agent.js';
 import type { Role } from '../../types/orchestrator.js';
 import { SingleAgentRunner, type AgentRunner, type SingleAgentRunnerConfig } from './agent-runner.js';
 import { CheckpointService } from './checkpoint-service.js';
+import { CompactionService } from './compaction-service.js';
 import { MemoryService } from './memory-service.js';
+import { PromptComposer, type SkillInjection } from './prompt-composer.js';
 import { RuntimeToolRouter } from './tool-router.js';
+import { TokenBudgetManager } from './token-budget-manager.js';
+import { ToolCallScheduler } from './tool-scheduler.js';
 import { ToolPolicy } from './tool-policy.js';
 
 export interface RoleRunnerFactoryConfig {
@@ -12,6 +16,15 @@ export interface RoleRunnerFactoryConfig {
   checkpointService: CheckpointService;
   memoryService: MemoryService;
   toolRouter: RuntimeToolRouter;
+  toolScheduler?: ToolCallScheduler;
+  skillInjections?: SkillInjection[];
+  workDir?: string;
+  budget?: {
+    maxContextTokens?: number;
+    compactionThreshold?: number;
+    warningThreshold?: number;
+    reserveTokens?: number;
+  };
 }
 
 /**
@@ -28,6 +41,21 @@ export class RoleRunnerFactory {
       agentId ?? role.id
     );
 
+    const promptComposer = new PromptComposer({
+      basePrompt: systemPrompt,
+      provider: this.config.modelConfig.provider === 'mock'
+        ? undefined
+        : this.config.modelConfig.provider,
+    });
+
+    const budgetManager = this.config.budget
+      ? new TokenBudgetManager(this.config.budget)
+      : undefined;
+
+    const compactionService = budgetManager
+      ? new CompactionService()
+      : undefined;
+
     const runnerConfig: SingleAgentRunnerConfig = {
       maxSteps: this.config.maxSteps,
       modelConfig: this.config.modelConfig,
@@ -36,6 +64,12 @@ export class RoleRunnerFactory {
       toolRouter: this.config.toolRouter,
       systemPrompt,
       agentContext,
+      toolScheduler: this.config.toolScheduler,
+      promptComposer,
+      budgetManager,
+      compactionService,
+      skillInjections: this.config.skillInjections,
+      workDir: this.config.workDir,
     };
 
     return new SingleAgentRunner(runnerConfig);

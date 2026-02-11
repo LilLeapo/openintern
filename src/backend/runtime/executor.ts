@@ -5,16 +5,22 @@ import { SSEManager } from '../api/sse.js';
 import { logger } from '../../utils/logger.js';
 import { SingleAgentRunner } from './agent-runner.js';
 import { CheckpointService } from './checkpoint-service.js';
+import { CompactionService } from './compaction-service.js';
 import { EpisodicGenerator } from './episodic-generator.js';
 import { EventService } from './event-service.js';
 import { GroupRepository } from './group-repository.js';
+import { McpConnectionManager, type McpServerConfig } from './mcp-connection-manager.js';
 import { MemoryService } from './memory-service.js';
 import { SerialOrchestrator, type OrchestratorMember } from './orchestrator.js';
+import { PromptComposer } from './prompt-composer.js';
 import { RoleRepository } from './role-repository.js';
 import { RoleRunnerFactory } from './role-runner-factory.js';
 import { RunRepository } from './run-repository.js';
+import { SkillLoader } from './skill-loader.js';
 import { SkillRegistry } from './skill-registry.js';
 import { SkillRepository } from './skill-repository.js';
+import { TokenBudgetManager } from './token-budget-manager.js';
+import { ToolCallScheduler } from './tool-scheduler.js';
 import { RuntimeToolRouter } from './tool-router.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
@@ -26,6 +32,12 @@ const BUILTIN_TOOL_RISK_LEVELS: Record<string, 'low' | 'medium' | 'high'> = {
   memory_get: 'low',
   memory_write: 'medium',
   read_file: 'low',
+  write_file: 'medium',
+  list_files: 'low',
+  glob_files: 'low',
+  grep_files: 'low',
+  exec_command: 'high',
+  apply_patch: 'medium',
   export_trace: 'low',
   skills_list: 'low',
   skills_get: 'low',
@@ -50,6 +62,19 @@ export interface RuntimeExecutorConfig {
     cwd?: string;
     timeoutMs?: number;
   };
+  /** Multi-MCP server configurations */
+  mcpServers?: McpServerConfig[];
+  /** Skill discovery paths (e.g. ['.skills', '~/.openintern/skills']) */
+  skillPaths?: string[];
+  /** Enable implicit skill invocation */
+  enableImplicitSkills?: boolean;
+  /** Token budget configuration */
+  budget?: {
+    maxContextTokens?: number;
+    compactionThreshold?: number;
+    warningThreshold?: number;
+    reserveTokens?: number;
+  };
 }
 
 function isCancellationError(error: unknown): boolean {
@@ -69,6 +94,9 @@ export function createRuntimeExecutor(
 ): (run: QueuedRun, signal: AbortSignal) => Promise<{ status: RunTerminalStatus }> {
   let sharedToolRouter: RuntimeToolRouter | null = null;
   let sharedToolRouterInit: Promise<RuntimeToolRouter> | null = null;
+  let sharedMcpManager: McpConnectionManager | null = null;
+  let sharedSkillLoader: SkillLoader | null = null;
+  const sharedToolScheduler = new ToolCallScheduler();
 
   async function refreshSkillRegistry(router: RuntimeToolRouter): Promise<void> {
     const availableTools = router.listTools().map((tool) => tool.name);
@@ -134,6 +162,25 @@ export function createRuntimeExecutor(
     router.setSkillRegistry(registry);
   }
 
+  async function getSkillLoader(): Promise<SkillLoader> {
+    if (sharedSkillLoader) return sharedSkillLoader;
+    const loader = new SkillLoader();
+    if (config.skillPaths && config.skillPaths.length > 0) {
+      await loader.discover(config.skillPaths);
+    }
+    sharedSkillLoader = loader;
+    return loader;
+  }
+
+  async function getMcpManager(): Promise<McpConnectionManager | null> {
+    if (sharedMcpManager) return sharedMcpManager;
+    if (!config.mcpServers || config.mcpServers.length === 0) return null;
+    const manager = new McpConnectionManager();
+    await manager.initialize(config.mcpServers);
+    sharedMcpManager = manager;
+    return manager;
+  }
+
   async function getSharedToolRouter(scope: Scope): Promise<RuntimeToolRouter> {
     if (sharedToolRouter) {
       sharedToolRouter.setScope(scope);
@@ -190,16 +237,23 @@ export function createRuntimeExecutor(
     }
 
     const toolRouter = await getSharedToolRouter(scope);
+    const skillLoader = await getSkillLoader();
+    const mcpManager = await getMcpManager();
 
     await config.runRepository.setRunRunning(run.run_id);
 
     try {
       let status: RunTerminalStatus;
+      const extras = {
+        toolScheduler: sharedToolScheduler,
+        skillLoader,
+        mcpManager,
+      };
 
       if (run.group_id) {
-        status = await executeGroupRun(config, run, scope, modelConfig, toolRouter, signal);
+        status = await executeGroupRun(config, run, scope, modelConfig, toolRouter, signal, extras);
       } else {
-        status = await executeSingleRun(config, run, scope, modelConfig, toolRouter, signal);
+        status = await executeSingleRun(config, run, scope, modelConfig, toolRouter, signal, extras);
       }
 
       return { status };
@@ -232,14 +286,56 @@ async function executeSingleRun(
   scope: Scope,
   modelConfig: LLMConfig,
   toolRouter: RuntimeToolRouter,
-  signal: AbortSignal
+  signal: AbortSignal,
+  extras?: {
+    toolScheduler?: ToolCallScheduler;
+    skillLoader?: SkillLoader;
+    mcpManager?: McpConnectionManager | null;
+  }
 ): Promise<RunTerminalStatus> {
+  // Build skill injections from loaded SKILL.md files
+  const skillLoader = extras?.skillLoader;
+  const skillInjections: { skillId: string; name: string; content: string }[] = [];
+  if (skillLoader) {
+    const implicitSkills = config.enableImplicitSkills
+      ? skillLoader.listImplicitSkills()
+      : [];
+    for (const skill of implicitSkills) {
+      const content = await skillLoader.loadSkillContent(skill.id);
+      if (content) {
+        skillInjections.push({ skillId: skill.id, name: skill.name, content });
+      }
+    }
+  }
+
+  // Budget manager
+  const budgetManager = config.budget
+    ? new TokenBudgetManager({
+        maxContextTokens: config.budget.maxContextTokens,
+        compactionThreshold: config.budget.compactionThreshold,
+        warningThreshold: config.budget.warningThreshold,
+        reserveTokens: config.budget.reserveTokens,
+      })
+    : undefined;
+
+  const compactionService = budgetManager ? new CompactionService() : undefined;
+
+  const promptComposer = new PromptComposer({
+    provider: modelConfig.provider === 'mock' ? undefined : modelConfig.provider,
+  });
+
   const runner = new SingleAgentRunner({
     maxSteps: config.maxSteps,
     modelConfig,
     checkpointService: config.checkpointService,
     memoryService: config.memoryService,
     toolRouter,
+    toolScheduler: extras?.toolScheduler,
+    promptComposer,
+    budgetManager,
+    compactionService,
+    skillInjections: skillInjections.length > 0 ? skillInjections : undefined,
+    workDir: config.workDir,
   });
 
   const status = await consumeEventStream(
@@ -265,7 +361,12 @@ async function executeGroupRun(
   scope: Scope,
   modelConfig: LLMConfig,
   toolRouter: RuntimeToolRouter,
-  signal: AbortSignal
+  signal: AbortSignal,
+  extras?: {
+    toolScheduler?: ToolCallScheduler;
+    skillLoader?: SkillLoader;
+    mcpManager?: McpConnectionManager | null;
+  }
 ): Promise<RunTerminalStatus> {
   const groupId = run.group_id!;
   const members = await config.groupRepository.listMembers(groupId);
@@ -287,12 +388,28 @@ async function executeGroupRun(
     });
   }
 
+  // Build skill injections for group runners
+  const skillLoader = extras?.skillLoader;
+  const skillInjections: { skillId: string; name: string; content: string }[] = [];
+  if (skillLoader && config.enableImplicitSkills) {
+    for (const skill of skillLoader.listImplicitSkills()) {
+      const content = await skillLoader.loadSkillContent(skill.id);
+      if (content) {
+        skillInjections.push({ skillId: skill.id, name: skill.name, content });
+      }
+    }
+  }
+
   const factory = new RoleRunnerFactory({
     maxSteps: config.maxSteps,
     modelConfig,
     checkpointService: config.checkpointService,
     memoryService: config.memoryService,
     toolRouter,
+    toolScheduler: extras?.toolScheduler,
+    skillInjections: skillInjections.length > 0 ? skillInjections : undefined,
+    workDir: config.workDir,
+    budget: config.budget,
   });
 
   const orchestrator = new SerialOrchestrator({

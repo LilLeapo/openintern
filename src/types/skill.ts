@@ -20,6 +20,20 @@ export const SkillToolEntrySchema = z.object({
 
 export type SkillToolEntry = z.infer<typeof SkillToolEntrySchema>;
 
+// ─── Skill Source Type ──────────────────────────────────────
+
+export const SkillSourceTypeSchema = z.enum(['local', 'repo', 'system', 'remote']);
+export type SkillSourceType = z.infer<typeof SkillSourceTypeSchema>;
+
+// ─── Skill Dependency ──────────────────────────────────────
+
+export const SkillDependencySchema = z.object({
+  tools: z.array(z.string()).default([]),
+  env_vars: z.array(z.string()).default([]),
+});
+
+export type SkillDependency = z.infer<typeof SkillDependencySchema>;
+
 // ─── Skill ──────────────────────────────────────────────────
 
 export const SkillSchema = z.object({
@@ -30,6 +44,14 @@ export const SkillSchema = z.object({
   risk_level: RiskLevelSchema.default('low'),
   provider: SkillProviderSchema.default('builtin'),
   health_status: z.enum(['healthy', 'unhealthy', 'unknown']).default('unknown'),
+  /** Path to the SKILL.md or entry file */
+  entry_path: z.string().optional(),
+  /** Where this skill was discovered from */
+  source_type: SkillSourceTypeSchema.optional(),
+  /** Whether the model can auto-invoke this skill without explicit mention */
+  allow_implicit_invocation: z.boolean().default(false),
+  /** Tool and env dependencies */
+  dependencies: SkillDependencySchema.optional(),
   created_at: z.string().datetime().optional(),
   updated_at: z.string().datetime().optional(),
 });

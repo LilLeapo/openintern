@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from '../../types/agent.js';
 import type { Skill } from '../../types/skill.js';
 import type { ScopeContext } from './scope.js';
@@ -17,6 +18,12 @@ type ToolHandler = (params: Record<string, unknown>) => Promise<unknown>;
 interface RuntimeTool extends ToolDefinition {
   handler: ToolHandler;
   source: 'builtin' | 'mcp';
+  metadata?: {
+    risk_level?: 'low' | 'medium' | 'high';
+    mutating?: boolean;
+    supports_parallel?: boolean;
+    timeout_ms?: number;
+  };
 }
 
 interface MCPToolDefinition {
@@ -518,6 +525,231 @@ export class RuntimeToolRouter {
           health_status: skill.health_status,
           tools: skill.tools,
         };
+      },
+    });
+
+    // ─── Coding tools ──────────────────────────────────────────
+
+    this.tools.set('write_file', {
+      name: 'write_file',
+      description: 'Write content to a file in the workspace (creates or overwrites)',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative path within workspace' },
+          content: { type: 'string', description: 'File content to write' },
+        },
+        required: ['path', 'content'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const filePath = extractString(params['path']);
+        const content = params['content'];
+        if (!filePath || typeof content !== 'string') {
+          throw new ToolError('path and content are required', 'write_file');
+        }
+        const resolved = resolveWithinWorkDir(this.config.workDir, filePath);
+        await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
+        await fs.promises.writeFile(resolved, content, 'utf-8');
+        return { path: filePath, bytes_written: Buffer.byteLength(content, 'utf-8') };
+      },
+    });
+
+    this.tools.set('list_files', {
+      name: 'list_files',
+      description: 'List files and directories at a path in the workspace',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative directory path (default: ".")' },
+        },
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
+      handler: async (params) => {
+        const dirPath = extractString(params['path']) ?? '.';
+        const resolved = resolveWithinWorkDir(this.config.workDir, dirPath);
+        const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
+        return entries.map((e) => ({
+          name: e.name,
+          type: e.isDirectory() ? 'directory' : 'file',
+        }));
+      },
+    });
+
+    this.tools.set('glob_files', {
+      name: 'glob_files',
+      description: 'Find files matching a glob pattern in the workspace',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Glob pattern (e.g. "src/**/*.ts")' },
+          cwd: { type: 'string', description: 'Relative base directory (default: workspace root)' },
+        },
+        required: ['pattern'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
+      handler: async (params) => {
+        const pattern = extractString(params['pattern']);
+        if (!pattern) {
+          throw new ToolError('pattern is required', 'glob_files');
+        }
+        const cwd = extractString(params['cwd']) ?? '.';
+        const resolved = resolveWithinWorkDir(this.config.workDir, cwd);
+        // Use find as a portable glob fallback
+        return new Promise((resolve, reject) => {
+          execFile('find', [resolved, '-type', 'f', '-name', pattern.replace(/\*\*\//g, '')],
+            { timeout: 10000, maxBuffer: 1024 * 512 },
+            (err, stdout) => {
+              if (err) { reject(new ToolError(`glob failed: ${err.message}`, 'glob_files')); return; }
+              const files = stdout.trim().split('\n').filter(Boolean)
+                .map((f) => path.relative(this.config.workDir, f));
+              resolve({ pattern, matches: files.slice(0, 500), total: files.length });
+            }
+          );
+        });
+      },
+    });
+
+    this.tools.set('grep_files', {
+      name: 'grep_files',
+      description: 'Search file contents for a regex pattern in the workspace',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: { type: 'string', description: 'Regex pattern to search for' },
+          path: { type: 'string', description: 'Relative directory or file to search (default: ".")' },
+          include: { type: 'string', description: 'File glob filter (e.g. "*.ts")' },
+          max_results: { type: 'number', description: 'Max matches to return (default: 50)' },
+        },
+        required: ['pattern'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
+      handler: async (params) => {
+        const pattern = extractString(params['pattern']);
+        if (!pattern) {
+          throw new ToolError('pattern is required', 'grep_files');
+        }
+        const searchPath = extractString(params['path']) ?? '.';
+        const include = extractString(params['include']);
+        const maxResults = typeof params['max_results'] === 'number' ? params['max_results'] : 50;
+        const resolved = resolveWithinWorkDir(this.config.workDir, searchPath);
+
+        const args = ['-rn', '--color=never', '-E', pattern];
+        if (include) args.push('--include', include);
+        args.push(resolved);
+
+        return new Promise((resolve, reject) => {
+          execFile('grep', args,
+            { timeout: 15000, maxBuffer: 1024 * 1024 },
+            (err, stdout) => {
+              // grep returns exit code 1 when no matches found
+              if (err && (err as NodeJS.ErrnoException).code !== '1' && !stdout) {
+                reject(new ToolError(`grep failed: ${err.message}`, 'grep_files'));
+                return;
+              }
+              const lines = stdout.trim().split('\n').filter(Boolean);
+              const matches = lines.slice(0, maxResults).map((line) => {
+                const rel = line.startsWith(this.config.workDir)
+                  ? line.slice(this.config.workDir.length + 1)
+                  : line;
+                return rel;
+              });
+              resolve({ pattern, matches, total: lines.length, truncated: lines.length > maxResults });
+            }
+          );
+        });
+      },
+    });
+
+    this.tools.set('exec_command', {
+      name: 'exec_command',
+      description: 'Execute a shell command in the workspace directory',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command to execute' },
+          timeout_ms: { type: 'number', description: 'Timeout in ms (default: 30000)' },
+          cwd: { type: 'string', description: 'Working directory relative to workspace' },
+        },
+        required: ['command'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'high', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const command = extractString(params['command']);
+        if (!command) {
+          throw new ToolError('command is required', 'exec_command');
+        }
+        const timeoutMs = typeof params['timeout_ms'] === 'number' ? params['timeout_ms'] : 30000;
+        const cwdRel = extractString(params['cwd']);
+        const cwd = cwdRel
+          ? resolveWithinWorkDir(this.config.workDir, cwdRel)
+          : this.config.workDir;
+
+        return new Promise((resolve) => {
+          execFile('sh', ['-c', command], {
+            cwd,
+            timeout: Math.min(timeoutMs, 120000),
+            maxBuffer: 1024 * 1024,
+          }, (err, stdout, stderr) => {
+            resolve({
+              exit_code: err ? (err as NodeJS.ErrnoException & { code?: number }).code ?? 1 : 0,
+              stdout: stdout.slice(0, 50000),
+              stderr: stderr.slice(0, 10000),
+            });
+          });
+        });
+      },
+    });
+
+    this.tools.set('apply_patch', {
+      name: 'apply_patch',
+      description: 'Apply a unified diff patch to a file in the workspace',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File path relative to workspace' },
+          patch: { type: 'string', description: 'Unified diff content to apply' },
+        },
+        required: ['path', 'patch'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const filePath = extractString(params['path']);
+        const patch = extractString(params['patch']);
+        if (!filePath || !patch) {
+          throw new ToolError('path and patch are required', 'apply_patch');
+        }
+        const resolved = resolveWithinWorkDir(this.config.workDir, filePath);
+
+        // Simple line-based patch application
+        const original = await fs.promises.readFile(resolved, 'utf-8');
+        const lines = original.split('\n');
+        const patchLines = patch.split('\n');
+        let offset = 0;
+
+        for (const pl of patchLines) {
+          if (pl.startsWith('@@')) {
+            const match = pl.match(/@@ -(\d+)/);
+            if (match) offset = parseInt(match[1], 10) - 1;
+          } else if (pl.startsWith('-') && !pl.startsWith('---')) {
+            if (offset < lines.length) lines.splice(offset, 1);
+          } else if (pl.startsWith('+') && !pl.startsWith('+++')) {
+            lines.splice(offset, 0, pl.slice(1));
+            offset++;
+          } else if (!pl.startsWith('\\')) {
+            offset++;
+          }
+        }
+
+        const result = lines.join('\n');
+        await fs.promises.writeFile(resolved, result, 'utf-8');
+        return { path: filePath, applied: true };
       },
     });
   }

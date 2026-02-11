@@ -214,6 +214,47 @@ export const StatusMessagePayloadSchema = z.object({
   blockers: z.array(z.string()).default([]),
 });
 
+// ─── Tool Batch Events ───────────────────────────────────────
+
+export const ToolBatchStartedPayloadSchema = z.object({
+  batch_id: z.string(),
+  tool_count: z.number().nonnegative(),
+  strategy: z.enum(['parallel', 'serial']),
+});
+
+export const ToolBatchCompletedPayloadSchema = z.object({
+  batch_id: z.string(),
+  tool_count: z.number().nonnegative(),
+  success_count: z.number().nonnegative(),
+  failure_count: z.number().nonnegative(),
+  duration_ms: z.number().nonnegative(),
+});
+
+// ─── Run Compacted Event ─────────────────────────────────────
+
+export const RunCompactedPayloadSchema = z.object({
+  messages_before: z.number().nonnegative(),
+  messages_after: z.number().nonnegative(),
+  tokens_saved: z.number().nonnegative(),
+});
+
+// ─── Run Warning Event ───────────────────────────────────────
+
+export const RunWarningPayloadSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  context: z.record(z.unknown()).optional(),
+});
+
+// ─── MCP Tools Refreshed Event ───────────────────────────────
+
+export const McpToolsRefreshedPayloadSchema = z.object({
+  server: z.string(),
+  tool_count: z.number().nonnegative(),
+  added: z.array(z.string()).default([]),
+  removed: z.array(z.string()).default([]),
+});
+
 /**
  * Event type enum
  */
@@ -222,6 +263,8 @@ export const EventTypeSchema = z.enum([
   'run.completed',
   'run.failed',
   'run.resumed',
+  'run.compacted',
+  'run.warning',
   'step.started',
   'step.completed',
   'step.retried',
@@ -231,6 +274,9 @@ export const EventTypeSchema = z.enum([
   'tool.result',
   'tool.blocked',
   'tool.requires_approval',
+  'tool.batch.started',
+  'tool.batch.completed',
+  'mcp.tools.refreshed',
   'message.task',
   'message.proposal',
   'message.decision',
@@ -407,6 +453,43 @@ export const MessageStatusEventSchema = BaseEventSchema.extend({
 
 export type MessageStatusEvent = z.infer<typeof MessageStatusEventSchema>;
 
+// ─── New P0 Events ───────────────────────────────────────────
+
+export const ToolBatchStartedEventSchema = BaseEventSchema.extend({
+  type: z.literal('tool.batch.started'),
+  payload: ToolBatchStartedPayloadSchema,
+});
+
+export type ToolBatchStartedEvent = z.infer<typeof ToolBatchStartedEventSchema>;
+
+export const ToolBatchCompletedEventSchema = BaseEventSchema.extend({
+  type: z.literal('tool.batch.completed'),
+  payload: ToolBatchCompletedPayloadSchema,
+});
+
+export type ToolBatchCompletedEvent = z.infer<typeof ToolBatchCompletedEventSchema>;
+
+export const RunCompactedEventSchema = BaseEventSchema.extend({
+  type: z.literal('run.compacted'),
+  payload: RunCompactedPayloadSchema,
+});
+
+export type RunCompactedEvent = z.infer<typeof RunCompactedEventSchema>;
+
+export const RunWarningEventSchema = BaseEventSchema.extend({
+  type: z.literal('run.warning'),
+  payload: RunWarningPayloadSchema,
+});
+
+export type RunWarningEvent = z.infer<typeof RunWarningEventSchema>;
+
+export const McpToolsRefreshedEventSchema = BaseEventSchema.extend({
+  type: z.literal('mcp.tools.refreshed'),
+  payload: McpToolsRefreshedPayloadSchema,
+});
+
+export type McpToolsRefreshedEvent = z.infer<typeof McpToolsRefreshedEventSchema>;
+
 /**
  * Union of all event schemas
  */
@@ -415,15 +498,20 @@ export const EventSchema = z.discriminatedUnion('type', [
   RunCompletedEventSchema,
   RunFailedEventSchema,
   RunResumedEventSchema,
+  RunCompactedEventSchema,
+  RunWarningEventSchema,
   ToolCalledEventSchema,
   ToolResultEventSchema,
   ToolBlockedEventSchema,
   ToolRequiresApprovalEventSchema,
+  ToolBatchStartedEventSchema,
+  ToolBatchCompletedEventSchema,
   StepStartedEventSchema,
   StepCompletedEventSchema,
   StepRetriedEventSchema,
   LLMCalledEventSchema,
   LLMTokenEventSchema,
+  McpToolsRefreshedEventSchema,
   MessageTaskEventSchema,
   MessageProposalEventSchema,
   MessageDecisionEventSchema,
