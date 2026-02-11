@@ -10,6 +10,8 @@
  * - Graceful shutdown
  */
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import { createRunsRouter } from './api/runs.js';
@@ -302,8 +304,22 @@ export function createServer(config: Partial<ServerConfig> = {}): ServerInstance
   };
 }
 
+function resolveModulePath(entry: string): string {
+  if (entry.startsWith('file://')) {
+    return fileURLToPath(entry);
+  }
+  return path.resolve(entry);
+}
+
 // Main entry point when run directly
-const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+const isMainModule = (() => {
+  const entry = process.argv[1];
+  if (!entry) {
+    return false;
+  }
+  const currentModulePath = fileURLToPath(import.meta.url);
+  return resolveModulePath(entry) === currentModulePath;
+})();
 
 if (isMainModule) {
   const port = parseInt(process.env['PORT'] ?? '3000');

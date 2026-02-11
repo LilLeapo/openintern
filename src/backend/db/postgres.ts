@@ -19,6 +19,8 @@ const DEFAULT_POSTGRES_OPTIONS: Required<Omit<PostgresOptions, 'connectionString
 
 let sharedPool: Pool | null = null;
 let migrationPromise: Promise<void> | null = null;
+const MIGRATION_LOCK_NAMESPACE = 2026;
+const MIGRATION_LOCK_KEY = 210;
 
 function resolveConnectionString(
   options: PostgresOptions,
@@ -70,12 +72,26 @@ export async function runPostgresMigrations(pool: Pool): Promise<void> {
 
   migrationPromise = (async () => {
     const client = await pool.connect();
+    await client.query('SELECT pg_advisory_lock($1, $2)', [
+      MIGRATION_LOCK_NAMESPACE,
+      MIGRATION_LOCK_KEY,
+    ]);
     try {
       for (const statement of POSTGRES_SCHEMA_STATEMENTS) {
         await client.query(statement);
       }
       logger.info('Postgres schema is ready');
     } finally {
+      try {
+        await client.query('SELECT pg_advisory_unlock($1, $2)', [
+          MIGRATION_LOCK_NAMESPACE,
+          MIGRATION_LOCK_KEY,
+        ]);
+      } catch (unlockError) {
+        logger.warn('Failed to release postgres migration lock', {
+          error: unlockError instanceof Error ? unlockError.message : String(unlockError),
+        });
+      }
       client.release();
     }
   })();
