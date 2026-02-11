@@ -1,277 +1,324 @@
-# OpenIntern Agent Runtime
+# OpenIntern
 
-TypeScript 后端（含 Agent Runtime）+ Web UI + Python MCP Skills 的多租户 Agent 系统。
+一个可运行的多租户 Agent Runtime 项目：TypeScript 后端 + React Web UI + 可选 Python MCP Server。  
+代码当前重点是「可追踪的 run 执行链路 + Postgres 持久化 + 角色编排基础能力」。
 
-当前实现已经切换为 **Postgres 持久化**：
-- Run、Event/Trace、Checkpoint、Memory 全部落库
-- Memory 支持 `pgvector` + Postgres FTS 混合检索
-- API 通过 `org_id / user_id / project_id(optional)` 做 scope 隔离
+## 功能总览
 
-## 1. 核心能力
+- 多租户隔离
+  - 每个请求按 `org_id / user_id / project_id(optional)` 做数据隔离（Header 优先）。
+- Run 生命周期
+  - 创建、排队、执行、查询、分页、取消。
+- 事件追踪（Trace）
+  - 事件落库（`events`）+ SSE 实时推送（`/api/runs/:run_id/stream`）。
+- 运行时记忆系统（Postgres）
+  - `core / episodic / archival` 三层持久记忆；
+  - `pgvector` + Postgres FTS 混合检索；
+  - step 级 checkpoint（`checkpoints`）用于恢复基础。
+- 角色编排（Phase 0~3 基础）
+  - 角色/群组/成员管理；
+  - 群组 run 走串行编排器（`SerialOrchestrator`）；
+  - 黑板（Blackboard）读写接口与前端页面。
+- 工具与策略
+  - 内置工具：`memory_search` / `memory_get` / `memory_write` / `read_file` / `export_trace`；
+  - 可选 MCP 工具接入（stdio）；
+  - `ToolPolicy` 已支持 allow / block 规则（高风险默认阻断）。
+- 使用入口完整
+  - Backend API
+  - Web（Chat / Runs / Trace / Blackboard）
+  - CLI（`agent dev/run/tail/export/skills/doctor`）
 
-- 多租户运行上下文
-  - 每次请求按 `org_id / user_id / project_id` 进行数据隔离
-- Run 执行入口
-  - `POST /api/runs` 创建 run 并进入队列执行
-- Event/Trace 溯源
-  - 所有 step、LLM 调用、工具调用写入 `events`
-  - 支持历史拉取 + SSE 实时流
-- Checkpoint 恢复基础
-  - 每 step 保存 working_state 到 `checkpoints`
-  - 记录 `agent_id`，为多 Agent 并行预留
-- Memory Service（核心）
-  - 四层模型：`core` / `working(在 checkpoint)` / `episodic` / `archival`
-  - `memory_search`（向量+FTS）、`memory_get`、`memory_write`
-- Tool Router
-  - TS 内置工具（`memory_*`、`read_file`、`export_trace`）
-  - 可选接入 Python MCP tools
-
-## 2. 架构概览
+## 架构
 
 ```text
-Web UI (React)
+Web UI (React + Vite)
   -> REST + SSE
-Backend (Express + Run Queue + Agent Runtime)
-  -> Postgres (runs/events/checkpoints/memories/memory_chunks)
-  -> Optional MCP (python stdio)
+
+Backend (Express + RunQueue + Runtime Executor)
+  -> PostgreSQL (runs/events/checkpoints/memories/memory_chunks/roles/groups/skills...)
+  -> Optional MCP (Python stdio JSON-RPC)
 ```
 
-单 Agent MVP 循环：
-1. `step.started`
-2. `memory_search`（按 scope）
-3. 组装上下文（system + history summary + memory snippets）
-4. 调用模型
-5. 若 tool_call -> ToolRouter 执行并写 `tool.called/tool.result`
-6. 写 checkpoint
-7. `step.completed`
-8. 结束时 `run.completed` / `run.failed`
+执行主链路（单 agent）：
+1. `POST /api/runs` 创建 run（pending）并入队
+2. 队列串行执行 run（running）
+3. Agent step 循环：`step.started -> llm.called -> tool.called/tool.result -> step.completed`
+4. 每 step 写 checkpoint
+5. 结束写 `run.completed` 或 `run.failed`
+6. 事件同时落库并通过 SSE 推送
 
-## 3. 技术栈
+执行主链路（group run）：
+1. `POST /api/groups/:group_id/runs`
+2. Runtime 根据 group 成员创建多角色 runner
+3. 串行编排（非 lead -> lead 汇总）
+4. lead 产出 `message.decision`，run 结束后自动生成 episodic 黑板记忆
 
-- Backend: Node.js + TypeScript + Express
-- Runtime Storage: PostgreSQL + pgvector + FTS
+## 技术栈
+
+- Backend: Node.js + TypeScript + Express + pg
+- Storage: PostgreSQL + pgvector + FTS
 - Frontend: React + TypeScript + Vite
-- MCP Skills: Python（stdio JSON-RPC）
+- MCP: Python（stdio 协议）
+- Test: Vitest + Playwright + pytest
 
-## 4. 快速开始
+## 快速开始
 
-### 4.1 前置要求
+### 1) 前置要求
 
 - Node.js >= 20
 - pnpm >= 8
-- Python >= 3.9（如果要用 MCP）
-- PostgreSQL >= 15（建议）并可安装 `pgvector`
+- PostgreSQL >= 15（需 `vector` 扩展）
+- Python >= 3.9（仅 MCP 需要）
 
-### 4.2 安装依赖
+### 2) 安装依赖
 
 ```bash
+# 根目录（backend + cli）
 pnpm install
+
+# web
 pnpm --dir web install
 
+# python MCP（可选）
 cd python
 pip3 install -e .
 cd ..
 ```
 
-### 4.3 配置数据库
+### 3) 准备数据库
 
-必须提供 `DATABASE_URL`。
+你需要一个可连接的 Postgres，并确保 `DATABASE_URL` 对应用户有权限创建扩展（至少首次迁移时需要 `CREATE EXTENSION vector/pgcrypto`）。
 
 ```bash
-export DATABASE_URL='postgres://postgres:postgres@localhost:5432/openintern'
+export DATABASE_URL='postgres://openintern:openintern@127.0.0.1:5432/openintern'
 ```
 
-首次启动时后端会自动执行 schema 初始化（含 extension/table/index）。
+可选：使用仓库示例 compose（见 `docker-compose.example.yml`）。
 
-### 4.4 启动
+首次启动后端时会自动执行幂等迁移（表、索引、扩展）。
 
-后端：
+### 4) 启动服务
+
+后端（方式一）：
+
 ```bash
 pnpm cli dev
 ```
 
-Web：
+后端（方式二，直接运行 server）：
+
+```bash
+pnpm exec tsx src/backend/server.ts
+```
+
+前端：
+
 ```bash
 pnpm --dir web dev
 ```
 
-默认后端地址：`http://localhost:3000`
+默认地址：
+- Backend: `http://localhost:3000`
+- Web: `http://localhost:5173`
 
-## 5. 多租户 Scope 约定
+## 多租户 Scope 约定
 
-所有 API 请求都需要 scope（至少 org/user）：
-- Header 方式（推荐）
-  - `x-org-id`
-  - `x-user-id`
-  - `x-project-id`（可选）
-- Body/Query 方式也支持（用于兼容）
+推荐通过 Header 传递：
 
-CLI 默认会注入：
+- `x-org-id`（必填）
+- `x-user-id`（必填）
+- `x-project-id`（可选）
+
+Body / Query 也支持（兼容场景）。  
+CLI 默认 scope：
 - `AGENT_ORG_ID`（默认 `org_default`）
 - `AGENT_USER_ID`（默认 `user_default`）
 - `AGENT_PROJECT_ID`（可选）
 
-## 6. API
+## API 概览
 
-### 6.1 创建 Run
+### Runs
 
-`POST /api/runs`
+- `POST /api/runs`
+- `GET /api/runs/:run_id`
+- `GET /api/sessions/:session_key/runs?page&limit`
+- `GET /api/runs/:run_id/events?cursor&limit&type`
+- `GET /api/runs/:run_id/stream`（SSE）
+- `POST /api/runs/:run_id/cancel`
 
-请求体：
-```json
-{
-  "org_id": "org_demo",
-  "user_id": "user_demo",
-  "project_id": "proj_demo",
-  "session_key": "s_demo",
-  "input": "帮我总结今天的工作",
-  "agent_id": "main"
-}
-```
+### Roles / Groups / Blackboard / Skills
 
-响应：
-```json
-{
-  "run_id": "run_xxx",
-  "status": "pending",
-  "created_at": "2026-02-09T00:00:00.000Z"
-}
-```
+- Roles
+  - `POST /api/roles`
+  - `GET /api/roles`
+  - `GET /api/roles/:role_id`
+- Groups
+  - `POST /api/groups`
+  - `GET /api/groups`
+  - `GET /api/groups/:group_id`
+  - `POST /api/groups/:group_id/members`
+  - `GET /api/groups/:group_id/members`
+  - `POST /api/groups/:group_id/runs`
+- Blackboard
+  - `GET /api/groups/:groupId/blackboard`
+  - `GET /api/groups/:groupId/blackboard/:memoryId`
+  - `POST /api/groups/:groupId/blackboard`
+- Skills
+  - `POST /api/skills`
+  - `GET /api/skills`
+  - `GET /api/skills/:skill_id`
+  - `DELETE /api/skills/:skill_id`
 
-### 6.2 查询 Run
+### 事件类型（当前主用）
 
-`GET /api/runs/:run_id`
+- `run.started / run.completed / run.failed`
+- `step.started / step.completed`
+- `llm.called / llm.token`
+- `tool.called / tool.result / tool.blocked`
+- `message.task / message.proposal / message.decision / message.evidence / message.status`（编排扩展）
 
-### 6.3 拉取事件历史
+## CLI 使用
 
-`GET /api/runs/:run_id/events?cursor&limit`
-
-响应包含：
-- `events`
-- `total`（本页条数）
-- `next_cursor`（下一页游标）
-
-### 6.4 SSE 实时事件
-
-`GET /api/runs/:run_id/stream`
-
-事件类型：
-- `run.started`
-- `step.started`
-- `llm.called`
-- `tool.called`
-- `tool.result`
-- `step.completed`
-- `run.completed`
-- `run.failed`
-
-### 6.5 取消 Run
-
-`POST /api/runs/:run_id/cancel`
-
-仅 `pending` 可取消。
-
-## 7. Memory 接口（运行时工具）
-
-运行时内置工具接口：
-
-- `memory_search(query, scope, top_k, filters)`
-  - 返回：`[{ id, snippet, score, type }]`
-  - 不返回全文
-- `memory_get(id)`
-  - 返回：`{ text, metadata, ... }`
-- `memory_write(type, scope, text, metadata)`
-  - 写入 `memories` + 自动分块写入 `memory_chunks`
-
-检索策略：
-- 向量检索（pgvector cosine）
-- FTS 检索（`to_tsvector/plainto_tsquery`）
-- 融合打分去重后返回 topK
-
-## 8. 数据模型（Postgres）
-
-最小核心表：
-- `runs(id, org_id, user_id, project_id, session_key, status, ...)`
-- `events(id bigserial, run_id, ts, agent_id, step_id, type, payload jsonb, ...)`
-- `checkpoints(id bigserial, run_id, agent_id, step_id, state jsonb, created_at)`
-- `memories(id uuid, org_id, user_id, project_id, type, text, metadata jsonb, importance, ...)`
-- `memory_chunks(id uuid, memory_id, org_id, user_id, project_id, chunk_text, embedding vector(256), search_tsv, ...)`
-
-对应实现文件：
-- `src/backend/db/schema.ts`
-
-## 9. CLI 使用
-
-创建 run：
 ```bash
+# 初始化配置
+pnpm cli init
+
+# 启动后端开发服务
+pnpm cli dev
+
+# 发起 run
 pnpm cli run "帮我写一个 TS 函数" --session demo
-```
 
-流式查看：
-```bash
+# 流式观察
 pnpm cli run "解释这段代码" --stream
-# 或
 pnpm cli tail run_xxx
+
+# 导出 trace
+pnpm cli export run_xxx --format json
 ```
 
-切换 scope：
-```bash
-AGENT_ORG_ID=org_a AGENT_USER_ID=user_a pnpm cli run "hello"
-```
+## Web 页面
 
-## 10. 开发与测试
+- `/` Chat
+- `/runs` 历史 run 列表
+- `/trace/:runId` run 轨迹
+- `/blackboard/:groupId` 群组黑板
+
+## 开发与测试
+
+### 基础检查
 
 ```bash
-# 后端类型检查
 pnpm typecheck
-
-# 前端类型检查
 pnpm --dir web typecheck
-
-# 后端测试
-pnpm exec vitest run
-
-# 前端测试
-pnpm --dir web exec vitest run
+pnpm lint
+pnpm --dir web lint
 ```
 
-说明：
-- 与 Postgres 强绑定的 API 集成测试在缺少 `DATABASE_URL` 时会跳过。
+### 后端测试（含集成）
 
-## 11. 目录
+> 依赖 `DATABASE_URL`。未提供时，部分 Postgres 集成用例会 skip。
+
+```bash
+export DATABASE_URL='postgres://openintern:openintern@127.0.0.1:5432/openintern'
+pnpm exec vitest run
+```
+
+### 前端测试
+
+```bash
+pnpm --dir web test
+```
+
+### Web E2E（Playwright）
+
+首次需要安装浏览器：
+
+```bash
+pnpm --dir web exec playwright install chromium
+```
+
+执行 e2e：
+
+```bash
+export DATABASE_URL='postgres://openintern:openintern@127.0.0.1:5432/openintern'
+pnpm --dir web test:e2e
+```
+
+### Python MCP 测试（可选）
+
+```bash
+cd python
+pytest
+```
+
+## 配置说明
+
+### 配置文件
+
+- `agent.config.json`（`agent init` 可生成）
+- 优先级：配置文件 < 环境变量 < CLI 参数 < API 请求参数
+
+### 常用环境变量
+
+- `DATABASE_URL`
+- `PORT`
+- `DATA_DIR`
+- `LLM_PROVIDER` / `LLM_MODEL` / `LLM_API_KEY`
+- `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+- `VITE_API_PROXY_TARGET`（web dev 代理）
+- `VITE_ORG_ID` / `VITE_USER_ID` / `VITE_PROJECT_ID`
+
+## 项目结构
 
 ```text
 src/
   backend/
-    api/
-    db/
-    runtime/
-    queue/
-    agent/
-  cli/
-  types/
-web/
-python/
+    api/        # HTTP routes
+    db/         # Postgres pool + schema migration
+    runtime/    # runner/orchestrator/tool router/memory service
+    queue/      # serial run queue
+    agent/      # LLM/MCP client adapters
+  cli/          # agent command line
+  types/        # shared zod schemas / types
+web/            # React frontend + Playwright e2e
+python/         # optional MCP server
 ```
 
-## 12. 常见问题
+## 已知限制（按当前实现）
 
-### 启动时报 DATABASE_URL 缺失
+- `runs.group_id`、`events.group_id/message_type` 列已在 schema 中预留，但仓储层尚未完全贯通读写。
+- `tool.requires_approval` 事件类型已定义，审批闭环（approve/reject）接口尚未落地。
+- Web Trace 当前主要展示 run/step/llm/tool 事件，结构化 message 事件可视化还较基础。
 
-请设置：
+## 常见问题
+
+### 启动时报 `DATABASE_URL is required`
+
+设置数据库连接：
+
 ```bash
-export DATABASE_URL='postgres://postgres:postgres@localhost:5432/openintern'
+export DATABASE_URL='postgres://openintern:openintern@127.0.0.1:5432/openintern'
 ```
+
+### `CREATE EXTENSION vector` 权限错误
+
+用于迁移的数据库用户需要能创建扩展，或由 DBA 预先安装 `vector`、`pgcrypto`。
 
 ### SSE 返回 400/404
 
-通常是 scope 不匹配（org/user/project 与创建 run 时不同）。
+通常是 scope 不匹配：查询 run 时的 `org/user/project` 与创建 run 时不一致。
 
 ### MCP 工具不可用
 
-确认 Python 依赖已安装：
+确认安装了 Python 包并在 `agent dev` 启用 MCP：
+
 ```bash
 cd python && pip3 install -e .
+pnpm cli dev --mcp-stdio
 ```
 
-并用 `pnpm cli dev --mcp-stdio` 启动。
+## 安全提示
+
+- 不要将真实 API Key 提交到仓库。
+- 建议通过环境变量注入密钥，避免明文写入配置文件。
