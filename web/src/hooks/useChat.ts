@@ -6,6 +6,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { apiClient } from '../api/client';
 import { useSSE } from './useSSE';
 import type { ChatMessage } from '../types/events';
+import type { RunLLMConfig } from '../api/client';
 
 interface ActiveRunState {
   runId: string;
@@ -42,7 +43,7 @@ function updateSessionMessages(
   };
 }
 
-export function useChat(sessionKey: string): UseChatResult {
+export function useChat(sessionKey: string, llmConfig?: RunLLMConfig): UseChatResult {
   const [messagesBySession, setMessagesBySession] = useState<MessageMap>({});
   const [latestRunBySession, setLatestRunBySession] = useState<RunIdMap>({});
   const [errorBySession, setErrorBySession] = useState<ErrorMap>({});
@@ -205,7 +206,7 @@ export function useChat(sessionKey: string): UseChatResult {
       setErrorBySession(prev => ({ ...prev, [sessionKey]: null }));
 
       try {
-        const response = await apiClient.createRun(sessionKey, input);
+        const response = await apiClient.createRun(sessionKey, input, llmConfig);
         const nextRun = { runId: response.run_id, sessionKey };
         setActiveRun(nextRun);
         setLatestRunBySession(prev => ({ ...prev, [sessionKey]: response.run_id }));
@@ -216,7 +217,7 @@ export function useChat(sessionKey: string): UseChatResult {
         }));
       }
     },
-    [sessionKey],
+    [sessionKey, llmConfig],
   );
 
   // Reset streaming state when runId changes

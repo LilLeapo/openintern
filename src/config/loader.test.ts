@@ -23,6 +23,7 @@ const ENV_KEYS = [
   'LLM_PROVIDER', 'LLM_MODEL', 'LLM_BASE_URL', 'LLM_API_KEY',
   'LLM_TEMPERATURE', 'LLM_MAX_TOKENS',
   'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+  'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL',
   'PORT', 'DATA_DIR',
 ];
 
@@ -114,6 +115,17 @@ describe('loadConfig', () => {
     expect(config.llm?.provider).toBe('anthropic');
     expect(config.llm?.apiKey).toBe('sk-ant-test');
     expect(config.llm?.model).toBe('claude-sonnet-4-20250514');
+  });
+
+  it('should support Anthropic compatibility base URL env vars', async () => {
+    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test';
+    process.env['ANTHROPIC_BASE_URL'] = 'https://api.minimaxi.com/anthropic';
+
+    const config = await loadConfig('/tmp/test');
+
+    expect(config.llm?.provider).toBe('anthropic');
+    expect(config.llm?.apiKey).toBe('sk-ant-test');
+    expect(config.llm?.baseUrl).toBe('https://api.minimaxi.com/anthropic');
   });
 
   it('should let env vars override file config', async () => {

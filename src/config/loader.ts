@@ -83,8 +83,19 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
   const envApiKey = process.env['LLM_API_KEY'];
   const envTemp = process.env['LLM_TEMPERATURE'];
   const envMaxTokens = process.env['LLM_MAX_TOKENS'];
+  const envOpenAIBaseUrl = process.env['OPENAI_BASE_URL'];
+  const envAnthropicBaseUrl = process.env['ANTHROPIC_BASE_URL'];
 
-  if (envProvider || envModel || envBaseUrl || envApiKey || envTemp || envMaxTokens) {
+  if (
+    envProvider ||
+    envModel ||
+    envBaseUrl ||
+    envApiKey ||
+    envTemp ||
+    envMaxTokens ||
+    envOpenAIBaseUrl ||
+    envAnthropicBaseUrl
+  ) {
     if (!result.llm) result.llm = {};
     if (envProvider) result.llm.provider = envProvider as 'openai' | 'anthropic' | 'mock';
     if (envModel) result.llm.model = envModel;
@@ -108,6 +119,32 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
         result.llm.apiKey = anthropicKey;
         if (!result.llm.provider) result.llm.provider = 'anthropic';
         if (!result.llm.model) result.llm.model = 'claude-sonnet-4-20250514';
+      }
+    }
+  }
+
+  // Compatibility base URL env vars when LLM_BASE_URL is not explicitly set.
+  if (!envBaseUrl) {
+    const provider = result.llm?.provider;
+    if (provider === 'openai' && envOpenAIBaseUrl) {
+      if (!result.llm) result.llm = {};
+      result.llm.baseUrl = envOpenAIBaseUrl;
+    } else if (provider === 'anthropic' && envAnthropicBaseUrl) {
+      if (!result.llm) result.llm = {};
+      result.llm.baseUrl = envAnthropicBaseUrl;
+    } else if (!provider && envAnthropicBaseUrl && !envOpenAIBaseUrl) {
+      if (!result.llm) result.llm = {};
+      result.llm.provider = 'anthropic';
+      result.llm.baseUrl = envAnthropicBaseUrl;
+      if (!result.llm.model) {
+        result.llm.model = 'claude-sonnet-4-20250514';
+      }
+    } else if (!provider && envOpenAIBaseUrl && !envAnthropicBaseUrl) {
+      if (!result.llm) result.llm = {};
+      result.llm.provider = 'openai';
+      result.llm.baseUrl = envOpenAIBaseUrl;
+      if (!result.llm.model) {
+        result.llm.model = 'gpt-4o';
       }
     }
   }

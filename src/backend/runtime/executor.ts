@@ -218,10 +218,23 @@ export function createRuntimeExecutor(
       projectId: run.project_id ?? null,
     };
 
+    const selectedProvider = run.llm_config?.provider ?? config.defaultModelConfig.provider;
+    const selectedModel = run.llm_config?.model ?? config.defaultModelConfig.model;
+
     const modelConfig: LLMConfig = {
-      provider: run.llm_config?.provider ?? config.defaultModelConfig.provider,
-      model: run.llm_config?.model ?? config.defaultModelConfig.model,
+      provider: selectedProvider,
+      model: selectedModel,
     };
+
+    // Reuse default transport credentials only when provider matches.
+    if (selectedProvider === config.defaultModelConfig.provider) {
+      if (config.defaultModelConfig.apiKey) {
+        modelConfig.apiKey = config.defaultModelConfig.apiKey;
+      }
+      if (config.defaultModelConfig.baseUrl) {
+        modelConfig.baseUrl = config.defaultModelConfig.baseUrl;
+      }
+    }
     const temperature = run.llm_config?.temperature ?? config.defaultModelConfig.temperature;
     if (temperature !== undefined) {
       modelConfig.temperature = temperature;

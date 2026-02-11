@@ -1,10 +1,11 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChatWindow } from '../components/Chat';
 import { useChat } from '../hooks/useChat';
 import { useRuns } from '../hooks/useRuns';
 import { AppShell } from '../components/Layout/AppShell';
 import { useAppPreferences } from '../context/AppPreferencesContext';
+import type { RunLLMConfig } from '../api/client';
 import styles from './ChatPage.module.css';
 
 const QUICK_PROMPTS = [
@@ -14,12 +15,70 @@ const QUICK_PROMPTS = [
   'Generate a concise status update for stakeholders.',
 ];
 
+const PROVIDER_STORAGE_KEY = 'openintern.chat.provider';
+const MODEL_STORAGE_KEY = 'openintern.chat.model';
+
+const MODEL_OPTIONS: Record<'openai' | 'anthropic' | 'mock', string[]> = {
+  openai: ['gpt-4o', 'gpt-4o-mini'],
+  anthropic: ['MiniMax-M2.1', 'claude-sonnet-4-20250514'],
+  mock: ['mock-model'],
+};
+
+function readStoredProvider(): 'openai' | 'anthropic' | 'mock' {
+  if (typeof window === 'undefined') {
+    return 'anthropic';
+  }
+  const value = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
+  if (value === 'openai' || value === 'anthropic' || value === 'mock') {
+    return value;
+  }
+  return 'anthropic';
+}
+
+function readStoredModel(provider: 'openai' | 'anthropic' | 'mock'): string {
+  if (typeof window === 'undefined') {
+    return MODEL_OPTIONS[provider][0]!;
+  }
+  const value = window.localStorage.getItem(MODEL_STORAGE_KEY);
+  const options = MODEL_OPTIONS[provider];
+  if (value && options.includes(value)) {
+    return value;
+  }
+  return options[0]!;
+}
+
 export function ChatPage() {
   const { sessionKey, sessionHistory, setSessionKey, createSession, removeSession } =
     useAppPreferences();
   const navigate = useNavigate();
+  const [provider, setProvider] = useState<'openai' | 'anthropic' | 'mock'>(readStoredProvider);
+  const [model, setModel] = useState<string>(() => readStoredModel(readStoredProvider()));
+
+  useEffect(() => {
+    const options = MODEL_OPTIONS[provider];
+    if (!options.includes(model)) {
+      setModel(options[0]!);
+    }
+  }, [provider, model]);
+
+  useEffect(() => {
+    window.localStorage.setItem(PROVIDER_STORAGE_KEY, provider);
+  }, [provider]);
+
+  useEffect(() => {
+    window.localStorage.setItem(MODEL_STORAGE_KEY, model);
+  }, [model]);
+
+  const llmConfig = useMemo<RunLLMConfig>(
+    () => ({
+      provider,
+      model,
+    }),
+    [provider, model]
+  );
+
   const { messages, isRunning, error, sendMessage, clearMessages, latestRunId } =
-    useChat(sessionKey);
+    useChat(sessionKey, llmConfig);
   const {
     runs: sessionRuns,
     loading: runsLoading,
@@ -130,6 +189,38 @@ export function ChatPage() {
                   </button>
                 </div>
               ))}
+            </div>
+          </div>
+          <div className={styles.panelBlock}>
+            <h3>Model</h3>
+            <p>Choose provider and model per run. API credentials stay server-side.</p>
+            <div className={styles.modelControls}>
+              <label className={styles.modelField}>
+                <span>Provider</span>
+                <select
+                  value={provider}
+                  onChange={event => setProvider(event.target.value as 'openai' | 'anthropic' | 'mock')}
+                  disabled={isRunning}
+                >
+                  <option value="anthropic">anthropic</option>
+                  <option value="openai">openai</option>
+                  <option value="mock">mock</option>
+                </select>
+              </label>
+              <label className={styles.modelField}>
+                <span>Model</span>
+                <select
+                  value={model}
+                  onChange={event => setModel(event.target.value)}
+                  disabled={isRunning}
+                >
+                  {MODEL_OPTIONS[provider].map(option => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
           </div>
           <div className={styles.panelBlock}>

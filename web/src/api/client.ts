@@ -24,6 +24,13 @@ interface ScopeConfig {
   projectId?: string;
 }
 
+export interface RunLLMConfig {
+  provider?: 'openai' | 'anthropic' | 'mock';
+  model?: string;
+  temperature?: number;
+  max_tokens?: number;
+}
+
 export class APIClient {
   private baseURL: string;
   private scope: ScopeConfig;
@@ -65,7 +72,11 @@ export class APIClient {
   /**
    * Create a new run
    */
-  async createRun(sessionKey: string, input: string): Promise<CreateRunResponse> {
+  async createRun(
+    sessionKey: string,
+    input: string,
+    llmConfig?: RunLLMConfig
+  ): Promise<CreateRunResponse> {
     const response = await fetch(`${this.baseURL}/api/runs`, {
       method: 'POST',
       headers: {
@@ -78,6 +89,7 @@ export class APIClient {
         ...(this.scope.projectId ? { project_id: this.scope.projectId } : {}),
         session_key: sessionKey,
         input,
+        ...(llmConfig ? { llm_config: llmConfig } : {}),
       }),
     });
 
