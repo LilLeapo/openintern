@@ -1,42 +1,54 @@
-/**
- * TracePage - run trace visualization page
- */
-
-import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { TraceView } from '../components/Trace';
+import { useState, useEffect, useCallback } from 'react';
+import { useParams } from 'react-router-dom';
+import { TraceView, EventList } from '../components/Trace';
 import { apiClient } from '../api/client';
 import { useSSE } from '../hooks/useSSE';
 import type { Event } from '../types/events';
-import styles from './Pages.module.css';
+import { AppShell } from '../components/Layout/AppShell';
+import styles from './TracePage.module.css';
+
+const EVENT_FILTERS: Array<Event['type'] | 'all'> = [
+  'all',
+  'run.started',
+  'step.started',
+  'step.completed',
+  'llm.called',
+  'llm.token',
+  'tool.called',
+  'tool.result',
+  'run.completed',
+  'run.failed',
+];
 
 export function TracePage() {
   const { runId } = useParams<{ runId: string }>();
-  const navigate = useNavigate();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [viewMode, setViewMode] = useState<'steps' | 'events'>('steps');
+  const [eventFilter, setEventFilter] = useState<Event['type'] | 'all'>('all');
 
   // SSE for real-time updates
-  const { events: sseEvents } = useSSE(runId ?? null);
+  const { events: sseEvents, isConnected, error: sseError } = useSSE(runId ?? null);
 
   // Load initial events
-  useEffect(() => {
+  const loadEvents = useCallback(async () => {
     if (!runId) return;
-
-    const loadEvents = async () => {
-      try {
-        const data = await apiClient.getEvents(runId);
-        setEvents(data);
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error('Failed to load'));
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void loadEvents();
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiClient.getEvents(runId);
+      setEvents(data);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('Failed to load'));
+    } finally {
+      setLoading(false);
+    }
   }, [runId]);
+
+  useEffect(() => {
+    void loadEvents();
+  }, [loadEvents]);
 
   // Merge SSE events
   useEffect(() => {
@@ -50,26 +62,135 @@ export function TracePage() {
   }, [sseEvents]);
 
   if (!runId) {
-    return <div className={styles.error}>Run ID is required</div>;
+    return (
+      <AppShell title="Trace Viewer" subtitle="Run details">
+        <div className={styles.errorBox}>Run ID is required.</div>
+      </AppShell>
+    );
   }
 
+  const visibleEvents = eventFilter === 'all'
+    ? events
+    : events.filter(event => event.type === eventFilter);
+
+  const stepCount = new Set(events.map(event => event.step_id)).size;
+  const toolCalls = events.filter(event => event.type === 'tool.called').length;
+  const llmCalls = events.filter(event => event.type === 'llm.called').length;
+  const runStarted = events.find(event => event.type === 'run.started');
+  const runFinished = events.find(
+    event => event.type === 'run.completed' || event.type === 'run.failed',
+  );
+  const durationText = (() => {
+    if (!runStarted) return 'N/A';
+    const endTs = runFinished ? new Date(runFinished.ts).getTime() : Date.now();
+    const startTs = new Date(runStarted.ts).getTime();
+    const elapsed = Math.max(0, endTs - startTs);
+    if (elapsed < 1000) return `${elapsed}ms`;
+    return `${(elapsed / 1000).toFixed(2)}s`;
+  })();
+
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify(visibleEvents, null, 2)], {
+      type: 'application/json',
+    });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `trace-${runId}-${eventFilter}.json`;
+    anchor.click();
+    window.URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className={styles.page}>
-      <header className={styles.header}>
-        <button className={styles.backButton} onClick={() => navigate(-1)}>
-          Back
-        </button>
-        <h1>Run Trace</h1>
-      </header>
-      <main className={styles.main}>
+    <AppShell
+      title={`Trace ${runId}`}
+      subtitle={isConnected ? 'Live stream connected' : 'Awaiting live stream'}
+      actions={
+        <>
+          <button className={styles.pageAction} onClick={() => void loadEvents()}>
+            Reload
+          </button>
+          <button className={styles.pageActionSecondary} onClick={exportJson}>
+            Export JSON
+          </button>
+        </>
+      }
+    >
+      <div className={styles.layout}>
+        <section className={styles.summaryGrid}>
+          <article className={styles.summaryCard}>
+            <span>Total Events</span>
+            <strong>{events.length}</strong>
+          </article>
+          <article className={styles.summaryCard}>
+            <span>Steps</span>
+            <strong>{stepCount}</strong>
+          </article>
+          <article className={styles.summaryCard}>
+            <span>Tool Calls</span>
+            <strong>{toolCalls}</strong>
+          </article>
+          <article className={styles.summaryCard}>
+            <span>LLM Calls</span>
+            <strong>{llmCalls}</strong>
+          </article>
+          <article className={styles.summaryCard}>
+            <span>Elapsed</span>
+            <strong>{durationText}</strong>
+          </article>
+        </section>
+        <section className={styles.controlsCard}>
+          <div className={styles.badges}>
+            <span className={`${styles.badge} ${isConnected ? styles.badgeOk : styles.badgeWarn}`}>
+              {isConnected ? 'Live' : 'Disconnected'}
+            </span>
+            {sseError && <span className={`${styles.badge} ${styles.badgeError}`}>{sseError.message}</span>}
+          </div>
+          <div className={styles.switchGroup}>
+            <button
+              className={`${styles.switchButton} ${viewMode === 'steps' ? styles.switchButtonActive : ''}`}
+              onClick={() => setViewMode('steps')}
+            >
+              Steps
+            </button>
+            <button
+              className={`${styles.switchButton} ${viewMode === 'events' ? styles.switchButtonActive : ''}`}
+              onClick={() => setViewMode('events')}
+            >
+              Raw Events
+            </button>
+          </div>
+          <select
+            className={styles.select}
+            value={eventFilter}
+            onChange={e => setEventFilter(e.target.value as Event['type'] | 'all')}
+            aria-label="Filter events by type"
+          >
+            {EVENT_FILTERS.map(filter => (
+              <option key={filter} value={filter}>
+                {filter}
+              </option>
+            ))}
+          </select>
+        </section>
+        <section className={styles.traceSection}>
         {loading ? (
           <div className={styles.loading}>Loading trace...</div>
         ) : error ? (
-          <div className={styles.error}>{error.message}</div>
+          <div className={styles.errorBox}>{error.message}</div>
         ) : (
-          <TraceView events={events} runId={runId} />
+          <>
+            {viewMode === 'steps' ? (
+              <TraceView events={events} runId={runId} eventFilter={eventFilter} />
+            ) : (
+              <EventList
+                events={visibleEvents}
+              />
+            )}
+          </>
         )}
-      </main>
-    </div>
+        </section>
+      </div>
+    </AppShell>
   );
 }

@@ -2,7 +2,14 @@
  * API Client - handles all REST API calls to the backend
  */
 
-import type { RunMeta, BlackboardMemory } from '../types';
+import type {
+  RunMeta,
+  BlackboardMemory,
+  Group,
+  Role,
+  GroupMember,
+  GroupRunSummary,
+} from '../types';
 import type {
   CreateRunResponse,
   ListRunsResponse,
@@ -42,6 +49,18 @@ export class APIClient {
     };
   }
 
+  private async parseErrorMessage(response: Response, fallback: string): Promise<string> {
+    try {
+      const error = (await response.json()) as {
+        error?: { message?: string };
+        message?: string;
+      };
+      return error.error?.message ?? error.message ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
   /**
    * Create a new run
    */
@@ -62,8 +81,10 @@ export class APIClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new APIError(error.error?.message ?? 'Failed to create run', response.status);
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to create run'),
+        response.status
+      );
     }
 
     return response.json();
@@ -78,8 +99,10 @@ export class APIClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new APIError(error.error?.message ?? 'Failed to get run', response.status);
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get run'),
+        response.status
+      );
     }
 
     return response.json();
@@ -99,8 +122,10 @@ export class APIClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new APIError(error.error?.message ?? 'Failed to list runs', response.status);
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to list runs'),
+        response.status
+      );
     }
 
     return response.json();
@@ -120,8 +145,10 @@ export class APIClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new APIError(error.error?.message ?? 'Failed to get events', response.status);
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get events'),
+        response.status
+      );
     }
 
     const data: GetRunEventsResponse = await response.json();
@@ -138,8 +165,10 @@ export class APIClient {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new APIError(error.error?.message ?? 'Failed to cancel run', response.status);
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to cancel run'),
+        response.status
+      );
     }
   }
 
@@ -153,8 +182,10 @@ export class APIClient {
     );
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new APIError(error.error?.message ?? 'Failed to get blackboard', response.status);
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get blackboard'),
+        response.status
+      );
     }
 
     const data: { memories: BlackboardMemory[] } = await response.json();
@@ -171,8 +202,10 @@ export class APIClient {
     );
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new APIError(error.error?.message ?? 'Failed to get memory', response.status);
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get memory'),
+        response.status
+      );
     }
 
     return response.json();
@@ -204,8 +237,195 @@ export class APIClient {
     );
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new APIError(error.error?.message ?? 'Failed to write to blackboard', response.status);
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to write to blackboard'),
+        response.status
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * List groups
+   */
+  async listGroups(projectId?: string): Promise<Group[]> {
+    const query = new URLSearchParams();
+    if (projectId) {
+      query.set('project_id', projectId);
+    }
+    const queryString = query.toString();
+    const url = `${this.baseURL}/api/groups${queryString ? `?${queryString}` : ''}`;
+    const response = await fetch(url, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to list groups'),
+        response.status
+      );
+    }
+
+    const data = (await response.json()) as { groups: Group[] };
+    return data.groups;
+  }
+
+  /**
+   * List roles
+   */
+  async listRoles(): Promise<Role[]> {
+    const response = await fetch(`${this.baseURL}/api/roles`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to list roles'),
+        response.status
+      );
+    }
+
+    const data = (await response.json()) as { roles: Role[] };
+    return data.roles;
+  }
+
+  /**
+   * Create role
+   */
+  async createRole(body: {
+    name: string;
+    system_prompt: string;
+    description?: string;
+    is_lead?: boolean;
+    allowed_tools?: string[];
+    denied_tools?: string[];
+    style_constraints?: Record<string, unknown>;
+  }): Promise<Role> {
+    const response = await fetch(`${this.baseURL}/api/roles`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to create role'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Create group
+   */
+  async createGroup(body: {
+    name: string;
+    description?: string;
+    project_id?: string | null;
+  }): Promise<Group> {
+    const response = await fetch(`${this.baseURL}/api/groups`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to create group'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * List members in a group
+   */
+  async listGroupMembers(groupId: string): Promise<GroupMember[]> {
+    const response = await fetch(`${this.baseURL}/api/groups/${groupId}/members`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to list group members'),
+        response.status,
+      );
+    }
+
+    const data = (await response.json()) as { members: GroupMember[] };
+    return data.members;
+  }
+
+  /**
+   * Add member to a group
+   */
+  async addGroupMember(
+    groupId: string,
+    body: {
+      role_id: string;
+      ordinal?: number;
+    },
+  ): Promise<GroupMember> {
+    const response = await fetch(`${this.baseURL}/api/groups/${groupId}/members`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to add group member'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Create group run
+   */
+  async createGroupRun(
+    groupId: string,
+    body: {
+      input: string;
+      session_key?: string;
+      llm_config?: {
+        provider?: 'openai' | 'anthropic' | 'mock';
+        model?: string;
+        temperature?: number;
+        max_tokens?: number;
+      };
+    },
+  ): Promise<GroupRunSummary> {
+    const response = await fetch(`${this.baseURL}/api/groups/${groupId}/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to create group run'),
+        response.status,
+      );
     }
 
     return response.json();

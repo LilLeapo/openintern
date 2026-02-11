@@ -1,4 +1,29 @@
-/* Global styles */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+:root {
+  --bg-canvas: #eaf0f8;
+  --bg-panel: #f8fbff;
+  --surface: rgba(255, 255, 255, 0.9);
+  --surface-strong: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --accent: #0f766e;
+  --accent-strong: #115e59;
+  --accent-soft: #ccfbf1;
+  --success: #166534;
+  --success-soft: #dcfce7;
+  --warning: #b45309;
+  --warning-soft: #fef3c7;
+  --danger: #b91c1c;
+  --danger-soft: #fee2e2;
+  --border: #dbe3ee;
+  --border-strong: #c3d0df;
+  --shadow-md: 0 12px 32px rgba(15, 23, 42, 0.09);
+  --shadow-lg: 0 22px 52px rgba(15, 23, 42, 0.14);
+  --radius-md: 14px;
+  --radius-lg: 20px;
+}
 
 *,
 *::before,
@@ -10,20 +35,31 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, sans-serif;
+  min-height: 100%;
+  font-family: 'IBM Plex Sans', 'Avenir Next', 'Segoe UI', sans-serif;
   font-size: 16px;
   line-height: 1.5;
-  color: #1f2937;
-  background: #f9fafb;
+  color: var(--text-primary);
+  background:
+    radial-gradient(circle at 2% 8%, rgba(45, 212, 191, 0.16), transparent 34%),
+    radial-gradient(circle at 92% 10%, rgba(251, 191, 36, 0.18), transparent 30%),
+    linear-gradient(180deg, #eff4fb, #eef2f8);
 }
 
 #root {
   min-height: 100vh;
 }
 
+h1,
+h2,
+h3,
+h4 {
+  font-family: 'Space Grotesk', 'Avenir Next', sans-serif;
+  letter-spacing: -0.015em;
+}
+
 a {
-  color: #3b82f6;
+  color: var(--accent-strong);
   text-decoration: none;
 }
 
@@ -31,6 +67,9 @@ a:hover {
   text-decoration: underline;
 }
 
-button {
-  font-family: inherit;
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }

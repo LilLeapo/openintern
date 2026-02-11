@@ -13,6 +13,9 @@ export interface ChatWindowProps {
   onSend: (message: string) => void;
   isRunning?: boolean;
   error?: Error | null;
+  onClear?: () => void;
+  onOpenRun?: () => void;
+  latestRunId?: string | null;
 }
 
 export function ChatWindow({
@@ -20,6 +23,9 @@ export function ChatWindow({
   onSend,
   isRunning = false,
   error,
+  onClear,
+  onOpenRun,
+  latestRunId,
 }: ChatWindowProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -30,10 +36,35 @@ export function ChatWindow({
 
   return (
     <div className={styles.chatWindow}>
+      <div className={styles.chatToolbar}>
+        <div className={styles.chatToolbarInfo}>
+          <span className={styles.toolbarTitle}>Conversation</span>
+          <span className={styles.toolbarMeta}>{messages.length} messages</span>
+        </div>
+        <div className={styles.chatToolbarActions}>
+          {latestRunId && onOpenRun && (
+            <button className={styles.secondaryButton} onClick={onOpenRun}>
+              Open Last Trace
+            </button>
+          )}
+          {onClear && (
+            <button
+              className={styles.ghostButton}
+              onClick={onClear}
+              disabled={messages.length === 0}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
       <div className={styles.messagesContainer}>
         {messages.length === 0 ? (
           <div className={styles.emptyState}>
             <p>Start a conversation with the Agent</p>
+            <p className={styles.emptyStateHint}>
+              Ask for implementation plans, debugging steps, or run analysis.
+            </p>
           </div>
         ) : (
           messages.map((msg) => (
@@ -41,7 +72,8 @@ export function ChatWindow({
           ))
         )}
         {isRunning && (
-          <div className={styles.typingIndicator}>
+          <div className={styles.typingIndicator} aria-live="polite">
+            <span className={styles.pulsingDot} />
             <span>Agent is thinking...</span>
           </div>
         )}

@@ -1,0 +1,145 @@
+.layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.58rem;
+}
+
+.statCard {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.65rem 0.75rem;
+  background: linear-gradient(165deg, #ffffff, #f8fafc);
+}
+
+.statCard span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.73rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.statCard strong {
+  display: block;
+  margin-top: 0.2rem;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 1.12rem;
+}
+
+.controlsCard {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 9px 20px rgba(15, 23, 42, 0.06);
+  padding: 0.68rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.searchWrap {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.searchInput {
+  width: min(420px, 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.5rem 0.62rem;
+}
+
+.searchInput:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.filters {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.filterButton {
+  border: 1px solid var(--border-strong);
+  background: #ffffff;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 0.3rem 0.64rem;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+
+.filterButtonActive {
+  border-color: #2dd4bf;
+  background: #ccfbf1;
+  color: var(--accent-strong);
+}
+
+.listSection {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+  padding: 0.8rem;
+}
+
+.actionError {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--danger);
+}
+
+.pageAction {
+  border: none;
+  border-radius: 11px;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  font-weight: 600;
+  font-size: 0.82rem;
+  padding: 0.55rem 0.78rem;
+  cursor: pointer;
+}
+
+@media (max-width: 1100px) {
+  .statsGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 780px) {
+  .statsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .searchInput {
+    width: 100%;
+  }
+}
+
+@media (max-width: 500px) {
+  .statsGrid {
+    grid-template-columns: 1fr;
+  }
+}

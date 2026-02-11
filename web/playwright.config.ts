@@ -9,6 +9,7 @@ const backendPort = parseInt(process.env['E2E_BACKEND_PORT'] ?? '3000', 10);
 const frontendPort = parseInt(process.env['E2E_FRONTEND_PORT'] ?? '4173', 10);
 const backendBaseUrl = `http://127.0.0.1:${backendPort}`;
 const frontendBaseUrl = `http://127.0.0.1:${frontendPort}`;
+const mockOnly = process.env['E2E_MOCK_ONLY'] === '1';
 const databaseUrl =
   process.env['DATABASE_URL'] ??
   'postgres://openintern:openintern@127.0.0.1:5432/openintern';
@@ -30,19 +31,23 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: [
-    {
-      command: 'pnpm --dir .. exec tsx src/backend/server.ts',
-      url: `${backendBaseUrl}/health`,
-      cwd: __dirname,
-      timeout: 120_000,
-      reuseExistingServer: !process.env['CI'],
-      env: {
-        ...process.env,
-        PORT: String(backendPort),
-        DATABASE_URL: databaseUrl,
-        DATA_DIR: e2eDataDir,
-      },
-    },
+    ...(!mockOnly
+      ? [
+          {
+            command: 'pnpm --dir .. exec tsx src/backend/server.ts',
+            url: `${backendBaseUrl}/health`,
+            cwd: __dirname,
+            timeout: 120_000,
+            reuseExistingServer: !process.env['CI'],
+            env: {
+              ...process.env,
+              PORT: String(backendPort),
+              DATABASE_URL: databaseUrl,
+              DATA_DIR: e2eDataDir,
+            },
+          },
+        ]
+      : []),
     {
       command: `pnpm dev --host 127.0.0.1 --port ${frontendPort}`,
       url: frontendBaseUrl,
@@ -51,7 +56,7 @@ export default defineConfig({
       reuseExistingServer: !process.env['CI'],
       env: {
         ...process.env,
-        VITE_API_PROXY_TARGET: backendBaseUrl,
+        VITE_API_PROXY_TARGET: mockOnly ? 'http://127.0.0.1:9' : backendBaseUrl,
         VITE_ORG_ID: process.env['E2E_ORG_ID'] ?? 'org_playwright_e2e',
         VITE_USER_ID: process.env['E2E_USER_ID'] ?? 'user_playwright_e2e',
       },

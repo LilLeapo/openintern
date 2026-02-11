@@ -9,11 +9,14 @@ import styles from './Runs.module.css';
 export interface RunsListProps {
   runs: RunMeta[];
   loading?: boolean;
+  error?: Error | null;
   total: number;
   page: number;
   limit?: number;
   onPageChange?: (page: number) => void;
   onRunClick?: (runId: string) => void;
+  onCancelRun?: (runId: string) => void;
+  cancellingRunId?: string | null;
 }
 
 interface PaginationProps {
@@ -49,11 +52,14 @@ function Pagination({ page, totalPages, onPageChange }: PaginationProps) {
 export function RunsList({
   runs,
   loading = false,
+  error = null,
   total,
   page,
   limit = 20,
   onPageChange,
   onRunClick,
+  onCancelRun,
+  cancellingRunId = null,
 }: RunsListProps) {
   const totalPages = Math.ceil(total / limit);
 
@@ -61,6 +67,8 @@ export function RunsList({
     <div className={styles.runsList}>
       {loading ? (
         <div className={styles.loading}>Loading runs...</div>
+      ) : error ? (
+        <div className={styles.error}>{error.message}</div>
       ) : runs.length === 0 ? (
         <div className={styles.empty}>No runs found</div>
       ) : (
@@ -70,7 +78,9 @@ export function RunsList({
               <RunCard
                 key={run.run_id}
                 run={run}
-                onClick={() => onRunClick?.(run.run_id)}
+                onOpenTrace={onRunClick}
+                onCancel={onCancelRun}
+                isCancelling={cancellingRunId === run.run_id}
               />
             ))}
           </div>

@@ -8,16 +8,17 @@ import type { Event } from '../../types/events';
 import styles from './Trace.module.css';
 
 export interface StepCardProps {
+  stepId: string;
   stepNumber: number;
   events: Event[];
 }
 
-export function StepCard({ stepNumber, events }: StepCardProps) {
+export function StepCard({ stepId, stepNumber, events }: StepCardProps) {
   const [expanded, setExpanded] = useState(true);
 
   // Find step events
   const stepCompleted = events.find((e) => e.type === 'step.completed');
-  const llmCalled = events.find((e) => e.type === 'llm.called');
+  const llmCalled = [...events].reverse().find((e) => e.type === 'llm.called');
 
   // Find tool calls and results
   const toolCalls = events.filter((e) => e.type === 'tool.called');
@@ -33,13 +34,22 @@ export function StepCard({ stepNumber, events }: StepCardProps) {
     ? stepCompleted.payload.resultType
     : undefined;
 
+  const resultByParentSpan = new Map<string, Event>();
+  for (const resultEvent of toolResults) {
+    if (resultEvent.type === 'tool.result' && resultEvent.parent_span_id) {
+      resultByParentSpan.set(resultEvent.parent_span_id, resultEvent);
+    }
+  }
+
   return (
     <div className={styles.stepCard}>
-      <div
+      <button
+        type="button"
         className={styles.stepHeader}
         onClick={() => setExpanded(!expanded)}
       >
         <span className={styles.stepNumber}>Step {stepNumber}</span>
+        <span className={styles.stepId}>{stepId}</span>
         {resultType && (
           <span className={`${styles.resultType} ${styles[resultType]}`}>
             {resultType.replace('_', ' ')}
@@ -49,9 +59,9 @@ export function StepCard({ stepNumber, events }: StepCardProps) {
           <span className={styles.duration}>{duration}ms</span>
         )}
         <span className={styles.expandIcon}>
-          {expanded ? '-' : '+'}
+          {expanded ? 'Collapse' : 'Expand'}
         </span>
-      </div>
+      </button>
 
       {expanded && (
         <div className={styles.stepContent}>
@@ -66,7 +76,7 @@ export function StepCard({ stepNumber, events }: StepCardProps) {
           {/* Tool calls */}
           {toolCalls.map((tc, idx) => {
             if (tc.type !== 'tool.called') return null;
-            const result = toolResults[idx];
+            const result = resultByParentSpan.get(tc.span_id) ?? toolResults[idx];
             const resultPayload = result?.type === 'tool.result'
               ? result.payload
               : undefined;

@@ -10,14 +10,25 @@ import styles from './Trace.module.css';
 export interface TraceViewProps {
   events: Event[];
   runId: string;
+  eventFilter?: Event['type'] | 'all';
 }
 
-export function TraceView({ events, runId }: TraceViewProps) {
-  // Group events by step
+function parseStepIndex(stepId: string): number {
+  const numeric = Number.parseInt(stepId.replace('step_', ''), 10);
+  return Number.isNaN(numeric) ? Number.MAX_SAFE_INTEGER : numeric;
+}
+
+export function TraceView({ events, runId, eventFilter = 'all' }: TraceViewProps) {
+  const visibleEvents = useMemo(
+    () => (eventFilter === 'all' ? events : events.filter(event => event.type === eventFilter)),
+    [events, eventFilter],
+  );
+
+  // Group visible events by step
   const stepGroups = useMemo(() => {
     const groups = new Map<string, Event[]>();
 
-    for (const event of events) {
+    for (const event of visibleEvents) {
       const stepId = event.step_id;
       if (!groups.has(stepId)) {
         groups.set(stepId, []);
@@ -26,8 +37,8 @@ export function TraceView({ events, runId }: TraceViewProps) {
     }
 
     return Array.from(groups.entries())
-      .sort(([a], [b]) => a.localeCompare(b));
-  }, [events]);
+      .sort(([a], [b]) => parseStepIndex(a) - parseStepIndex(b));
+  }, [visibleEvents]);
 
   // Find run events
   const runStarted = events.find((e) => e.type === 'run.started');
@@ -56,16 +67,27 @@ export function TraceView({ events, runId }: TraceViewProps) {
       )}
 
       <div className={styles.stepsContainer}>
-        {stepGroups.map(([stepId, stepEvents]) => {
-          const stepNum = parseInt(stepId.replace('step_', ''), 10);
-          return (
-            <StepCard
-              key={stepId}
-              stepNumber={stepNum}
-              events={stepEvents}
-            />
-          );
-        })}
+        {stepGroups.length === 0 ? (
+          <div className={styles.emptySteps}>No events for this filter.</div>
+        ) : (
+          stepGroups.map(([stepId, stepEvents]) => {
+            const firstCompleted = stepEvents.find(
+              event => event.type === 'step.completed',
+            );
+            const stepNum =
+              firstCompleted?.type === 'step.completed'
+                ? firstCompleted.payload.stepNumber
+                : parseStepIndex(stepId);
+            return (
+              <StepCard
+                key={stepId}
+                stepId={stepId}
+                stepNumber={stepNum}
+                events={stepEvents}
+              />
+            );
+          })
+        )}
       </div>
 
       {runCompleted?.type === 'run.completed' && (

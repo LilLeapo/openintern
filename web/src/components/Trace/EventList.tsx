@@ -15,6 +15,10 @@ export function EventList({ events, filter }: EventListProps) {
     ? events.filter((e) => e.type === filter)
     : events;
 
+  if (filteredEvents.length === 0) {
+    return <div className={styles.emptySteps}>No events found.</div>;
+  }
+
   return (
     <div className={styles.eventList}>
       {filteredEvents.map((event) => (
@@ -26,6 +30,9 @@ export function EventList({ events, filter }: EventListProps) {
 
 function EventItem({ event }: { event: Event }) {
   const time = new Date(event.ts).toLocaleTimeString();
+  const payloadPreview = JSON.stringify(event.payload)
+    .replaceAll('"', '')
+    .slice(0, 140);
 
   return (
     <div className={styles.eventItem}>
@@ -39,6 +46,7 @@ function EventItem({ event }: { event: Event }) {
         <span>Step: {event.step_id}</span>
         <span>Span: {event.span_id}</span>
       </div>
+      <p className={styles.eventPayload}>{payloadPreview}</p>
     </div>
   );
 }

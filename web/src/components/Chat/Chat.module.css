@@ -1,24 +1,88 @@
-/* Chat component styles */
-
 .chatWindow {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  background: #f9fafb;
+  min-height: 560px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.chatToolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #ffffff, #f8fbff);
+}
+
+.chatToolbarInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.toolbarTitle {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.toolbarMeta {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.chatToolbarActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.secondaryButton,
+.ghostButton {
+  border-radius: 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid var(--border-strong);
+  padding: 0.4rem 0.62rem;
+  cursor: pointer;
+}
+
+.secondaryButton {
+  background: #ecfeff;
+  color: var(--accent-strong);
+  border-color: #99f6e4;
+}
+
+.ghostButton {
+  background: #ffffff;
+  color: var(--text-secondary);
+}
+
+.secondaryButton:disabled,
+.ghostButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .messagesContainer {
   flex: 1;
   overflow-y: auto;
-  padding: 1rem;
+  padding: 0.95rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.76));
 }
 
 .message {
   display: flex;
-  max-width: 80%;
+  max-width: min(84%, 780px);
+  animation: popIn 180ms ease-out;
 }
 
 .message.user {
@@ -30,108 +94,217 @@
 }
 
 .messageContent {
-  padding: 0.75rem 1rem;
-  border-radius: 0.75rem;
-  background: white;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  padding: 0.72rem 0.88rem;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.05);
 }
 
 .message.user .messageContent {
-  background: #3b82f6;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
   color: white;
+  border: none;
 }
 
 .messageHeader {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.25rem;
-  font-size: 0.75rem;
-  opacity: 0.7;
+  margin-bottom: 0.35rem;
+  font-size: 0.72rem;
+  opacity: 0.86;
 }
 
 .role {
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.messageMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .time {
-  margin-left: 0.5rem;
+  margin-left: 0.2rem;
+}
+
+.copyButton {
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  color: inherit;
+  font-size: 0.66rem;
+  padding: 0.12rem 0.45rem;
+  cursor: pointer;
+}
+
+.message.user .copyButton {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .messageText {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.5;
+  font-size: 0.92rem;
 }
 
 .emptyState {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  color: #9ca3af;
+  gap: 0.35rem;
+  min-height: 280px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.emptyState p {
+  margin: 0;
+}
+
+.emptyStateHint {
+  max-width: 360px;
+  font-size: 0.85rem;
 }
 
 .typingIndicator {
-  padding: 0.5rem 1rem;
-  color: #6b7280;
-  font-style: italic;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  align-self: flex-start;
+  padding: 0.48rem 0.8rem;
+  border: 1px dashed #99f6e4;
+  border-radius: 999px;
+  color: var(--accent-strong);
+  background: rgba(236, 254, 255, 0.8);
+  font-size: 0.85rem;
+}
+
+.pulsingDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: #14b8a6;
+  animation: pulse 1s ease-in-out infinite;
 }
 
 .errorMessage {
-  padding: 0.75rem 1rem;
-  background: #fef2f2;
-  color: #dc2626;
-  border-radius: 0.5rem;
-  margin: 0.5rem 0;
+  padding: 0.68rem 0.8rem;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 10px;
+  border: 1px solid #fecaca;
+  margin: 0.2rem 0;
+  font-size: 0.84rem;
 }
 
 .inputContainer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.5rem;
-  padding: 1rem;
-  background: white;
-  border-top: 1px solid #e5e7eb;
+  padding: 0.8rem;
+  background: #ffffff;
+  border-top: 1px solid var(--border);
 }
 
 .input {
-  flex: 1;
-  padding: 0.75rem 1rem;
-  border: 1px solid #d1d5db;
-  border-radius: 0.5rem;
+  width: 100%;
+  min-height: 44px;
+  max-height: 140px;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
   resize: none;
-  font-family: inherit;
-  font-size: 0.875rem;
+  font-size: 0.9rem;
   line-height: 1.5;
+  background: #f8fafc;
 }
 
 .input:focus {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.12);
+  background: #ffffff;
 }
 
 .input:disabled {
-  background: #f3f4f6;
+  background: #e2e8f0;
   cursor: not-allowed;
 }
 
 .sendButton {
-  padding: 0.75rem 1.5rem;
-  background: #3b82f6;
+  align-self: stretch;
+  min-width: 100px;
+  padding: 0.75rem 1rem;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
   color: white;
   border: none;
-  border-radius: 0.5rem;
-  font-weight: 500;
+  border-radius: 12px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: transform 0.15s ease;
 }
 
 .sendButton:hover:not(:disabled) {
-  background: #2563eb;
+  transform: translateY(-1px);
 }
 
 .sendButton:disabled {
-  background: #9ca3af;
+  background: #94a3b8;
   cursor: not-allowed;
+}
+
+.inputHint {
+  grid-column: 1 / -1;
+  margin-top: -0.15rem;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+@keyframes popIn {
+  from {
+    transform: translateY(4px);
+    opacity: 0.82;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(0.9);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 760px) {
+  .chatWindow {
+    min-height: 500px;
+  }
+
+  .message {
+    max-width: 96%;
+  }
+
+  .inputContainer {
+    grid-template-columns: 1fr;
+  }
+
+  .sendButton {
+    min-width: 0;
+    width: 100%;
+  }
 }

@@ -2,7 +2,7 @@
  * ChatInput - input component for sending messages
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { KeyboardEvent, ChangeEvent } from 'react';
 import styles from './Chat.module.css';
 
@@ -18,6 +18,15 @@ export function ChatInput({
   placeholder = 'Type a message...',
 }: ChatInputProps) {
   const [value, setValue] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const target = textareaRef.current;
+    if (!target) return;
+    target.style.height = 'auto';
+    const nextHeight = Math.min(target.scrollHeight, 140);
+    target.style.height = `${nextHeight}px`;
+  }, [value]);
 
   const handleChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
     setValue(e.target.value);
@@ -43,6 +52,7 @@ export function ChatInput({
   return (
     <div className={styles.inputContainer}>
       <textarea
+        ref={textareaRef}
         className={styles.input}
         value={value}
         onChange={handleChange}
@@ -50,6 +60,8 @@ export function ChatInput({
         placeholder={placeholder}
         disabled={disabled}
         rows={1}
+        maxLength={4000}
+        aria-label="Message input"
       />
       <button
         className={styles.sendButton}
@@ -58,6 +70,9 @@ export function ChatInput({
       >
         Send
       </button>
+      <div className={styles.inputHint}>
+        Enter to send · Shift+Enter for newline
+      </div>
     </div>
   );
 }

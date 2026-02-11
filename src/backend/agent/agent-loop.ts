@@ -57,6 +57,9 @@ const DEFAULT_CONFIG: AgentLoopConfig = {
   modelConfig: resolveDefaultModelConfig(),
 };
 
+// Reduce event-store write amplification under streaming by batching token events.
+const TOKEN_EVENT_BATCH_SIZE = 24;
+
 /**
  * Event callback type for broadcasting events
  */
@@ -178,6 +181,53 @@ export class AgentLoop {
   }
 
   /**
+   * Emit completion event and update status.
+   */
+  private async completeRun(output: string): Promise<void> {
+    const duration = Date.now() - this.startTime;
+    this.status.status = 'completed';
+    this.status.completedAt = new Date().toISOString();
+
+    await this.emitEvent({
+      ...this.createBaseEvent(generateStepId(this.status.currentStep), this.rootSpanId),
+      type: 'run.completed',
+      payload: { output, duration_ms: duration },
+    } as Event);
+  }
+
+  /**
+   * Shared execution loop for execute/resume flows.
+   */
+  private async runMainLoop(resumed: boolean): Promise<void> {
+    while (this.status.currentStep < this.config.maxSteps && !this.aborted) {
+      const availability = await this.contextManager.checkContextAvailability();
+      if (!availability.available) {
+        throw new Error(`Context window exhausted: ${availability.warning}`);
+      }
+      if (availability.warning) {
+        logger.warn('Context window warning', {
+          runId: this.runId,
+          warning: availability.warning,
+        });
+      }
+
+      const result = await this.step();
+      if (result.type === 'final_answer') {
+        await this.completeRun(result.content);
+        logger.info(`Agent loop completed${resumed ? ' (resumed)' : ''}`, {
+          runId: this.runId,
+          steps: this.status.currentStep,
+        });
+        return;
+      }
+    }
+
+    if (!this.aborted) {
+      throw new Error(`Max steps (${this.config.maxSteps}) reached`);
+    }
+  }
+
+  /**
    * Resume execution from a checkpoint
    */
   async resume(): Promise<void> {
@@ -223,38 +273,8 @@ export class AgentLoop {
       },
     } as Event);
 
-    // Continue execution loop
     try {
-      while (this.status.currentStep < this.config.maxSteps && !this.aborted) {
-        const availability = await this.contextManager.checkContextAvailability();
-        if (!availability.available) {
-          throw new Error(`Context window exhausted: ${availability.warning}`);
-        }
-
-        const result = await this.step();
-
-        if (result.type === 'final_answer') {
-          const duration = Date.now() - this.startTime;
-          this.status.status = 'completed';
-          this.status.completedAt = new Date().toISOString();
-
-          await this.emitEvent({
-            ...this.createBaseEvent(generateStepId(this.status.currentStep), this.rootSpanId),
-            type: 'run.completed',
-            payload: { output: result.content, duration_ms: duration },
-          } as Event);
-
-          logger.info('Agent loop completed (resumed)', {
-            runId: this.runId,
-            steps: this.status.currentStep,
-          });
-          return;
-        }
-      }
-
-      if (!this.aborted) {
-        throw new Error(`Max steps (${this.config.maxSteps}) reached`);
-      }
+      await this.runMainLoop(true);
     } catch (error) {
       await this.handleError(error);
     }
@@ -283,43 +303,7 @@ export class AgentLoop {
     this.contextManager.addMessage('user', input);
 
     try {
-      // Main loop
-      while (this.status.currentStep < this.config.maxSteps && !this.aborted) {
-        // Context window guard
-        const availability = await this.contextManager.checkContextAvailability();
-        if (!availability.available) {
-          throw new Error(`Context window exhausted: ${availability.warning}`);
-        }
-        if (availability.warning) {
-          logger.warn('Context window warning', {
-            runId: this.runId,
-            warning: availability.warning,
-          });
-        }
-
-        const result = await this.step();
-
-        if (result.type === 'final_answer') {
-          // Run completed successfully
-          const duration = Date.now() - this.startTime;
-          this.status.status = 'completed';
-          this.status.completedAt = new Date().toISOString();
-
-          await this.emitEvent({
-            ...this.createBaseEvent(generateStepId(this.status.currentStep), this.rootSpanId),
-            type: 'run.completed',
-            payload: { output: result.content, duration_ms: duration },
-          } as Event);
-
-          logger.info('Agent loop completed', { runId: this.runId, steps: this.status.currentStep });
-          return;
-        }
-      }
-
-      // Max steps reached
-      if (!this.aborted) {
-        throw new Error(`Max steps (${this.config.maxSteps}) reached`);
-      }
+      await this.runMainLoop(false);
     } catch (error) {
       await this.handleError(error);
     }
@@ -456,6 +440,7 @@ export class AgentLoop {
     const stream = this.llmClient.chatStream!(messages, tools);
     let fullContent = '';
     let tokenIndex = 0;
+    let tokenBatch: Event[] = [];
     let finalToolCalls: ToolCall[] | undefined;
     let finalUsage: import('../../types/agent.js').LLMResponse['usage'] = {
       promptTokens: 0,
@@ -466,12 +451,22 @@ export class AgentLoop {
     for await (const chunk of stream) {
       if (chunk.delta) {
         fullContent += chunk.delta;
-        // Emit llm.token event (fire-and-forget for speed)
-        void this.emitEvent({
+        const tokenEvent = {
           ...this.createBaseEvent(stepId, this.rootSpanId),
           type: 'llm.token',
           payload: { token: chunk.delta, tokenIndex },
-        } as Event);
+        } as Event;
+
+        // Keep UI streaming responsive: callback first, disk write in batches.
+        if (this.eventCallback) {
+          this.eventCallback(tokenEvent);
+        }
+        tokenBatch.push(tokenEvent);
+        if (tokenBatch.length >= TOKEN_EVENT_BATCH_SIZE) {
+          await this.eventStore.appendBatch(tokenBatch);
+          tokenBatch = [];
+        }
+
         tokenIndex++;
       }
       if (chunk.toolCalls) {
@@ -480,6 +475,10 @@ export class AgentLoop {
       if (chunk.usage) {
         finalUsage = chunk.usage;
       }
+    }
+
+    if (tokenBatch.length > 0) {
+      await this.eventStore.appendBatch(tokenBatch);
     }
 
     return {

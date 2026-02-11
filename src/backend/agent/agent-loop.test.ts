@@ -5,6 +5,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import { AgentLoop } from './agent-loop.js';
+import { EventStore } from '../store/event-store.js';
+import type { ILLMClient } from './llm-client.js';
 import type { Event } from '../../types/events.js';
 
 describe('AgentLoop', () => {
@@ -102,6 +104,55 @@ describe('AgentLoop', () => {
       const eventsPath = `${testDir}/sessions/${sessionKey}/runs/${runId}/events.jsonl`;
       const exists = await fs.promises.access(eventsPath).then(() => true).catch(() => false);
       expect(exists).toBe(true);
+    });
+
+    it('should stream llm.token events and persist them in order', async () => {
+      const loop = new AgentLoop(runId, sessionKey, { maxSteps: 1 }, testDir);
+      const events: Event[] = [];
+      const streamedTokens = ['Hello', ' ', 'world', '!'];
+
+      loop.setEventCallback((event) => {
+        events.push(event);
+      });
+
+      const streamingClient: ILLMClient = {
+        chat: async () => {
+          throw new Error('chat() should not be called when chatStream() is available');
+        },
+        async *chatStream() {
+          for (const token of streamedTokens) {
+            yield { delta: token, done: false };
+          }
+          yield {
+            delta: '',
+            done: true,
+            usage: {
+              promptTokens: 3,
+              completionTokens: 4,
+              totalTokens: 7,
+            },
+          };
+        },
+      };
+
+      (loop as unknown as { llmClient: ILLMClient }).llmClient = streamingClient;
+      await loop.execute('stream test');
+
+      const streamed = events.filter((event) => event.type === 'llm.token');
+      expect(streamed.length).toBe(streamedTokens.length);
+      expect(
+        streamed.map((event) => (event.payload as { token: string }).token).join('')
+      ).toBe('Hello world!');
+
+      const eventStore = new EventStore(sessionKey, runId, testDir);
+      const persisted = await eventStore.readAll();
+      const persistedTokens = persisted.filter((event) => event.type === 'llm.token');
+      expect(persistedTokens.length).toBe(streamedTokens.length);
+
+      const lastTokenIdx = persisted.findLastIndex((event) => event.type === 'llm.token');
+      const completedIdx = persisted.findIndex((event) => event.type === 'run.completed');
+      expect(lastTokenIdx).toBeGreaterThanOrEqual(0);
+      expect(completedIdx).toBeGreaterThan(lastTokenIdx);
     });
   });
 });

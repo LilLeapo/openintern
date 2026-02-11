@@ -2,6 +2,7 @@
  * BlackboardPanel - main panel showing group blackboard state
  */
 
+import { useEffect } from 'react';
 import { useBlackboard } from '../../hooks/useBlackboard';
 import { DecisionCard } from './DecisionCard';
 import { EvidenceList } from './EvidenceList';
@@ -10,11 +11,17 @@ import styles from './BlackboardPanel.module.css';
 
 interface BlackboardPanelProps {
   groupId: string | null;
+  refreshNonce?: number;
 }
 
-export function BlackboardPanel({ groupId }: BlackboardPanelProps) {
+export function BlackboardPanel({ groupId, refreshNonce = 0 }: BlackboardPanelProps) {
   const { decisions, evidence, todos, loading, error, refresh } =
     useBlackboard(groupId);
+
+  useEffect(() => {
+    if (!groupId) return;
+    void refresh();
+  }, [groupId, refresh, refreshNonce]);
 
   if (!groupId) {
     return (

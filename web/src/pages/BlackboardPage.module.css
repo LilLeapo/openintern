@@ -1,0 +1,117 @@
+.layout {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 0.78rem;
+}
+
+.formCard {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  padding: 0.78rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.62rem;
+  height: fit-content;
+}
+
+.formCard h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.52rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.field span {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.field input,
+.field select,
+.textarea {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.46rem 0.58rem;
+}
+
+.field input:focus,
+.field select:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.errorText {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.82rem;
+}
+
+.submitButton {
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  font-weight: 600;
+  font-size: 0.82rem;
+  padding: 0.56rem 0.74rem;
+  cursor: pointer;
+}
+
+.submitButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.panelSection {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+  padding: 0.65rem;
+}
+
+.pageAction {
+  border: none;
+  border-radius: 11px;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  font-weight: 600;
+  font-size: 0.82rem;
+  padding: 0.55rem 0.78rem;
+  cursor: pointer;
+}
+
+@media (max-width: 1050px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+}

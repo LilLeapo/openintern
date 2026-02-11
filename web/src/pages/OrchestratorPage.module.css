@@ -1,0 +1,164 @@
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 300px;
+  gap: 0.75rem;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.72rem;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  padding: 0.72rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.card h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.card p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.26rem;
+}
+
+.field span {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.field input,
+.field select,
+.textarea {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.44rem 0.54rem;
+}
+
+.field input:focus,
+.field select:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.checkboxField {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.primaryButton,
+.refreshButton,
+.successInline button {
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.5rem 0.68rem;
+  cursor: pointer;
+}
+
+.refreshButton {
+  padding: 0.52rem 0.72rem;
+}
+
+.successInline {
+  margin-top: 0.3rem;
+  border: 1px solid #99f6e4;
+  border-radius: 10px;
+  background: #ecfeff;
+  padding: 0.46rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.45rem;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--accent-strong);
+}
+
+.successInline button {
+  background: #0d9488;
+  padding: 0.38rem 0.58rem;
+}
+
+.memberList {
+  margin: 0.45rem 0 0;
+  padding-left: 1rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.errorText,
+.successText {
+  margin: 0;
+  border-radius: 10px;
+  padding: 0.56rem;
+  font-size: 0.82rem;
+}
+
+.errorText {
+  border: 1px solid #fecaca;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.successText {
+  border: 1px solid #99f6e4;
+  background: #f0fdfa;
+  color: var(--accent-strong);
+}
+
+@media (max-width: 1250px) {
+  .layout {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sidebar {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

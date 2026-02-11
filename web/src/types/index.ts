@@ -114,3 +114,42 @@ export interface BlackboardMemory {
   updated_at: string;
   group_id: string;
 }
+
+// Orchestrator entities
+export interface Group {
+  id: string;
+  name: string;
+  description: string;
+  project_id: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Role {
+  id: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  allowed_tools?: string[];
+  denied_tools?: string[];
+  style_constraints?: Record<string, unknown>;
+  is_lead: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface GroupMember {
+  id: string;
+  group_id: string;
+  role_id: string;
+  agent_instance_id: string | null;
+  ordinal: number;
+  created_at?: string;
+}
+
+export interface GroupRunSummary {
+  run_id: string;
+  group_id: string;
+  status: RunStatus;
+  created_at: string;
+}

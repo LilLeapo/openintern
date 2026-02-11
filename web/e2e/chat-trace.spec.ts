@@ -52,7 +52,7 @@ async function createRunFromChat(page: Page, prompt: string): Promise<string> {
       response.status() === 201
   );
 
-  await page.getByRole('textbox').fill(prompt);
+  await page.getByRole('textbox', { name: 'Message input' }).fill(prompt);
   await page.getByRole('button', { name: 'Send' }).click();
 
   await expect(page.getByText(prompt)).toBeVisible();
@@ -67,18 +67,20 @@ async function createRunFromChat(page: Page, prompt: string): Promise<string> {
 }
 
 test.describe('Web chat to trace e2e', () => {
+  test.skip(process.env['E2E_MOCK_ONLY'] === '1', 'This suite requires a live backend.');
+
   test('creates a run from chat and validates trace details', async ({ page, request }) => {
     const prompt = `playwright chat trace ${Date.now()}`;
 
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Agent Chat' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Agent Chat Workspace' })).toBeVisible();
 
     const runId = await createRunFromChat(page, prompt);
     await waitForRunStatus(request, runId, 'completed');
 
     await page.goto(`/trace/${runId}`);
 
-    await expect(page.getByRole('heading', { name: 'Run Trace' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: `Trace ${runId}` })).toBeVisible();
     await expect(page.getByText(`Run: ${runId}`)).toBeVisible();
     await expect(page.getByText(/^completed$/)).toBeVisible();
     await expect(page.getByText(prompt)).toBeVisible();
@@ -90,20 +92,20 @@ test.describe('Web chat to trace e2e', () => {
     const prompt = `playwright runs trace ${Date.now()}`;
 
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Agent Chat' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Agent Chat Workspace' })).toBeVisible();
 
     const runId = await createRunFromChat(page, prompt);
     await waitForRunStatus(request, runId, 'completed');
 
-    await page.getByRole('button', { name: 'View Runs' }).click();
+    await page.getByRole('button', { name: 'Open Runs' }).click();
     await expect(page.getByRole('heading', { name: 'Runs History' })).toBeVisible();
 
-    const runCard = page.getByText(runId);
+    const runCard = page.locator('article', { hasText: runId });
     await expect(runCard).toBeVisible();
-    await runCard.click();
+    await runCard.getByRole('button', { name: 'View Trace' }).click();
 
     await expect(page).toHaveURL(new RegExp(`/trace/${runId}$`));
-    await expect(page.getByRole('heading', { name: 'Run Trace' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: `Trace ${runId}` })).toBeVisible();
     await expect(page.getByText(`Run: ${runId}`)).toBeVisible();
   });
 });
