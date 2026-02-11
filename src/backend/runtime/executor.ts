@@ -13,18 +13,30 @@ import { SerialOrchestrator, type OrchestratorMember } from './orchestrator.js';
 import { RoleRepository } from './role-repository.js';
 import { RoleRunnerFactory } from './role-runner-factory.js';
 import { RunRepository } from './run-repository.js';
+import { SkillRegistry } from './skill-registry.js';
+import { SkillRepository } from './skill-repository.js';
 import { RuntimeToolRouter } from './tool-router.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
 type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
 
 const TOKEN_EVENT_BATCH_SIZE = 24;
+const BUILTIN_TOOL_RISK_LEVELS: Record<string, 'low' | 'medium' | 'high'> = {
+  memory_search: 'low',
+  memory_get: 'low',
+  memory_write: 'medium',
+  read_file: 'low',
+  export_trace: 'low',
+  skills_list: 'low',
+  skills_get: 'low',
+};
 
 export interface RuntimeExecutorConfig {
   runRepository: RunRepository;
   eventService: EventService;
   checkpointService: CheckpointService;
   memoryService: MemoryService;
+  skillRepository: SkillRepository;
   sseManager: SSEManager;
   groupRepository: GroupRepository;
   roleRepository: RoleRepository;
@@ -58,9 +70,74 @@ export function createRuntimeExecutor(
   let sharedToolRouter: RuntimeToolRouter | null = null;
   let sharedToolRouterInit: Promise<RuntimeToolRouter> | null = null;
 
+  async function refreshSkillRegistry(router: RuntimeToolRouter): Promise<void> {
+    const availableTools = router.listTools().map((tool) => tool.name);
+    const registry = new SkillRegistry();
+
+    const builtinToolNames = availableTools.filter((name) =>
+      Object.prototype.hasOwnProperty.call(BUILTIN_TOOL_RISK_LEVELS, name)
+    );
+    registry.registerBuiltinTools(builtinToolNames, BUILTIN_TOOL_RISK_LEVELS);
+
+    try {
+      const persistedSkills = await config.skillRepository.list();
+      for (const skill of persistedSkills) {
+        registry.register(skill);
+      }
+    } catch (error) {
+      logger.error('Failed to load persisted skills for runtime registry', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // Ensure all available tools are represented in the skill catalog.
+    const unresolvedTools = availableTools.filter(
+      (toolName) => registry.getToolMeta(toolName) === null
+    );
+    if (unresolvedTools.length > 0) {
+      const unresolvedBuiltin = unresolvedTools.filter((toolName) => !toolName.includes('.'));
+      const unresolvedMcp = unresolvedTools.filter((toolName) => toolName.includes('.'));
+
+      if (unresolvedBuiltin.length > 0) {
+        registry.register({
+          id: 'runtime_builtin_auto',
+          name: 'Runtime Builtin (auto)',
+          description: 'Automatically discovered builtin tools.',
+          tools: unresolvedBuiltin.map((name) => ({
+            name,
+            description: '',
+            parameters: {},
+          })),
+          risk_level: 'low',
+          provider: 'builtin',
+          health_status: 'healthy',
+        });
+      }
+
+      if (unresolvedMcp.length > 0) {
+        registry.register({
+          id: 'runtime_mcp_auto',
+          name: 'Runtime MCP (auto)',
+          description: 'Automatically discovered MCP tools.',
+          tools: unresolvedMcp.map((name) => ({
+            name,
+            description: '',
+            parameters: {},
+          })),
+          risk_level: 'low',
+          provider: 'mcp',
+          health_status: 'healthy',
+        });
+      }
+    }
+
+    router.setSkillRegistry(registry);
+  }
+
   async function getSharedToolRouter(scope: Scope): Promise<RuntimeToolRouter> {
     if (sharedToolRouter) {
       sharedToolRouter.setScope(scope);
+      await refreshSkillRegistry(sharedToolRouter);
       return sharedToolRouter;
     }
     if (!sharedToolRouterInit) {
@@ -83,6 +160,7 @@ export function createRuntimeExecutor(
 
     const router = await sharedToolRouterInit;
     router.setScope(scope);
+    await refreshSkillRegistry(router);
     return router;
   }
 

@@ -51,6 +51,7 @@ describe('SkillRegistry', () => {
       const meta = registry.getToolMeta('tool_a');
       expect(meta).toEqual({
         name: 'tool_a',
+        skillId: 'skill_1',
         riskLevel: 'high',
         source: 'builtin',
       });
@@ -105,6 +106,14 @@ describe('SkillRegistry', () => {
     it('defaults unspecified tools to low risk', () => {
       registry.registerBuiltinTools(['tool_x']);
       expect(registry.getToolRiskLevel('tool_x')).toBe('low');
+    });
+
+    it('clear removes all indexed skills and tools', () => {
+      registry.registerBuiltinTools(['tool_x']);
+      expect(registry.getToolMeta('tool_x')).not.toBeNull();
+      registry.clear();
+      expect(registry.listSkills()).toHaveLength(0);
+      expect(registry.getToolMeta('tool_x')).toBeNull();
     });
   });
 });

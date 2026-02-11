@@ -138,6 +138,27 @@ export interface Role {
   updated_at?: string;
 }
 
+export type SkillRiskLevel = 'low' | 'medium' | 'high';
+export type SkillProvider = 'builtin' | 'mcp';
+
+export interface SkillToolEntry {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  tools: SkillToolEntry[];
+  risk_level: SkillRiskLevel;
+  provider: SkillProvider;
+  health_status: 'healthy' | 'unhealthy' | 'unknown';
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface GroupMember {
   id: string;
   group_id: string;

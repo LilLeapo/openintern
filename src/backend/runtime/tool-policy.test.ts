@@ -57,6 +57,14 @@ describe('ToolPolicy', () => {
       const result = policy.check(agent, tool);
       expect(result.allowed).toBe(true);
     });
+
+    it('blocks tool when its skill id is explicitly denied', () => {
+      const agent = makeAgent({ deniedTools: ['skill_fs'] });
+      const tool = makeTool({ name: 'read_file', skillId: 'skill_fs' });
+      const result = policy.check(agent, tool);
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('explicitly denied');
+    });
   });
 
   describe('allowed_tools (whitelist)', () => {
@@ -78,6 +86,13 @@ describe('ToolPolicy', () => {
     it('allows high risk tool if explicitly whitelisted', () => {
       const agent = makeAgent({ allowedTools: ['dangerous_tool'] });
       const tool = makeTool({ name: 'dangerous_tool', riskLevel: 'high' });
+      const result = policy.check(agent, tool);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('allows tool when its skill id is in whitelist', () => {
+      const agent = makeAgent({ allowedTools: ['skill:skill_fs'] });
+      const tool = makeTool({ name: 'read_file', skillId: 'skill_fs' });
       const result = policy.check(agent, tool);
       expect(result.allowed).toBe(true);
     });
@@ -113,6 +128,15 @@ describe('ToolPolicy', () => {
       expect(ctx.roleId).toBe('role_critic');
       expect(ctx.allowedTools).toEqual(['memory_search']);
       expect(ctx.deniedTools).toEqual(['memory_write']);
+    });
+  });
+
+  describe('always allowed discovery tools', () => {
+    it('allows skills_list even when whitelist does not include it', () => {
+      const agent = makeAgent({ allowedTools: ['memory_search'] });
+      const tool = makeTool({ name: 'skills_list', riskLevel: 'low' });
+      const result = policy.check(agent, tool);
+      expect(result.allowed).toBe(true);
     });
   });
 });

@@ -3,7 +3,7 @@
  */
 
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { ChatPage, TracePage, RunsPage, BlackboardPage, OrchestratorPage } from './pages';
+import { ChatPage, TracePage, RunsPage, BlackboardPage, OrchestratorPage, SkillsPage } from './pages';
 import { AppPreferencesProvider } from './context/AppPreferencesContext';
 
 export function App() {
@@ -17,6 +17,7 @@ export function App() {
           <Route path="/blackboard" element={<BlackboardPage />} />
           <Route path="/blackboard/:groupId" element={<BlackboardPage />} />
           <Route path="/orchestrator" element={<OrchestratorPage />} />
+          <Route path="/skills" element={<SkillsPage />} />
         </Routes>
       </BrowserRouter>
     </AppPreferencesProvider>

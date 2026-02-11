@@ -109,6 +109,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     eventService,
     checkpointService,
     memoryService,
+    skillRepository,
     sseManager,
     groupRepository,
     roleRepository,

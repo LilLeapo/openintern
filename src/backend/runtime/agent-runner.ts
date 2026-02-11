@@ -1,5 +1,6 @@
 import type { LLMConfig, Message, ToolCall } from '../../types/agent.js';
 import type { Event, EventType } from '../../types/events.js';
+import type { Skill } from '../../types/skill.js';
 import type { ScopeContext } from './scope.js';
 import { createLLMClient, type ILLMClient } from '../agent/llm-client.js';
 import { generateSpanId, generateStepId } from '../../utils/ids.js';
@@ -112,7 +113,8 @@ export class SingleAgentRunner implements AgentRunner {
               scope: memoryScope,
               top_k: 6,
             });
-        const contextMessages = this.buildModelMessages(messages, memoryHits);
+        const skills = this.config.toolRouter.listSkills();
+        const contextMessages = this.buildModelMessages(messages, memoryHits, skills);
         const tools = this.config.toolRouter.listTools();
 
         const llmStarted = Date.now();
@@ -249,7 +251,8 @@ export class SingleAgentRunner implements AgentRunner {
 
   private buildModelMessages(
     history: Message[],
-    memoryHits: Array<{ id: string; snippet: string; score: number; type: string }>
+    memoryHits: Array<{ id: string; snippet: string; score: number; type: string }>,
+    skills: Skill[]
   ): Message[] {
     const memoryLines = memoryHits
       .map((item, index) => `${index + 1}. [${item.id}] (${item.type},${item.score.toFixed(3)}): ${item.snippet}`)
@@ -258,6 +261,19 @@ export class SingleAgentRunner implements AgentRunner {
       .slice(-8)
       .map((message) => `${message.role}: ${message.content.slice(0, 220)}`)
       .join('\n');
+    const skillLines = skills
+      .slice(0, 20)
+      .map((skill) => {
+        const toolNames = skill.tools.map((tool) => tool.name).join(', ') || '(none)';
+        return `- ${skill.id} [${skill.provider}/${skill.risk_level}] ${skill.name}: ${toolNames}`;
+      })
+      .join('\n');
+    const rolePolicy = this.config.agentContext
+      ? [
+          `Allowed list: ${this.config.agentContext.allowedTools.join(', ') || '(none)'}`,
+          `Denied list: ${this.config.agentContext.deniedTools.join(', ') || '(none)'}`,
+        ].join('\n')
+      : 'Allowed list: (not restricted)\nDenied list: (none)';
 
     const basePrompt = this.config.systemPrompt ?? SYSTEM_PROMPT;
     const system = `${basePrompt}
@@ -268,6 +284,14 @@ ${historySummary || '(none)'}
 Retrieved memory summaries:
 ${memoryLines || '(none)'}
 
+Skill catalog:
+${skillLines || '(none)'}
+
+Role tool policy:
+${rolePolicy}
+
+If you need full details for a skill, call skills_get(skill_id).
+If you need to refresh the catalog, call skills_list().
 When you need full memory details, call memory_get(id).`;
 
     const trimmedHistory = history.slice(-12);

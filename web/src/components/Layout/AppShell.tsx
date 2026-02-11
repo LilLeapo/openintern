@@ -21,6 +21,7 @@ const navItems: NavItem[] = [
   { to: '/runs', label: 'Runs', description: 'History & Operations' },
   { to: '/blackboard', label: 'Blackboard', description: 'Group Memory Board' },
   { to: '/orchestrator', label: 'Orchestrator', description: 'Roles · Groups · Group Runs' },
+  { to: '/skills', label: 'Skills', description: 'Catalog · Policy Metadata' },
 ];
 
 function isPathActive(pathname: string, navPath: string): boolean {

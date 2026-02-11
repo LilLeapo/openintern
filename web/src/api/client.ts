@@ -7,6 +7,7 @@ import type {
   BlackboardMemory,
   Group,
   Role,
+  Skill,
   GroupMember,
   GroupRunSummary,
 } from '../types';
@@ -319,6 +320,93 @@ export class APIClient {
     }
 
     return response.json();
+  }
+
+  /**
+   * List skills
+   */
+  async listSkills(): Promise<Skill[]> {
+    const response = await fetch(`${this.baseURL}/api/skills`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to list skills'),
+        response.status,
+      );
+    }
+
+    const data = (await response.json()) as { skills: Skill[] };
+    return data.skills;
+  }
+
+  /**
+   * Create skill
+   */
+  async createSkill(body: {
+    name: string;
+    description?: string;
+    risk_level?: 'low' | 'medium' | 'high';
+    provider?: 'builtin' | 'mcp';
+    tools?: Array<{
+      name: string;
+      description?: string;
+      parameters?: Record<string, unknown>;
+    }>;
+  }): Promise<Skill> {
+    const response = await fetch(`${this.baseURL}/api/skills`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to create skill'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Get one skill
+   */
+  async getSkill(skillId: string): Promise<Skill> {
+    const response = await fetch(`${this.baseURL}/api/skills/${skillId}`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get skill'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Delete one skill
+   */
+  async deleteSkill(skillId: string): Promise<void> {
+    const response = await fetch(`${this.baseURL}/api/skills/${skillId}`, {
+      method: 'DELETE',
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to delete skill'),
+        response.status,
+      );
+    }
   }
 
   /**

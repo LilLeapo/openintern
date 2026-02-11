@@ -3,14 +3,22 @@ import { useNavigate } from 'react-router-dom';
 import { apiClient } from '../api/client';
 import { AppShell } from '../components/Layout/AppShell';
 import { useAppPreferences } from '../context/AppPreferencesContext';
-import type { Group, GroupMember, GroupRunSummary, Role } from '../types';
+import type { Group, GroupMember, GroupRunSummary, Role, Skill } from '../types';
 import styles from './OrchestratorPage.module.css';
+
+function parsePolicyEntries(value: string): string[] {
+  return value
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
 
 export function OrchestratorPage() {
   const navigate = useNavigate();
   const { sessionKey, setSessionKey } = useAppPreferences();
 
   const [roles, setRoles] = useState<Role[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [membersByGroup, setMembersByGroup] = useState<Record<string, GroupMember[]>>({});
   const [selectedGroupId, setSelectedGroupId] = useState('');
@@ -24,6 +32,8 @@ export function OrchestratorPage() {
   const [rolePrompt, setRolePrompt] = useState('');
   const [roleDescription, setRoleDescription] = useState('');
   const [roleIsLead, setRoleIsLead] = useState(false);
+  const [roleAllowedToolsDraft, setRoleAllowedToolsDraft] = useState('');
+  const [roleDeniedToolsDraft, setRoleDeniedToolsDraft] = useState('');
 
   const [groupName, setGroupName] = useState('');
   const [groupDescription, setGroupDescription] = useState('');
@@ -38,12 +48,14 @@ export function OrchestratorPage() {
     setLoadingCatalog(true);
     setErrorText(null);
     try {
-      const [nextRoles, nextGroups] = await Promise.all([
+      const [nextRoles, nextGroups, nextSkills] = await Promise.all([
         apiClient.listRoles(),
         apiClient.listGroups(),
+        apiClient.listSkills(),
       ]);
       setRoles(nextRoles);
       setGroups(nextGroups);
+      setSkills(nextSkills);
       setSelectedGroupId(prev => prev || nextGroups[0]?.id || '');
       setMemberRoleId(prev => prev || nextRoles[0]?.id || '');
     } catch (error) {
@@ -96,11 +108,15 @@ export function OrchestratorPage() {
     }
     clearMessages();
     try {
+      const allowedTools = parsePolicyEntries(roleAllowedToolsDraft);
+      const deniedTools = parsePolicyEntries(roleDeniedToolsDraft);
       const created = await apiClient.createRole({
         name: roleName.trim(),
         description: roleDescription.trim() || undefined,
         system_prompt: rolePrompt.trim(),
         is_lead: roleIsLead,
+        ...(allowedTools.length > 0 ? { allowed_tools: allowedTools } : {}),
+        ...(deniedTools.length > 0 ? { denied_tools: deniedTools } : {}),
       });
       setRoles(prev => [created, ...prev.filter(role => role.id !== created.id)]);
       setMemberRoleId(created.id);
@@ -108,6 +124,8 @@ export function OrchestratorPage() {
       setRolePrompt('');
       setRoleDescription('');
       setRoleIsLead(false);
+      setRoleAllowedToolsDraft('');
+      setRoleDeniedToolsDraft('');
       setSuccessText(`Created role ${created.id}`);
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : 'Failed to create role');
@@ -222,6 +240,24 @@ export function OrchestratorPage() {
                 onChange={e => setRoleIsLead(e.target.checked)}
               />
               <span>Lead role (allowed to write blackboard decision)</span>
+            </label>
+            <label className={styles.field}>
+              <span>Allowed Tools / Skills (optional)</span>
+              <textarea
+                className={styles.textarea}
+                value={roleAllowedToolsDraft}
+                onChange={e => setRoleAllowedToolsDraft(e.target.value)}
+                placeholder="read_file, memory_search, skill:skill_fs"
+              />
+            </label>
+            <label className={styles.field}>
+              <span>Denied Tools / Skills (optional)</span>
+              <textarea
+                className={styles.textarea}
+                value={roleDeniedToolsDraft}
+                onChange={e => setRoleDeniedToolsDraft(e.target.value)}
+                placeholder="memory_write, skill:skill_highrisk"
+              />
             </label>
             <button className={styles.primaryButton} onClick={() => void handleCreateRole()}>
               Create Role
@@ -351,6 +387,7 @@ export function OrchestratorPage() {
             <h3>Catalog Snapshot</h3>
             <p>Roles: {roles.length}</p>
             <p>Groups: {groups.length}</p>
+            <p>Skills: {skills.length}</p>
             <p>Members in selected group: {selectedMembers.length}</p>
             {loadingMembers && <p>Loading members...</p>}
             {selectedMembers.length > 0 && (

@@ -12,6 +12,14 @@ export class SkillRegistry {
   private readonly toolToSkill = new Map<string, string>();
 
   /**
+   * Remove all registered skills and tool indexes.
+   */
+  clear(): void {
+    this.skills.clear();
+    this.toolToSkill.clear();
+  }
+
+  /**
    * Register a skill and index its tools.
    */
   register(skill: Skill): void {
@@ -51,6 +59,7 @@ export class SkillRegistry {
     if (!skill) return null;
     return {
       name: toolName,
+      skillId,
       riskLevel: skill.risk_level,
       source: skill.provider,
     };

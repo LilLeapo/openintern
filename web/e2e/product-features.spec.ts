@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import type { Group, GroupMember, GroupRunSummary, Role, RunMeta } from '../src/types';
+import type { Group, GroupMember, GroupRunSummary, Role, RunMeta, Skill } from '../src/types';
 import type { Event } from '../src/types/events';
 
 function makeRun(run: Partial<RunMeta> & { run_id: string; status: RunMeta['status'] }): RunMeta {
@@ -71,7 +71,7 @@ test.describe('Product features', () => {
 
     await page
       .locator('article', { hasText: 'run_pending_1' })
-      .getByRole('button', { name: 'Cancel Pending' })
+      .getByRole('button', { name: 'Cancel Run' })
       .click();
     await page.getByRole('button', { name: 'cancelled', exact: true }).click();
     await expect(page.getByText('run_pending_1')).toBeVisible();
@@ -258,6 +258,7 @@ test.describe('Product features', () => {
 
   test('orchestrator page supports role/group/group-run workflow', async ({ page }) => {
     let roles: Role[] = [];
+    const skills: Skill[] = [];
     let groups: Group[] = [];
     const membersByGroup: Record<string, GroupMember[]> = {};
     let groupRunCounter = 0;
@@ -289,6 +290,18 @@ test.describe('Product features', () => {
         status: 201,
         contentType: 'application/json',
         body: JSON.stringify(created),
+      });
+    });
+
+    await page.route('**/api/skills', async route => {
+      if (route.request().method() !== 'GET') {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ skills }),
       });
     });
 
@@ -375,6 +388,14 @@ test.describe('Product features', () => {
       });
     });
 
+    await page.route('**/api/runs/run_group_1/stream**', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: '',
+      });
+    });
+
     await page.goto('/orchestrator');
     await expect(page.getByRole('heading', { name: 'Orchestrator Studio' })).toBeVisible();
 
@@ -408,5 +429,91 @@ test.describe('Product features', () => {
     await expect(page.getByText('Created group run run_group_1')).toBeVisible();
     await page.getByRole('button', { name: 'Open Trace' }).click();
     await expect(page).toHaveURL(/\/trace\/run_group_1$/);
+  });
+
+  test('skills page supports create and delete flow', async ({ page }) => {
+    let skills: Skill[] = [];
+
+    await page.route('**/api/skills', async route => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ skills }),
+        });
+        return;
+      }
+
+      const body = route.request().postDataJSON() as {
+        name: string;
+        description?: string;
+        provider?: 'builtin' | 'mcp';
+        risk_level?: 'low' | 'medium' | 'high';
+        tools?: Array<{ name: string; description?: string; parameters?: Record<string, unknown> }>;
+      };
+      const created: Skill = {
+        id: `skill_${skills.length + 1}`,
+        name: body.name,
+        description: body.description ?? '',
+        provider: body.provider ?? 'builtin',
+        risk_level: body.risk_level ?? 'low',
+        health_status: 'unknown',
+        tools: (body.tools ?? []).map((tool) => ({
+          name: tool.name,
+          description: tool.description ?? '',
+          parameters: tool.parameters ?? {},
+        })),
+      };
+      skills = [created, ...skills];
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify(created),
+      });
+    });
+
+    await page.route('**/api/skills/*', async route => {
+      const url = new URL(route.request().url());
+      const skillId = url.pathname.split('/').at(-1);
+      if (!skillId) {
+        await route.fulfill({ status: 400 });
+        return;
+      }
+      if (route.request().method() === 'DELETE') {
+        skills = skills.filter((skill) => skill.id !== skillId);
+        await route.fulfill({ status: 204 });
+        return;
+      }
+      const skill = skills.find((item) => item.id === skillId);
+      if (!skill) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'NOT_FOUND', message: 'Skill not found' } }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(skill),
+      });
+    });
+
+    await page.goto('/skills');
+    await expect(page.getByRole('heading', { name: 'Skills Catalog' })).toBeVisible();
+
+    await page.getByLabel('Skill Name').fill('Knowledge');
+    await page.getByLabel('Description').fill('Knowledge lookup and retrieval');
+    await page.getByLabel('Tools').fill('memory_search|semantic lookup');
+    await page.getByRole('button', { name: 'Create Skill' }).click();
+
+    await expect(page.getByText('Created skill skill_1')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Knowledge' })).toBeVisible();
+    await expect(page.getByText('memory_search - semantic lookup')).toBeVisible();
+
+    await page.locator('article', { hasText: 'skill_1' }).getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByText('Deleted skill skill_1')).toBeVisible();
+    await expect(page.locator('article', { has: page.getByRole('heading', { name: 'Knowledge' }) })).toHaveCount(0);
   });
 });

@@ -83,6 +83,8 @@ describe('RuntimeToolRouter', () => {
         'memory_write',
         'read_file',
         'export_trace',
+        'skills_list',
+        'skills_get',
       ])
     );
   });
@@ -184,17 +186,87 @@ describe('RuntimeToolRouter', () => {
     expect(result.error).toContain('Tool not found');
   });
 
+  it('returns skills catalog from skills_list tool', async () => {
+    const registry = new SkillRegistry();
+    registry.register({
+      id: 'skill_fs',
+      name: 'File Skill',
+      description: 'file operations',
+      tools: [{ name: 'read_file', description: 'read file', parameters: {} }],
+      risk_level: 'low',
+      provider: 'builtin',
+      health_status: 'healthy',
+    });
+    const router = new RuntimeToolRouter({
+      scope: {
+        orgId: 'org_test',
+        userId: 'user_test',
+        projectId: null,
+      },
+      memoryService: memoryService as unknown as MemoryService,
+      eventService: eventService as unknown as EventService,
+      workDir,
+      timeoutMs: 50,
+      skillRegistry: registry,
+    });
+
+    const result = await router.callTool('skills_list', {});
+
+    expect(result.success).toBe(true);
+    const payload = result.result as {
+      count: number;
+      skills: Array<{ id: string; tools?: string[] }>;
+    };
+    expect(payload.count).toBe(1);
+    expect(payload.skills[0]?.id).toBe('skill_fs');
+    expect(payload.skills[0]?.tools).toEqual(['read_file']);
+  });
+
+  it('returns one skill from skills_get tool', async () => {
+    const registry = new SkillRegistry();
+    registry.register({
+      id: 'skill_mem',
+      name: 'Memory Skill',
+      description: 'memory ops',
+      tools: [{ name: 'memory_search', description: 'search', parameters: {} }],
+      risk_level: 'low',
+      provider: 'builtin',
+      health_status: 'healthy',
+    });
+    const router = new RuntimeToolRouter({
+      scope: {
+        orgId: 'org_test',
+        userId: 'user_test',
+        projectId: null,
+      },
+      memoryService: memoryService as unknown as MemoryService,
+      eventService: eventService as unknown as EventService,
+      workDir,
+      timeoutMs: 50,
+      skillRegistry: registry,
+    });
+
+    const result = await router.callTool('skills_get', { skill_id: 'skill_mem' });
+
+    expect(result.success).toBe(true);
+    const payload = result.result as { id: string; tools: Array<{ name: string }> };
+    expect(payload.id).toBe('skill_mem');
+    expect(payload.tools[0]?.name).toBe('memory_search');
+  });
+
   describe('policy checks', () => {
     function createRouterWithRegistry(timeoutMs = 50): RuntimeToolRouter {
       const registry = new SkillRegistry();
       registry.registerBuiltinTools(
-        ['memory_search', 'memory_get', 'memory_write', 'read_file', 'export_trace'],
+        ['memory_search', 'memory_get', 'memory_write', 'read_file', 'export_trace', 'skills_list', 'skills_get'],
         {
           memory_search: 'low',
           memory_get: 'low',
           memory_write: 'medium',
           read_file: 'low',
           export_trace: 'low',
+          skills_list: 'low',
+          skills_get: 'low',
         }
       );
       return new RuntimeToolRouter({
@@ -288,7 +360,7 @@ describe('RuntimeToolRouter', () => {
     it('uses skillRegistry risk level for policy decisions', async () => {
       const registry = new SkillRegistry();
       registry.registerBuiltinTools(
-        ['memory_search', 'memory_get', 'memory_write', 'read_file', 'export_trace'],
+        ['memory_search', 'memory_get', 'memory_write', 'read_file', 'export_trace', 'skills_list', 'skills_get'],
         { memory_write: 'high' }
       );
       const router = new RuntimeToolRouter({
@@ -309,6 +381,39 @@ describe('RuntimeToolRouter', () => {
       expect(result.success).toBe(false);
       expect(result.blocked).toBe(true);
       expect(result.error).toContain('high risk');
+    });
+
+    it('matches whitelist by skill id', async () => {
+      const registry = new SkillRegistry();
+      registry.register({
+        id: 'skill_fs',
+        name: 'File',
+        description: '',
+        tools: [{ name: 'read_file', description: '', parameters: {} }],
+        risk_level: 'low',
+        provider: 'builtin',
+        health_status: 'healthy',
+      });
+      const router = new RuntimeToolRouter({
+        scope: { orgId: 'org_test', userId: 'user_test', projectId: null },
+        memoryService: memoryService as unknown as MemoryService,
+        eventService: eventService as unknown as EventService,
+        workDir,
+        timeoutMs: 50,
+        skillRegistry: registry,
+      });
+      await fs.promises.writeFile(path.join(workDir, 'test.txt'), 'hello');
+      const result = await router.callTool(
+        'read_file',
+        { path: 'test.txt' },
+        {
+          agentId: 'agent_skill',
+          roleId: 'role_skill',
+          allowedTools: ['skill:skill_fs'],
+          deniedTools: [],
+        }
+      );
+      expect(result.success).toBe(true);
     });
   });
 });

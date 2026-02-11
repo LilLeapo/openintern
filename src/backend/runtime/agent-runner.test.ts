@@ -105,6 +105,7 @@ describe('SingleAgentRunner', () => {
     };
     const toolRouter = {
       listTools: vi.fn(() => []),
+      listSkills: vi.fn(() => []),
       callTool: vi.fn(async () => ({
         success: true,
         result: {},
@@ -192,6 +193,7 @@ describe('SingleAgentRunner', () => {
           },
         },
       ]),
+      listSkills: vi.fn(() => []),
       callTool: vi.fn(async () => {
         timeline.push('tool.execute');
         return {
@@ -323,6 +325,7 @@ describe('SingleAgentRunner', () => {
           },
         },
       ]),
+      listSkills: vi.fn(() => []),
       callTool: vi.fn(async () => ({
         success: true,
         result: { content: 'ok' },
@@ -366,6 +369,59 @@ describe('SingleAgentRunner', () => {
     assertEventMetadata(events);
   });
 
+  it('injects skill catalog into system message for model context', async () => {
+    const memoryService = {
+      memory_search: vi.fn(async () => []),
+    };
+    const checkpointService = {
+      save: vi.fn(async () => undefined),
+    };
+    const toolRouter = {
+      listTools: vi.fn(() => []),
+      listSkills: vi.fn(() => [
+        {
+          id: 'skill_fs',
+          name: 'File Skill',
+          description: 'File operations',
+          tools: [{ name: 'read_file', description: '', parameters: {} }],
+          risk_level: 'low',
+          provider: 'builtin',
+          health_status: 'healthy',
+        },
+      ]),
+      callTool: vi.fn(async () => ({
+        success: true,
+        result: {},
+        duration: 1,
+      })),
+    };
+    const chat = vi.fn(async () => ({
+      content: 'done',
+      usage: usage(),
+    }));
+    mockedCreateLLMClient.mockReturnValue({ chat });
+
+    const runner = new SingleAgentRunner({
+      maxSteps: 2,
+      modelConfig: { provider: 'mock', model: 'mock-model' },
+      checkpointService: checkpointService as never,
+      memoryService: memoryService as never,
+      toolRouter: toolRouter as never,
+    });
+
+    const timeline: string[] = [];
+    await collectRun(runner, 'hello', runnerContext, timeline);
+
+    expect(chat).toHaveBeenCalled();
+    const firstCall = chat.mock.calls.at(0);
+    const firstCallArgs = (firstCall as unknown[] | undefined) ?? [];
+    const firstCallMessages = (firstCallArgs[0] as Array<{ role: string; content: string }> | undefined) ?? [];
+    expect(firstCallMessages?.[0]?.role).toBe('system');
+    expect(firstCallMessages?.[0]?.content).toContain('Skill catalog');
+    expect(firstCallMessages?.[0]?.content).toContain('skill_fs');
+    expect(firstCallMessages?.[0]?.content).toContain('read_file');
+  });
+
   it('emits run.failed when model throws instead of hanging silently', async () => {
     const timeline: string[] = [];
     const memoryService = {
@@ -381,6 +437,7 @@ describe('SingleAgentRunner', () => {
     };
     const toolRouter = {
       listTools: vi.fn(() => []),
+      listSkills: vi.fn(() => []),
       callTool: vi.fn(async () => ({
         success: true,
         result: {},
@@ -427,6 +484,7 @@ describe('SingleAgentRunner', () => {
     };
     const toolRouter = {
       listTools: vi.fn(() => []),
+      listSkills: vi.fn(() => []),
       callTool: vi.fn(async () => ({
         success: true,
         result: {},
@@ -475,6 +533,7 @@ describe('SingleAgentRunner', () => {
     };
     const toolRouter = {
       listTools: vi.fn(() => []),
+      listSkills: vi.fn(() => []),
       callTool: vi.fn(async () => ({
         success: true,
         result: {},

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ToolDefinition, ToolResult } from '../../types/agent.js';
+import type { Skill } from '../../types/skill.js';
 import type { ScopeContext } from './scope.js';
 import { ToolError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
@@ -156,7 +157,7 @@ export class RuntimeToolRouter {
   private readonly timeoutMs: number;
   private readonly mcpClient: MCPClient | null;
   private readonly toolPolicy: ToolPolicy;
-  private readonly skillRegistry: SkillRegistry | null;
+  private skillRegistry: SkillRegistry | null;
   private scope: ScopeContext;
 
   constructor(private readonly config: RuntimeToolRouterConfig) {
@@ -179,6 +180,10 @@ export class RuntimeToolRouter {
     this.scope = scope;
   }
 
+  setSkillRegistry(skillRegistry: SkillRegistry | null): void {
+    this.skillRegistry = skillRegistry;
+  }
+
   async start(): Promise<void> {
     if (!this.mcpClient) {
       return;
@@ -199,6 +204,10 @@ export class RuntimeToolRouter {
       description,
       parameters,
     }));
+  }
+
+  listSkills(): Skill[] {
+    return this.skillRegistry?.listSkills() ?? [];
   }
 
   async callTool(
@@ -274,6 +283,14 @@ export class RuntimeToolRouter {
       source: tool.source,
     };
     return this.toolPolicy.check(agent, toolMeta);
+  }
+
+  private getSkillOrThrow(skillId: string): Skill {
+    const skill = this.skillRegistry?.getSkill(skillId);
+    if (!skill) {
+      throw new ToolError(`Skill not found: ${skillId}`, 'skills_get');
+    }
+    return skill;
   }
 
   private registerBuiltinTools(): void {
@@ -429,6 +446,77 @@ export class RuntimeToolRouter {
           run_id: runId,
           next_cursor: page.next_cursor,
           events: page.events,
+        };
+      },
+    });
+
+    this.tools.set('skills_list', {
+      name: 'skills_list',
+      description: 'List available skills and their tools',
+      parameters: {
+        type: 'object',
+        properties: {
+          include_tools: { type: 'boolean', default: true },
+          provider: { type: 'string', enum: ['builtin', 'mcp'] },
+          risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
+        },
+      },
+      source: 'builtin',
+      handler: async (params) => {
+        const includeTools = params['include_tools'] !== false;
+        const provider = extractString(params['provider']);
+        const riskLevel = extractString(params['risk_level']);
+
+        let skills = this.skillRegistry?.listSkills() ?? [];
+        if (provider) {
+          skills = skills.filter((skill) => skill.provider === provider);
+        }
+        if (riskLevel) {
+          skills = skills.filter((skill) => skill.risk_level === riskLevel);
+        }
+
+        return {
+          count: skills.length,
+          skills: skills.map((skill) => ({
+            id: skill.id,
+            name: skill.name,
+            description: skill.description,
+            risk_level: skill.risk_level,
+            provider: skill.provider,
+            health_status: skill.health_status,
+            ...(includeTools
+              ? { tools: skill.tools.map((tool) => tool.name) }
+              : {}),
+          })),
+        };
+      },
+    });
+
+    this.tools.set('skills_get', {
+      name: 'skills_get',
+      description: 'Get full details for one skill by id',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_id: { type: 'string' },
+        },
+        required: ['skill_id'],
+      },
+      source: 'builtin',
+      handler: async (params) => {
+        const skillId = extractString(params['skill_id']);
+        if (!skillId) {
+          throw new ToolError('skill_id is required', 'skills_get');
+        }
+        const skill = this.getSkillOrThrow(skillId);
+        return {
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          provider: skill.provider,
+          risk_level: skill.risk_level,
+          health_status: skill.health_status,
+          tools: skill.tools,
         };
       },
     });
