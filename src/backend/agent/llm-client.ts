@@ -19,6 +19,10 @@ import { logger } from '../../utils/logger.js';
 import { OpenAIClient } from './openai-client.js';
 import { AnthropicClient } from './anthropic-client.js';
 
+export interface LLMCallOptions {
+  signal?: AbortSignal;
+}
+
 /**
  * Streaming chunk from LLM
  */
@@ -37,10 +41,11 @@ export interface LLMStreamChunk {
  * Abstract LLM Client interface
  */
 export interface ILLMClient {
-  chat(messages: Message[], tools?: ToolDefinition[]): Promise<LLMResponse>;
+  chat(messages: Message[], tools?: ToolDefinition[], options?: LLMCallOptions): Promise<LLMResponse>;
   chatStream?(
     messages: Message[],
     tools?: ToolDefinition[],
+    options?: LLMCallOptions,
   ): AsyncIterable<LLMStreamChunk>;
 }
 
@@ -106,14 +111,43 @@ export class MockLLMClient implements ILLMClient {
     this.callCount = 0;
   }
 
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      const err = new Error('LLM call aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+  }
+
+  private async delay(ms: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(Object.assign(new Error('LLM call aborted'), { name: 'AbortError' }));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
   async chat(
     messages: Message[],
-    tools?: ToolDefinition[]
+    tools?: ToolDefinition[],
+    options?: LLMCallOptions,
   ): Promise<LLMResponse> {
+    this.throwIfAborted(options?.signal);
     this.callCount++;
 
     // Simulate some delay
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await this.delay(10, options?.signal);
+    this.throwIfAborted(options?.signal);
 
     // Get the last user message
     const lastUserMessage = messages
@@ -140,6 +174,29 @@ export class MockLLMClient implements ILLMClient {
 
     // Return default response
     return this.generateDefaultResponse();
+  }
+
+  async *chatStream(
+    messages: Message[],
+    tools?: ToolDefinition[],
+    options?: LLMCallOptions,
+  ): AsyncIterable<LLMStreamChunk> {
+    const response = await this.chat(messages, tools, options);
+    this.throwIfAborted(options?.signal);
+
+    // Stream by whitespace-preserving chunks for responsive UI updates.
+    const chunks = response.content ? response.content.split(/(\s+)/).filter((part) => part.length > 0) : [];
+    for (const chunk of chunks) {
+      this.throwIfAborted(options?.signal);
+      yield { delta: chunk, done: false };
+    }
+
+    yield {
+      delta: '',
+      done: true,
+      toolCalls: response.toolCalls,
+      usage: response.usage,
+    };
   }
 
   private generateToolCallResponse(

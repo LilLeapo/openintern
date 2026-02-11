@@ -179,7 +179,7 @@ describeIfDatabase('Runs API', () => {
   });
 
   describe('POST /api/runs/:run_id/cancel', () => {
-    it('should return 400 for running or completed run', async () => {
+    it('should cancel active run or report already finished', async () => {
       // Create a run first (it will be auto-processed)
       const createResponse = await withScope(request(app)
         .post('/api/runs')
@@ -193,11 +193,16 @@ describeIfDatabase('Runs API', () => {
 
       // Try to cancel the run (may be running or completed)
       const response = await withScope(request(app).post(`/api/runs/${runId}/cancel`));
+      if (response.status === 200) {
+        const body = response.body as { success: boolean; run_id: string };
+        expect(body.success).toBe(true);
+        expect(body.run_id).toBe(runId);
+        return;
+      }
 
       const body = response.body as ErrorResponse;
       expect(response.status).toBe(400);
-      // Run may be running or already finished depending on timing
-      expect(['RUN_NOT_CANCELLABLE', 'RUN_ALREADY_FINISHED']).toContain(body.error.code);
+      expect(body.error.code).toBe('RUN_ALREADY_FINISHED');
     });
 
     it('should return 404 for non-existent run', async () => {

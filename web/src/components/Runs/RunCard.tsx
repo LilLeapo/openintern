@@ -21,7 +21,7 @@ function formatDuration(durationMs: number | null): string {
 export function RunCard({ run, onOpenTrace, onCancel, isCancelling = false }: RunCardProps) {
   const startTime = new Date(run.started_at).toLocaleString();
   const duration = formatDuration(run.duration_ms);
-  const canCancel = run.status === 'pending';
+  const canCancel = run.status === 'pending' || run.status === 'running';
 
   return (
     <article className={styles.runCard}>
@@ -53,7 +53,7 @@ export function RunCard({ run, onOpenTrace, onCancel, isCancelling = false }: Ru
           onClick={() => onCancel?.(run.run_id)}
           disabled={!canCancel || isCancelling}
         >
-          {isCancelling ? 'Cancelling...' : 'Cancel Pending'}
+          {isCancelling ? 'Cancelling...' : 'Cancel Run'}
         </button>
       </div>
     </article>

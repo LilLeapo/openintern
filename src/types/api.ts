@@ -88,7 +88,7 @@ export const QueuedRunSchema = z.object({
   input: z.string(),
   agent_id: z.string(),
   created_at: z.string().datetime(),
-  status: z.enum(['pending', 'running', 'completed', 'failed']),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled']),
   llm_config: LLMConfigRequestSchema,
   group_id: z.string().min(1).optional(),
 });

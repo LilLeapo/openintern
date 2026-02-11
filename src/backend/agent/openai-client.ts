@@ -10,7 +10,7 @@ import type {
   ToolCall,
 } from '../../types/agent.js';
 import { LLMError } from '../../utils/errors.js';
-import type { ILLMClient, LLMStreamChunk } from './llm-client.js';
+import type { ILLMClient, LLMCallOptions, LLMStreamChunk } from './llm-client.js';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 
@@ -36,7 +36,7 @@ export class OpenAIClient implements ILLMClient {
     this.maxTokens = config.maxTokens ?? 2000;
   }
 
-  async chat(messages: Message[], tools?: ToolDefinition[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools?: ToolDefinition[], options?: LLMCallOptions): Promise<LLMResponse> {
     const body = this.buildRequestBody(messages, tools);
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -46,6 +46,7 @@ export class OpenAIClient implements ILLMClient {
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
 
     if (!response.ok) {
@@ -121,6 +122,7 @@ export class OpenAIClient implements ILLMClient {
   async *chatStream(
     messages: Message[],
     tools?: ToolDefinition[],
+    options?: LLMCallOptions,
   ): AsyncIterable<LLMStreamChunk> {
     const body = this.buildRequestBody(messages, tools);
     (body as Record<string, unknown>).stream = true;
@@ -133,6 +135,7 @@ export class OpenAIClient implements ILLMClient {
         Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
 
     if (!response.ok) {

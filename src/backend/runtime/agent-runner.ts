@@ -1,7 +1,7 @@
 import type { LLMConfig, Message, ToolCall } from '../../types/agent.js';
 import type { Event, EventType } from '../../types/events.js';
 import type { ScopeContext } from './scope.js';
-import { createLLMClient } from '../agent/llm-client.js';
+import { createLLMClient, type ILLMClient } from '../agent/llm-client.js';
 import { generateSpanId, generateStepId } from '../../utils/ids.js';
 import { CheckpointService } from './checkpoint-service.js';
 import { MemoryService } from './memory-service.js';
@@ -16,6 +16,7 @@ export interface RunnerContext {
   agentId: string;
   groupId?: string;
   agentInstanceId?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface RunnerResult {
@@ -49,11 +50,24 @@ Memory workflow rule:
 3) Use memory_write to store durable insights.
 Keep answers concise and actionable.`;
 
+class RunCancelledError extends Error {
+  constructor(message: string = 'Run cancelled by user') {
+    super(message);
+    this.name = 'RunCancelledError';
+  }
+}
+
 export class SingleAgentRunner implements AgentRunner {
   private readonly maxSteps: number;
 
   constructor(private readonly config: SingleAgentRunnerConfig) {
     this.maxSteps = config.maxSteps;
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw new RunCancelledError();
+    }
   }
 
   async *run(input: string, ctx: RunnerContext): AsyncGenerator<Event, RunnerResult, void> {
@@ -70,6 +84,7 @@ export class SingleAgentRunner implements AgentRunner {
 
     try {
       for (let step = 1; step <= this.maxSteps; step++) {
+        this.throwIfAborted(ctx.abortSignal);
         steps = step;
         const stepId = generateStepId(step);
         const stepStart = Date.now();
@@ -101,7 +116,11 @@ export class SingleAgentRunner implements AgentRunner {
         const tools = this.config.toolRouter.listTools();
 
         const llmStarted = Date.now();
-        const response = await llmClient.chat(contextMessages, tools);
+        const llmOptions = ctx.abortSignal ? { signal: ctx.abortSignal } : undefined;
+        const response = llmClient.chatStream
+          ? yield* this.callLLMStream(llmClient, contextMessages, tools, ctx, stepId, rootSpan)
+          : await llmClient.chat(contextMessages, tools, llmOptions);
+        this.throwIfAborted(ctx.abortSignal);
         const llmDuration = Date.now() - llmStarted;
 
         yield this.createEvent(ctx, stepId, rootSpan, 'llm.called', {
@@ -118,7 +137,13 @@ export class SingleAgentRunner implements AgentRunner {
             content: response.content,
             toolCalls: response.toolCalls,
           });
-          const toolResult = await this.handleToolCalls(ctx, stepId, rootSpan, response.toolCalls);
+          const toolResult = await this.handleToolCalls(
+            ctx,
+            stepId,
+            rootSpan,
+            response.toolCalls,
+            ctx.abortSignal
+          );
           messages.push(...toolResult.newMessages);
           lastToolResult = toolResult.lastResult;
           yield* toolResult.events;
@@ -158,9 +183,10 @@ export class SingleAgentRunner implements AgentRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const stepId = generateStepId(Math.max(steps, 1));
+      const code = error instanceof RunCancelledError ? 'RUN_CANCELLED' : 'AGENT_ERROR';
       yield this.createEvent(ctx, stepId, rootSpan, 'run.failed', {
         error: {
-          code: 'AGENT_ERROR',
+          code,
           message,
         },
       });
@@ -170,6 +196,50 @@ export class SingleAgentRunner implements AgentRunner {
         steps,
       };
     }
+  }
+
+  private async *callLLMStream(
+    llmClient: ILLMClient,
+    contextMessages: Message[],
+    tools: ReturnType<RuntimeToolRouter['listTools']>,
+    ctx: RunnerContext,
+    stepId: string,
+    rootSpan: string
+  ): AsyncGenerator<Event, import('../../types/agent.js').LLMResponse, void> {
+    const llmOptions = ctx.abortSignal ? { signal: ctx.abortSignal } : undefined;
+    const stream = llmClient.chatStream!(contextMessages, tools, llmOptions);
+    let fullContent = '';
+    let tokenIndex = 0;
+    let finalToolCalls: ToolCall[] | undefined;
+    let finalUsage: import('../../types/agent.js').LLMResponse['usage'] = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    };
+
+    for await (const chunk of stream) {
+      this.throwIfAborted(ctx.abortSignal);
+      if (chunk.delta) {
+        fullContent += chunk.delta;
+        yield this.createEvent(ctx, stepId, rootSpan, 'llm.token', {
+          token: chunk.delta,
+          tokenIndex,
+        });
+        tokenIndex++;
+      }
+      if (chunk.toolCalls) {
+        finalToolCalls = chunk.toolCalls;
+      }
+      if (chunk.usage) {
+        finalUsage = chunk.usage;
+      }
+    }
+
+    return {
+      content: fullContent,
+      toolCalls: finalToolCalls,
+      usage: finalUsage,
+    };
   }
 
   private buildMemoryQuery(messages: Message[]): string {
@@ -208,7 +278,8 @@ When you need full memory details, call memory_get(id).`;
     ctx: RunnerContext,
     stepId: string,
     rootSpan: string,
-    toolCalls: ToolCall[]
+    toolCalls: ToolCall[],
+    abortSignal?: AbortSignal
   ): Promise<{
     events: Event[];
     newMessages: Message[];
@@ -219,6 +290,7 @@ When you need full memory details, call memory_get(id).`;
     let lastResult: unknown = null;
 
     for (const toolCall of toolCalls) {
+      this.throwIfAborted(abortSignal);
       events.push(
         this.createEvent(ctx, stepId, rootSpan, 'tool.called', {
           toolName: toolCall.name,
@@ -253,6 +325,7 @@ When you need full memory details, call memory_get(id).`;
           : `Error: ${result.error ?? 'Unknown tool error'}`,
         toolCallId: toolCall.id,
       });
+      this.throwIfAborted(abortSignal);
     }
 
     return { events, newMessages, lastResult };

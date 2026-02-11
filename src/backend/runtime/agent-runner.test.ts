@@ -417,4 +417,101 @@ describe('SingleAgentRunner', () => {
     expect(checkpointService.save).not.toHaveBeenCalled();
     assertEventMetadata(events);
   });
+
+  it('streams llm.token events before llm.called when streaming is available', async () => {
+    const memoryService = {
+      memory_search: vi.fn(async () => []),
+    };
+    const checkpointService = {
+      save: vi.fn(async () => undefined),
+    };
+    const toolRouter = {
+      listTools: vi.fn(() => []),
+      callTool: vi.fn(async () => ({
+        success: true,
+        result: {},
+        duration: 1,
+      })),
+    };
+    const chat = vi.fn(async () => ({
+      content: 'fallback',
+      usage: usage(),
+    }));
+    const chatStream = vi.fn(async function* () {
+      yield { delta: 'hello', done: false };
+      yield { delta: ' world', done: false };
+      yield { delta: '', done: true, usage: usage() };
+    });
+    mockedCreateLLMClient.mockReturnValue({ chat, chatStream });
+
+    const runner = new SingleAgentRunner({
+      maxSteps: 2,
+      modelConfig: { provider: 'mock', model: 'mock-model' },
+      checkpointService: checkpointService as never,
+      memoryService: memoryService as never,
+      toolRouter: toolRouter as never,
+    });
+
+    const { events, result } = await collectRun(runner, 'stream please', runnerContext, []);
+
+    expect(result.status).toBe('completed');
+    expect(chat).not.toHaveBeenCalled();
+    const tokenEvents = events.filter((event) => event.type === 'llm.token');
+    expect(tokenEvents.length).toBe(2);
+    expect(
+      tokenEvents.map((event) => (event.payload as { token: string }).token).join('')
+    ).toBe('hello world');
+    expect(events.findIndex((event) => event.type === 'llm.token')).toBeLessThan(
+      events.findIndex((event) => event.type === 'llm.called')
+    );
+  });
+
+  it('emits RUN_CANCELLED when abort signal is already cancelled', async () => {
+    const memoryService = {
+      memory_search: vi.fn(async () => []),
+    };
+    const checkpointService = {
+      save: vi.fn(async () => undefined),
+    };
+    const toolRouter = {
+      listTools: vi.fn(() => []),
+      callTool: vi.fn(async () => ({
+        success: true,
+        result: {},
+        duration: 1,
+      })),
+    };
+    const chat = vi.fn(async () => ({
+      content: 'should not happen',
+      usage: usage(),
+    }));
+    mockedCreateLLMClient.mockReturnValue({ chat });
+
+    const runner = new SingleAgentRunner({
+      maxSteps: 2,
+      modelConfig: { provider: 'mock', model: 'mock-model' },
+      checkpointService: checkpointService as never,
+      memoryService: memoryService as never,
+      toolRouter: toolRouter as never,
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    const { events, result } = await collectRun(
+      runner,
+      'cancel me',
+      {
+        ...runnerContext,
+        abortSignal: controller.signal,
+      },
+      []
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('cancelled');
+    expect(events.map((event) => event.type)).toEqual(['run.started', 'run.failed']);
+    const failed = events.find((event) => event.type === 'run.failed');
+    expect(failed?.payload.error.code).toBe('RUN_CANCELLED');
+    expect(chat).not.toHaveBeenCalled();
+  });
 });

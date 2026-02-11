@@ -135,7 +135,8 @@ export class RunRepository {
       `UPDATE runs
       SET status = 'running',
           started_at = COALESCE(started_at, NOW())
-      WHERE id = $1`,
+      WHERE id = $1
+        AND status = 'pending'`,
       [runId]
     );
   }
@@ -146,7 +147,8 @@ export class RunRepository {
       SET status = 'completed',
           ended_at = NOW(),
           result = $2::jsonb
-      WHERE id = $1`,
+      WHERE id = $1
+        AND status = 'running'`,
       [runId, JSON.stringify({ output })]
     );
   }
@@ -157,7 +159,8 @@ export class RunRepository {
       SET status = 'failed',
           ended_at = NOW(),
           error = $2::jsonb
-      WHERE id = $1`,
+      WHERE id = $1
+        AND status = 'running'`,
       [runId, JSON.stringify(error)]
     );
   }
@@ -168,7 +171,8 @@ export class RunRepository {
       SET status = 'cancelled',
           cancelled_at = NOW(),
           ended_at = NOW()
-      WHERE id = $1`,
+      WHERE id = $1
+        AND status IN ('pending', 'running')`,
       [runId]
     );
   }
@@ -269,6 +273,52 @@ export class RunRepository {
       ]
     );
     return Number.parseInt(result.rows[0]?.id ?? '0', 10);
+  }
+
+  async appendEvents(events: Event[]): Promise<number[]> {
+    if (events.length === 0) {
+      return [];
+    }
+
+    const values: string[] = [];
+    const params: unknown[] = [];
+    for (const event of events) {
+      const offset = params.length;
+      values.push(
+        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}::jsonb, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}::jsonb)`
+      );
+      params.push(
+        event.run_id,
+        event.ts,
+        event.agent_id,
+        event.step_id,
+        event.type,
+        JSON.stringify(event.payload),
+        event.v,
+        event.span_id,
+        event.parent_span_id,
+        JSON.stringify(event.redaction)
+      );
+    }
+
+    const result = await this.pool.query<{ id: string }>(
+      `INSERT INTO events (
+        run_id,
+        ts,
+        agent_id,
+        step_id,
+        type,
+        payload,
+        v,
+        span_id,
+        parent_span_id,
+        redaction
+      ) VALUES ${values.join(',')}
+      RETURNING id::text AS id`,
+      params
+    );
+
+    return result.rows.map((row) => Number.parseInt(row.id, 10));
   }
 
   async getRunEvents(

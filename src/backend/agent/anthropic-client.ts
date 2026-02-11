@@ -10,7 +10,7 @@ import type {
   ToolCall,
 } from '../../types/agent.js';
 import { LLMError } from '../../utils/errors.js';
-import type { ILLMClient, LLMStreamChunk } from './llm-client.js';
+import type { ILLMClient, LLMCallOptions, LLMStreamChunk } from './llm-client.js';
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -37,7 +37,7 @@ export class AnthropicClient implements ILLMClient {
     this.maxTokens = config.maxTokens ?? 2000;
   }
 
-  async chat(messages: Message[], tools?: ToolDefinition[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools?: ToolDefinition[], options?: LLMCallOptions): Promise<LLMResponse> {
     const body = this.buildRequestBody(messages, tools);
 
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
@@ -48,6 +48,7 @@ export class AnthropicClient implements ILLMClient {
         'anthropic-version': ANTHROPIC_VERSION,
       },
       body: JSON.stringify(body),
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
 
     if (!response.ok) {
@@ -172,6 +173,7 @@ export class AnthropicClient implements ILLMClient {
   async *chatStream(
     messages: Message[],
     tools?: ToolDefinition[],
+    options?: LLMCallOptions,
   ): AsyncIterable<LLMStreamChunk> {
     const body = this.buildRequestBody(messages, tools);
     (body as Record<string, unknown>).stream = true;
@@ -184,6 +186,7 @@ export class AnthropicClient implements ILLMClient {
         'anthropic-version': ANTHROPIC_VERSION,
       },
       body: JSON.stringify(body),
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
 
     if (!response.ok) {

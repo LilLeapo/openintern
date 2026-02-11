@@ -282,7 +282,13 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           }
 
           if (run.status === 'running') {
-            throw new AgentError('Cannot cancel a running run', 'RUN_NOT_CANCELLABLE', 400);
+            const cancelled = runQueue.cancel(runId);
+            if (!cancelled) {
+              throw new AgentError('Run is no longer cancellable', 'RUN_NOT_CANCELLABLE', 400);
+            }
+            await runRepository.setRunCancelled(runId);
+            res.json({ success: true, run_id: runId });
+            return;
           }
           if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
             throw new AgentError('Run has already finished', 'RUN_ALREADY_FINISHED', 400);

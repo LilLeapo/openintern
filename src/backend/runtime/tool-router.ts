@@ -157,9 +157,11 @@ export class RuntimeToolRouter {
   private readonly mcpClient: MCPClient | null;
   private readonly toolPolicy: ToolPolicy;
   private readonly skillRegistry: SkillRegistry | null;
+  private scope: ScopeContext;
 
   constructor(private readonly config: RuntimeToolRouterConfig) {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.scope = config.scope;
     this.toolPolicy = new ToolPolicy();
     this.skillRegistry = config.skillRegistry ?? null;
     this.mcpClient = config.mcp?.enabled
@@ -171,6 +173,10 @@ export class RuntimeToolRouter {
         })
       : null;
     this.registerBuiltinTools();
+  }
+
+  setScope(scope: ScopeContext): void {
+    this.scope = scope;
   }
 
   async start(): Promise<void> {
@@ -298,9 +304,9 @@ export class RuntimeToolRouter {
         const searchInput = {
           query,
           scope: {
-            org_id: this.config.scope.orgId,
-            user_id: this.config.scope.userId,
-            ...(this.config.scope.projectId ? { project_id: this.config.scope.projectId } : {}),
+            org_id: this.scope.orgId,
+            user_id: this.scope.userId,
+            ...(this.scope.projectId ? { project_id: this.scope.projectId } : {}),
           },
           top_k: topK,
           ...(typeof filters === 'object' && filters !== null
@@ -328,9 +334,9 @@ export class RuntimeToolRouter {
           throw new ToolError('id is required', 'memory_get');
         }
         return this.config.memoryService.memory_get(id, {
-          org_id: this.config.scope.orgId,
-          user_id: this.config.scope.userId,
-          ...(this.config.scope.projectId ? { project_id: this.config.scope.projectId } : {}),
+          org_id: this.scope.orgId,
+          user_id: this.scope.userId,
+          ...(this.scope.projectId ? { project_id: this.scope.projectId } : {}),
         });
       },
     });
@@ -363,9 +369,9 @@ export class RuntimeToolRouter {
         return this.config.memoryService.memory_write({
           type: type as 'core' | 'episodic' | 'archival',
           scope: {
-            org_id: this.config.scope.orgId,
-            user_id: this.config.scope.userId,
-            ...(this.config.scope.projectId ? { project_id: this.config.scope.projectId } : {}),
+            org_id: this.scope.orgId,
+            user_id: this.scope.userId,
+            ...(this.scope.projectId ? { project_id: this.scope.projectId } : {}),
           },
           text,
           metadata: typeof metadata === 'object' && metadata !== null
@@ -418,7 +424,7 @@ export class RuntimeToolRouter {
         const limitRaw = params['limit'];
         const limit =
           typeof limitRaw === 'number' && Number.isFinite(limitRaw) ? Math.max(1, Math.floor(limitRaw)) : 2000;
-        const page = await this.config.eventService.list(runId, this.config.scope, undefined, limit);
+        const page = await this.config.eventService.list(runId, this.scope, undefined, limit);
         return {
           run_id: runId,
           next_cursor: page.next_cursor,

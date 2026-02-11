@@ -14,6 +14,10 @@ export class EventService {
     return this.runs.appendEvent(event);
   }
 
+  async writeBatch(events: Event[]): Promise<number[]> {
+    return this.runs.appendEvents(events);
+  }
+
   async list(
     runId: string,
     scope: ScopeContext,

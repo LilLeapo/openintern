@@ -149,7 +149,13 @@ describe('AgentLoop', () => {
       const persistedTokens = persisted.filter((event) => event.type === 'llm.token');
       expect(persistedTokens.length).toBe(streamedTokens.length);
 
-      const lastTokenIdx = persisted.findLastIndex((event) => event.type === 'llm.token');
+      let lastTokenIdx = -1;
+      for (let i = persisted.length - 1; i >= 0; i--) {
+        if (persisted[i]?.type === 'llm.token') {
+          lastTokenIdx = i;
+          break;
+        }
+      }
       const completedIdx = persisted.findIndex((event) => event.type === 'run.completed');
       expect(lastTokenIdx).toBeGreaterThanOrEqual(0);
       expect(completedIdx).toBeGreaterThan(lastTokenIdx);

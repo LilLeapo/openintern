@@ -9,6 +9,7 @@ import type { Event } from '../../types/events.js';
 import type { CreateRunResponse, GetRunEventsResponse } from '../../types/api.js';
 import type { RunMeta } from '../../types/run.js';
 import type { QueuedRun } from '../../types/api.js';
+import type { RunExecutor } from '../queue/run-queue.js';
 
 const describeIfDatabase = process.env['DATABASE_URL'] ? describe : describe.skip;
 
@@ -147,7 +148,7 @@ async function collectSSEUntilTerminal(
 
 async function startTestServer(
   config: Partial<ServerConfig> = {},
-  customExecutor?: (run: QueuedRun) => Promise<void>
+  customExecutor?: RunExecutor
 ): Promise<{
   baseUrl: string;
   appServer: Server;
@@ -223,6 +224,7 @@ describeIfDatabase('Runs runtime integration (Postgres)', () => {
       expect.arrayContaining([
         'run.started',
         'step.started',
+        'llm.token',
         'llm.called',
         'step.completed',
         'run.completed',

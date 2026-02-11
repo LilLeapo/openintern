@@ -1,5 +1,6 @@
 import type { QueuedRun } from '../../types/api.js';
 import type { LLMConfig } from '../../types/agent.js';
+import type { Event } from '../../types/events.js';
 import { SSEManager } from '../api/sse.js';
 import { logger } from '../../utils/logger.js';
 import { SingleAgentRunner } from './agent-runner.js';
@@ -13,6 +14,11 @@ import { RoleRepository } from './role-repository.js';
 import { RoleRunnerFactory } from './role-runner-factory.js';
 import { RunRepository } from './run-repository.js';
 import { RuntimeToolRouter } from './tool-router.js';
+
+type Scope = { orgId: string; userId: string; projectId: string | null };
+type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
+
+const TOKEN_EVENT_BATCH_SIZE = 24;
 
 export interface RuntimeExecutorConfig {
   runRepository: RunRepository;
@@ -34,8 +40,53 @@ export interface RuntimeExecutorConfig {
   };
 }
 
-export function createRuntimeExecutor(config: RuntimeExecutorConfig): (run: QueuedRun) => Promise<void> {
-  return async (run: QueuedRun): Promise<void> => {
+function isCancellationError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const e = error as { name?: string; message?: string };
+  if (e.name === 'AbortError' || e.name === 'RunCancelledError') {
+    return true;
+  }
+  const message = (e.message ?? '').toLowerCase();
+  return message.includes('aborted') || message.includes('cancelled');
+}
+
+export function createRuntimeExecutor(
+  config: RuntimeExecutorConfig
+): (run: QueuedRun, signal: AbortSignal) => Promise<{ status: RunTerminalStatus }> {
+  let sharedToolRouter: RuntimeToolRouter | null = null;
+  let sharedToolRouterInit: Promise<RuntimeToolRouter> | null = null;
+
+  async function getSharedToolRouter(scope: Scope): Promise<RuntimeToolRouter> {
+    if (sharedToolRouter) {
+      sharedToolRouter.setScope(scope);
+      return sharedToolRouter;
+    }
+    if (!sharedToolRouterInit) {
+      sharedToolRouterInit = (async () => {
+        const router = new RuntimeToolRouter({
+          scope,
+          memoryService: config.memoryService,
+          eventService: config.eventService,
+          workDir: config.workDir,
+          ...(config.mcp ? { mcp: config.mcp } : {}),
+        });
+        await router.start();
+        sharedToolRouter = router;
+        return router;
+      })().catch((error) => {
+        sharedToolRouterInit = null;
+        throw error;
+      });
+    }
+
+    const router = await sharedToolRouterInit;
+    router.setScope(scope);
+    return router;
+  }
+
+  return async (run: QueuedRun, signal: AbortSignal): Promise<{ status: RunTerminalStatus }> => {
     const scope = {
       orgId: run.org_id,
       userId: run.user_id,
@@ -55,26 +106,32 @@ export function createRuntimeExecutor(config: RuntimeExecutorConfig): (run: Queu
       modelConfig.maxTokens = maxTokens;
     }
 
-    const toolRouterConfig = {
-      scope,
-      memoryService: config.memoryService,
-      eventService: config.eventService,
-      workDir: config.workDir,
-      ...(config.mcp ? { mcp: config.mcp } : {}),
-    };
-    const toolRouter = new RuntimeToolRouter(toolRouterConfig);
+    if (signal.aborted) {
+      await config.runRepository.setRunCancelled(run.run_id);
+      return { status: 'cancelled' };
+    }
+
+    const toolRouter = await getSharedToolRouter(scope);
 
     await config.runRepository.setRunRunning(run.run_id);
 
     try {
-      await toolRouter.start();
+      let status: RunTerminalStatus;
 
       if (run.group_id) {
-        await executeGroupRun(config, run, scope, modelConfig, toolRouter);
+        status = await executeGroupRun(config, run, scope, modelConfig, toolRouter, signal);
       } else {
-        await executeSingleRun(config, run, scope, modelConfig, toolRouter);
+        status = await executeSingleRun(config, run, scope, modelConfig, toolRouter, signal);
       }
-    } catch (error) {
+
+      return { status };
+    } catch (error: unknown) {
+      if (signal.aborted || isCancellationError(error)) {
+        await config.runRepository.setRunCancelled(run.run_id);
+        logger.info('Runtime executor cancelled', { runId: run.run_id });
+        return { status: 'cancelled' };
+      }
+
       const message = error instanceof Error ? error.message : String(error);
       await config.runRepository.setRunFailed(run.run_id, {
         code: 'EXECUTOR_ERROR',
@@ -84,9 +141,7 @@ export function createRuntimeExecutor(config: RuntimeExecutorConfig): (run: Queu
         runId: run.run_id,
         error: message,
       });
-      throw error;
-    } finally {
-      await toolRouter.stop();
+      return { status: 'failed' };
     }
   };
 }
@@ -96,10 +151,11 @@ export function createRuntimeExecutor(config: RuntimeExecutorConfig): (run: Queu
 async function executeSingleRun(
   config: RuntimeExecutorConfig,
   run: QueuedRun,
-  scope: { orgId: string; userId: string; projectId: string | null },
+  scope: Scope,
   modelConfig: LLMConfig,
-  toolRouter: RuntimeToolRouter
-): Promise<void> {
+  toolRouter: RuntimeToolRouter,
+  signal: AbortSignal
+): Promise<RunTerminalStatus> {
   const runner = new SingleAgentRunner({
     maxSteps: config.maxSteps,
     modelConfig,
@@ -108,14 +164,19 @@ async function executeSingleRun(
     toolRouter,
   });
 
-  for await (const event of runner.run(run.input, {
-    runId: run.run_id,
-    sessionKey: run.session_key,
-    scope,
-    agentId: run.agent_id,
-  })) {
-    await processEvent(config, run.run_id, event);
-  }
+  const status = await consumeEventStream(
+    config,
+    run.run_id,
+    runner.run(run.input, {
+      runId: run.run_id,
+      sessionKey: run.session_key,
+      scope,
+      agentId: run.agent_id,
+      abortSignal: signal,
+    }),
+    signal
+  );
+  return status ?? (signal.aborted ? 'cancelled' : 'completed');
 }
 
 // ─── Group run (serial orchestration) ────────────────────────
@@ -123,10 +184,11 @@ async function executeSingleRun(
 async function executeGroupRun(
   config: RuntimeExecutorConfig,
   run: QueuedRun,
-  scope: { orgId: string; userId: string; projectId: string | null },
+  scope: Scope,
   modelConfig: LLMConfig,
-  toolRouter: RuntimeToolRouter
-): Promise<void> {
+  toolRouter: RuntimeToolRouter,
+  signal: AbortSignal
+): Promise<RunTerminalStatus> {
   const groupId = run.group_id!;
   const members = await config.groupRepository.listMembers(groupId);
 
@@ -162,24 +224,74 @@ async function executeGroupRun(
     runnerFactory: factory,
   });
 
-  for await (const event of orchestrator.run(run.input, {
-    runId: run.run_id,
-    sessionKey: run.session_key,
-    scope,
-  })) {
-    await processEvent(config, run.run_id, event, groupId, scope);
-  }
+  const status = await consumeEventStream(
+    config,
+    run.run_id,
+    orchestrator.run(run.input, {
+      runId: run.run_id,
+      sessionKey: run.session_key,
+      scope,
+      abortSignal: signal,
+    }),
+    signal,
+    groupId,
+    scope
+  );
+  return status ?? (signal.aborted ? 'cancelled' : 'completed');
 }
 
 // ─── Shared event processing ─────────────────────────────────
 
+async function consumeEventStream(
+  config: RuntimeExecutorConfig,
+  runId: string,
+  stream: AsyncGenerator<Event, unknown, void>,
+  signal: AbortSignal,
+  groupId?: string,
+  scope?: Scope
+): Promise<RunTerminalStatus | null> {
+  let tokenBuffer: Event[] = [];
+  let terminalStatus: RunTerminalStatus | null = null;
+
+  const flushTokens = async (): Promise<void> => {
+    if (tokenBuffer.length === 0) {
+      return;
+    }
+    await config.eventService.writeBatch(tokenBuffer);
+    tokenBuffer = [];
+  };
+
+  for await (const event of stream) {
+    if (event.type === 'llm.token') {
+      config.sseManager.broadcastToRun(runId, event);
+      tokenBuffer.push(event);
+      if (tokenBuffer.length >= TOKEN_EVENT_BATCH_SIZE) {
+        await flushTokens();
+      }
+      continue;
+    }
+
+    await flushTokens();
+    const status = await processEvent(config, runId, event, groupId, scope);
+    if (status) {
+      terminalStatus = status;
+    }
+    if (signal.aborted && terminalStatus === null) {
+      terminalStatus = 'cancelled';
+    }
+  }
+
+  await flushTokens();
+  return terminalStatus;
+}
+
 async function processEvent(
   config: RuntimeExecutorConfig,
   runId: string,
-  event: import('../../types/events.js').Event,
+  event: Event,
   groupId?: string,
-  scope?: { orgId: string; userId: string; projectId: string | null }
-): Promise<void> {
+  scope?: Scope
+): Promise<RunTerminalStatus | null> {
   await config.eventService.write(event);
   config.sseManager.broadcastToRun(runId, event);
 
@@ -202,10 +314,17 @@ async function processEvent(
         });
       }
     }
+    return 'completed';
   } else if (event.type === 'run.failed') {
+    if (event.payload.error.code === 'RUN_CANCELLED') {
+      await config.runRepository.setRunCancelled(runId);
+      return 'cancelled';
+    }
     await config.runRepository.setRunFailed(runId, {
       code: event.payload.error.code,
       message: event.payload.error.message,
     });
+    return 'failed';
   }
+  return null;
 }

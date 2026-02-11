@@ -24,6 +24,7 @@ export interface OrchestratorContext {
   runId: string;
   sessionKey: string;
   scope: ScopeContext;
+  abortSignal?: AbortSignal;
 }
 
 export interface OrchestratorResult {
@@ -73,6 +74,14 @@ export class SerialOrchestrator {
     }
   }
 
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      const err = new Error('Run cancelled by user');
+      err.name = 'RunCancelledError';
+      throw err;
+    }
+  }
+
   async *run(
     input: string,
     ctx: OrchestratorContext
@@ -94,6 +103,7 @@ export class SerialOrchestrator {
       const roundOutputs: RoundOutput[] = [];
 
       for (let round = 1; round <= this.config.maxRounds; round++) {
+        this.throwIfAborted(ctx.abortSignal);
         logger.info('Orchestrator round started', {
           runId: ctx.runId,
           groupId: this.config.groupId,
@@ -102,8 +112,10 @@ export class SerialOrchestrator {
 
         // Phase 1: Run non-lead agents
         for (const slot of this.nonLeadSlots) {
+          this.throwIfAborted(ctx.abortSignal);
           const agentInput = this.buildAgentInput(input, round, roundOutputs);
           const result = yield* this.runSlot(slot, agentInput, ctx, rootSpan, totalSteps);
+          this.throwIfAborted(ctx.abortSignal);
           totalSteps += result.steps;
 
           if (result.output) {
@@ -118,8 +130,10 @@ export class SerialOrchestrator {
 
         // Phase 2: Run lead agent to synthesize
         if (this.leadSlot) {
+          this.throwIfAborted(ctx.abortSignal);
           const leadInput = this.buildLeadInput(input, roundOutputs);
           const result = yield* this.runSlot(this.leadSlot, leadInput, ctx, rootSpan, totalSteps);
+          this.throwIfAborted(ctx.abortSignal);
           totalSteps += result.steps;
 
           if (result.output) {
@@ -191,13 +205,14 @@ export class SerialOrchestrator {
       throw new Error(`Max rounds (${this.config.maxRounds}) reached without decision`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const cancelled = ctx.abortSignal?.aborted || /cancel/i.test(message);
       yield this.createOrchestratorEvent(
         ctx,
         generateStepId(Math.max(totalSteps, 1)),
         rootSpan,
         'run.failed',
         {
-          error: { code: 'ORCHESTRATOR_ERROR', message },
+          error: { code: cancelled ? 'RUN_CANCELLED' : 'ORCHESTRATOR_ERROR', message },
         }
       );
       return {
@@ -225,6 +240,7 @@ export class SerialOrchestrator {
       agentId: slot.member.agentInstanceId,
       groupId: this.config.groupId,
       agentInstanceId: slot.member.agentInstanceId,
+      ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
     };
 
     logger.info('Running agent slot', {

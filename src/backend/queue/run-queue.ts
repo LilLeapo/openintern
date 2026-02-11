@@ -21,6 +21,7 @@ export type QueueEventType =
   | 'run.enqueued'
   | 'run.started'
   | 'run.completed'
+  | 'run.cancelled'
   | 'run.failed'
   | 'queue.empty';
 
@@ -32,7 +33,10 @@ export type QueueEventHandler = (run: QueuedRun) => void;
 /**
  * Run executor function type
  */
-export type RunExecutor = (run: QueuedRun) => Promise<void>;
+export type RunExecutor = (
+  run: QueuedRun,
+  signal: AbortSignal
+) => Promise<{ status: 'completed' | 'failed' | 'cancelled' } | void>;
 
 /**
  * Queue configuration
@@ -66,6 +70,7 @@ export class RunQueue extends EventEmitter {
   private executor: RunExecutor | null = null;
   private processing = false;
   private persistPath: string | null = null;
+  private currentAbortController: AbortController | null = null;
 
   constructor(config: Partial<QueueConfig> = {}) {
     super();
@@ -228,6 +233,9 @@ export class RunQueue extends EventEmitter {
    * Execute a single run with timeout
    */
   private async executeRun(run: QueuedRun): Promise<void> {
+    const abortController = new AbortController();
+    this.currentAbortController = abortController;
+
     // Update status to running
     const runningRun: QueuedRun = {
       ...run,
@@ -238,23 +246,58 @@ export class RunQueue extends EventEmitter {
     logger.info('Run started', { runId: run.run_id });
 
     try {
+      let finalStatus: 'completed' | 'failed' | 'cancelled' = 'completed';
       if (this.executor) {
         // Execute with timeout
-        await Promise.race([
-          this.executor(runningRun),
+        const result = await Promise.race([
+          this.executor(runningRun, abortController.signal),
           this.createTimeout(run.run_id),
         ]);
+        if (result && typeof result === 'object' && 'status' in result) {
+          finalStatus = result.status;
+        } else if (abortController.signal.aborted) {
+          finalStatus = 'cancelled';
+        }
       }
 
-      // Mark as completed
-      const completedRun: QueuedRun = {
-        ...runningRun,
-        status: 'completed',
-      };
-      this.completedRuns.set(run.run_id, completedRun);
-      this.emit('run.completed', completedRun);
-      logger.info('Run completed', { runId: run.run_id });
+      if (finalStatus === 'cancelled') {
+        const cancelledRun: QueuedRun = {
+          ...runningRun,
+          status: 'cancelled',
+        };
+        this.completedRuns.set(run.run_id, cancelledRun);
+        this.emit('run.cancelled', cancelledRun);
+        logger.info('Run cancelled while running', { runId: run.run_id });
+      } else if (finalStatus === 'failed') {
+        const failedRun: QueuedRun = {
+          ...runningRun,
+          status: 'failed',
+        };
+        this.completedRuns.set(run.run_id, failedRun);
+        this.emit('run.failed', failedRun);
+        logger.error('Run failed', { runId: run.run_id });
+      } else {
+        // Mark as completed
+        const completedRun: QueuedRun = {
+          ...runningRun,
+          status: 'completed',
+        };
+        this.completedRuns.set(run.run_id, completedRun);
+        this.emit('run.completed', completedRun);
+        logger.info('Run completed', { runId: run.run_id });
+      }
     } catch (error) {
+      if (abortController.signal.aborted) {
+        const cancelledRun: QueuedRun = {
+          ...runningRun,
+          status: 'cancelled',
+        };
+        this.completedRuns.set(run.run_id, cancelledRun);
+        this.emit('run.cancelled', cancelledRun);
+        logger.info('Run cancelled while running', { runId: run.run_id });
+        return;
+      }
+
       // Mark as failed
       const failedRun: QueuedRun = {
         ...runningRun,
@@ -267,6 +310,7 @@ export class RunQueue extends EventEmitter {
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      this.currentAbortController = null;
       this.runningRun = null;
       this.persistRewrite();
     }
@@ -294,6 +338,12 @@ export class RunQueue extends EventEmitter {
    * Cancel a pending run (remove from queue)
    */
   cancel(runId: string): boolean {
+    if (this.runningRun?.run_id === runId && this.currentAbortController) {
+      this.currentAbortController.abort();
+      logger.info('Running run cancellation requested', { runId });
+      return true;
+    }
+
     const index = this.queue.findIndex((r) => r.run_id === runId);
     if (index === -1) {
       return false;

@@ -100,6 +100,42 @@ describe('RunQueue', () => {
     it('should return false for unknown runs', () => {
       expect(queue.cancel('run_unknown')).toBe(false);
     });
+
+    it('should cancel a running run via abort signal', async () => {
+      queue.setExecutor(async (_run, signal) => {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 5000);
+          signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new Error('aborted'));
+          }, { once: true });
+        });
+      });
+
+      const cancelledHandler = vi.fn();
+      queue.on('run.cancelled', cancelledHandler);
+
+      const run = createMockRun({ run_id: 'run_cancel_running' });
+      queue.enqueue(run);
+      const processing = queue.processQueue();
+
+      const started = Date.now();
+      while (queue.getStatus(run.run_id) !== 'running') {
+        if (Date.now() - started > 3000) {
+          throw new Error('Timed out waiting for running status');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(queue.cancel(run.run_id)).toBe(true);
+      await processing;
+
+      expect(cancelledHandler).toHaveBeenCalledWith(expect.objectContaining({
+        run_id: run.run_id,
+        status: 'cancelled',
+      }));
+      expect(queue.getStatus(run.run_id)).toBe('cancelled');
+    });
   });
 
   describe('processQueue', () => {
