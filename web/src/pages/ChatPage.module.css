@@ -177,6 +177,13 @@
   line-height: 1.35;
 }
 
+.infoText {
+  margin-top: 0.62rem;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .inlineLink {
   border: none;
   background: transparent;

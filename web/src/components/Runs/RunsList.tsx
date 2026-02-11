@@ -4,6 +4,7 @@
 
 import { RunCard } from './RunCard';
 import type { RunMeta } from '../../types';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Runs.module.css';
 
 export interface RunsListProps {
@@ -26,6 +27,7 @@ interface PaginationProps {
 }
 
 function Pagination({ page, totalPages, onPageChange }: PaginationProps) {
+  const { t } = useLocaleText();
   return (
     <div className={styles.pagination}>
       <button
@@ -33,17 +35,17 @@ function Pagination({ page, totalPages, onPageChange }: PaginationProps) {
         disabled={page <= 1}
         onClick={() => onPageChange?.(page - 1)}
       >
-        Previous
+        {t('Previous', '上一页')}
       </button>
       <span className={styles.pageInfo}>
-        Page {page} of {totalPages}
+        {t(`Page ${page} of ${totalPages}`, `第 ${page} / ${totalPages} 页`)}
       </span>
       <button
         className={styles.pageButton}
         disabled={page >= totalPages}
         onClick={() => onPageChange?.(page + 1)}
       >
-        Next
+        {t('Next', '下一页')}
       </button>
     </div>
   );
@@ -61,16 +63,17 @@ export function RunsList({
   onCancelRun,
   cancellingRunId = null,
 }: RunsListProps) {
+  const { t } = useLocaleText();
   const totalPages = Math.ceil(total / limit);
 
   return (
     <div className={styles.runsList}>
       {loading ? (
-        <div className={styles.loading}>Loading runs...</div>
+        <div className={styles.loading}>{t('Loading runs...', '正在加载任务...')}</div>
       ) : error ? (
         <div className={styles.error}>{error.message}</div>
       ) : runs.length === 0 ? (
-        <div className={styles.empty}>No runs found</div>
+        <div className={styles.empty}>{t('No runs found', '未找到任务')}</div>
       ) : (
         <>
           <div className={styles.runsGrid}>

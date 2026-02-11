@@ -3,6 +3,7 @@
  */
 
 import type { BlackboardMemory } from '../../types';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './BlackboardPanel.module.css';
 
 interface EvidenceListProps {
@@ -10,8 +11,9 @@ interface EvidenceListProps {
 }
 
 export function EvidenceList({ evidence }: EvidenceListProps) {
+  const { t } = useLocaleText();
   if (evidence.length === 0) {
-    return <p className={styles.empty}>No evidence collected yet.</p>;
+    return <p className={styles.empty}>{t('No evidence collected yet.', '暂时没有收集到证据。')}</p>;
   }
 
   return (
@@ -25,7 +27,7 @@ export function EvidenceList({ evidence }: EvidenceListProps) {
         return (
           <div key={mem.id} className={styles.evidenceItem}>
             <div className={styles.evidenceHeader}>
-              <span className={styles.badgeEvidence}>EVIDENCE</span>
+              <span className={styles.badgeEvidence}>{t('Evidence', '证据')}</span>
               <span className={styles.timestamp}>
                 {new Date(mem.created_at).toLocaleString()}
               </span>

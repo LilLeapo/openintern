@@ -2,6 +2,7 @@
  * ToolCallCard - displays a tool call and its result
  */
 
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Trace.module.css';
 
 export interface ToolCallCardProps {
@@ -21,6 +22,7 @@ export function ToolCallCard({
   error,
   duration,
 }: ToolCallCardProps) {
+  const { t } = useLocaleText();
   return (
     <div className={`${styles.toolCard} ${isError ? styles.error : ''}`}>
       <div className={styles.toolHeader}>
@@ -30,7 +32,7 @@ export function ToolCallCard({
         )}
       </div>
       <div className={styles.toolSection}>
-        <div className={styles.sectionLabel}>Arguments</div>
+        <div className={styles.sectionLabel}>{t('Arguments', '参数')}</div>
         <pre className={styles.codeBlock}>
           {JSON.stringify(args, null, 2)}
         </pre>
@@ -38,7 +40,7 @@ export function ToolCallCard({
       {(result !== undefined || error) && (
         <div className={styles.toolSection}>
           <div className={styles.sectionLabel}>
-            {isError ? 'Error' : 'Result'}
+            {isError ? t('Error', '错误') : t('Result', '结果')}
           </div>
           <pre className={`${styles.codeBlock} ${isError ? styles.errorText : ''}`}>
             {isError && error

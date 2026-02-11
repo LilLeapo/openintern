@@ -3,6 +3,7 @@
  */
 
 import type { BlackboardMemory } from '../../types';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './BlackboardPanel.module.css';
 
 interface TodoListProps {
@@ -10,8 +11,9 @@ interface TodoListProps {
 }
 
 export function TodoList({ todos }: TodoListProps) {
+  const { t } = useLocaleText();
   if (todos.length === 0) {
-    return <p className={styles.empty}>No action items yet.</p>;
+    return <p className={styles.empty}>{t('No action items yet.', '暂时没有行动项。')}</p>;
   }
 
   return (
@@ -27,7 +29,7 @@ export function TodoList({ todos }: TodoListProps) {
               <p className={styles.todoText}>{action}</p>
               {source && (
                 <p className={styles.todoSource}>
-                  From: {source}
+                  {t('Source:', '来源：')} {source}
                 </p>
               )}
             </div>

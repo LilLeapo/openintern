@@ -11,9 +11,12 @@ import {
 const SESSION_STORAGE_KEY = 'openintern.session_key';
 const SESSION_HISTORY_STORAGE_KEY = 'openintern.session_history';
 const GROUP_STORAGE_KEY = 'openintern.group_id';
+const LOCALE_STORAGE_KEY = 'openintern.locale';
 const DEFAULT_SESSION_KEY = 's_default';
 const SESSION_PATTERN = /^s_[a-zA-Z0-9_]+$/;
 const MAX_SESSION_HISTORY = 24;
+
+export type AppLocale = 'en' | 'zh-CN';
 
 interface AppPreferencesContextValue {
   sessionKey: string;
@@ -23,9 +26,11 @@ interface AppPreferencesContextValue {
   removeSession: (value: string) => void;
   selectedGroupId: string | null;
   setSelectedGroupId: (value: string | null) => void;
+  locale: AppLocale;
+  setLocale: (value: AppLocale) => void;
 }
 
-const AppPreferencesContext = createContext<AppPreferencesContextValue | null>(null);
+export const AppPreferencesContext = createContext<AppPreferencesContextValue | null>(null);
 
 function normalizeSessionKey(value: string): string {
   const trimmed = value.trim();
@@ -73,6 +78,11 @@ function readSessionHistory(): string[] {
   }
 }
 
+function readLocale(): AppLocale {
+  const raw = readStorage(LOCALE_STORAGE_KEY);
+  return raw === 'zh-CN' ? 'zh-CN' : 'en';
+}
+
 export function AppPreferencesProvider({ children }: { children: ReactNode }) {
   const [sessionKey, setSessionKeyState] = useState<string>(() => {
     const stored = readStorage(SESSION_STORAGE_KEY);
@@ -82,6 +92,7 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
   const [selectedGroupId, setSelectedGroupIdState] = useState<string | null>(() =>
     readStorage(GROUP_STORAGE_KEY),
   );
+  const [locale, setLocaleState] = useState<AppLocale>(readLocale);
 
   useEffect(() => {
     window.localStorage.setItem(SESSION_STORAGE_KEY, sessionKey);
@@ -114,6 +125,11 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     }
     window.localStorage.removeItem(GROUP_STORAGE_KEY);
   }, [selectedGroupId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   const prependSessionHistory = useCallback((value: string) => {
     setSessionHistory(prev => [value, ...prev.filter(item => item !== value)].slice(0, MAX_SESSION_HISTORY));
@@ -151,6 +167,10 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     setSelectedGroupIdState(value);
   }, []);
 
+  const setLocale = useCallback((value: AppLocale) => {
+    setLocaleState(value);
+  }, []);
+
   const value = useMemo(
     () => ({
       sessionKey,
@@ -160,6 +180,8 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       removeSession,
       selectedGroupId,
       setSelectedGroupId,
+      locale,
+      setLocale,
     }),
     [
       sessionKey,
@@ -169,6 +191,8 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       removeSession,
       selectedGroupId,
       setSelectedGroupId,
+      locale,
+      setLocale,
     ],
   );
 

@@ -5,21 +5,30 @@ import { useChat } from '../hooks/useChat';
 import { useRuns } from '../hooks/useRuns';
 import { AppShell } from '../components/Layout/AppShell';
 import { useAppPreferences } from '../context/AppPreferencesContext';
+import { useLocaleText } from '../i18n/useLocaleText';
 import type { RunLLMConfig } from '../api/client';
 import { apiClient } from '../api/client';
 import type { Group } from '../types';
 import styles from './ChatPage.module.css';
 
-const QUICK_PROMPTS = [
+const QUICK_PROMPTS_EN = [
   'Summarize what changed in today\'s run and list next actions.',
   'Propose a safer rollback plan for the failing workflow.',
   'Draft a test checklist for this feature before release.',
   'Generate a concise status update for stakeholders.',
 ];
 
+const QUICK_PROMPTS_ZH = [
+  '总结今天任务的变化，并列出下一步行动。',
+  '为当前失败流程给出更安全的回滚方案。',
+  '为这个功能上线前生成测试检查清单。',
+  '生成一段简洁的项目进展同步给干系人。',
+];
+
 const PROVIDER_STORAGE_KEY = 'openintern.chat.provider';
 const MODEL_STORAGE_KEY = 'openintern.chat.model';
-const RUN_MODE_STORAGE_KEY = 'openintern.chat.run_mode';
+const ASSISTANT_TARGET_STORAGE_KEY = 'openintern.chat.assistant_target';
+const SOLO_ASSISTANT_TARGET = '__solo__';
 
 const MODEL_OPTIONS: Record<'openai' | 'anthropic' | 'mock', string[]> = {
   openai: ['gpt-4o', 'gpt-4o-mini'],
@@ -50,12 +59,15 @@ function readStoredModel(provider: 'openai' | 'anthropic' | 'mock'): string {
   return options[0]!;
 }
 
-function readStoredRunMode(): 'single' | 'group' {
+function readStoredAssistantTarget(): string | null {
   if (typeof window === 'undefined') {
-    return 'single';
+    return null;
   }
-  const value = window.localStorage.getItem(RUN_MODE_STORAGE_KEY);
-  return value === 'group' ? 'group' : 'single';
+  const value = window.localStorage.getItem(ASSISTANT_TARGET_STORAGE_KEY);
+  if (!value) {
+    return null;
+  }
+  return value;
 }
 
 export function ChatPage() {
@@ -69,10 +81,13 @@ export function ChatPage() {
     setSelectedGroupId,
   } =
     useAppPreferences();
+  const { isZh, t } = useLocaleText();
   const navigate = useNavigate();
   const [provider, setProvider] = useState<'openai' | 'anthropic' | 'mock'>(readStoredProvider);
   const [model, setModel] = useState<string>(() => readStoredModel(readStoredProvider()));
-  const [runMode, setRunMode] = useState<'single' | 'group'>(readStoredRunMode);
+  const [assistantTarget, setAssistantTarget] = useState<string>(
+    () => readStoredAssistantTarget() ?? SOLO_ASSISTANT_TARGET,
+  );
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupsLoading, setGroupsLoading] = useState(false);
 
@@ -92,8 +107,8 @@ export function ChatPage() {
   }, [model]);
 
   useEffect(() => {
-    window.localStorage.setItem(RUN_MODE_STORAGE_KEY, runMode);
-  }, [runMode]);
+    window.localStorage.setItem(ASSISTANT_TARGET_STORAGE_KEY, assistantTarget);
+  }, [assistantTarget]);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,9 +118,19 @@ export function ChatPage() {
         const result = await apiClient.listGroups();
         if (cancelled) return;
         setGroups(result);
-        if (!selectedGroupId && result.length > 0) {
+        if (result.length === 0) {
+          setAssistantTarget(SOLO_ASSISTANT_TARGET);
+          return;
+        }
+        if (!selectedGroupId) {
           setSelectedGroupId(result[0]!.id);
         }
+        setAssistantTarget(prev => {
+          if (prev === SOLO_ASSISTANT_TARGET) {
+            return prev;
+          }
+          return result.some(group => group.id === prev) ? prev : result[0]!.id;
+        });
       } finally {
         if (!cancelled) {
           setGroupsLoading(false);
@@ -117,6 +142,20 @@ export function ChatPage() {
       cancelled = true;
     };
   }, [selectedGroupId, setSelectedGroupId]);
+
+  useEffect(() => {
+    if (assistantTarget === SOLO_ASSISTANT_TARGET) {
+      return;
+    }
+    if (selectedGroupId !== assistantTarget) {
+      setSelectedGroupId(assistantTarget);
+    }
+  }, [assistantTarget, selectedGroupId, setSelectedGroupId]);
+
+  const runMode: 'single' | 'group' =
+    assistantTarget === SOLO_ASSISTANT_TARGET ? 'single' : 'group';
+  const activeGroupId = runMode === 'group' ? assistantTarget : null;
+  const activeTeam = groups.find(group => group.id === activeGroupId) ?? null;
 
   const llmConfig = useMemo<RunLLMConfig>(
     () => ({
@@ -130,7 +169,7 @@ export function ChatPage() {
     useChat(sessionKey, {
       llmConfig,
       runMode,
-      groupId: selectedGroupId,
+      groupId: activeGroupId,
     });
   const {
     runs: sessionRuns,
@@ -153,16 +192,28 @@ export function ChatPage() {
     [messages],
   );
 
+  const quickPrompts = isZh ? QUICK_PROMPTS_ZH : QUICK_PROMPTS_EN;
+
   return (
     <AppShell
-      title="Agent Chat Workspace"
-      subtitle={`Live collaboration in ${sessionKey}`}
+      title={t('Assistant Workspace', '助手工作区')}
+      subtitle={
+        runMode === 'group' && activeTeam
+          ? t(
+              `Team mode: ${activeTeam.name} · Conversation ${sessionKey}`,
+              `团队模式：${activeTeam.name} · 会话 ${sessionKey}`,
+            )
+          : t(
+              `Personal assistant mode · Conversation ${sessionKey}`,
+              `个人助手模式 · 会话 ${sessionKey}`,
+            )
+      }
       actions={
         <button
           className={styles.pageAction}
           onClick={() => navigate('/runs')}
         >
-          Open Runs
+          {t('Open Task Center', '打开任务中心')}
         </button>
       }
     >
@@ -170,15 +221,15 @@ export function ChatPage() {
         <section className={styles.chatColumn}>
           <div className={styles.statsGrid}>
             <div className={styles.statCard}>
-              <span className={styles.statLabel}>User Messages</span>
+              <span className={styles.statLabel}>{t('Your Messages', '你的消息')}</span>
               <strong className={styles.statValue}>{stats.userCount}</strong>
             </div>
             <div className={styles.statCard}>
-              <span className={styles.statLabel}>Agent Replies</span>
+              <span className={styles.statLabel}>{t('Assistant Replies', '助手回复')}</span>
               <strong className={styles.statValue}>{stats.assistantCount}</strong>
             </div>
             <div className={styles.statCard}>
-              <span className={styles.statLabel}>Referenced Runs</span>
+              <span className={styles.statLabel}>{t('Completed Tasks', '已完成任务')}</span>
               <strong className={styles.statValue}>{stats.runCount}</strong>
             </div>
           </div>
@@ -198,8 +249,11 @@ export function ChatPage() {
         </section>
         <aside className={styles.sidePanel}>
           <div className={styles.panelBlock}>
-            <h3>Sessions</h3>
-            <p>Switch between session scopes and keep separate run histories.</p>
+            <h3>{t('Conversations', '会话')}</h3>
+            <p>{t(
+              'Keep different topics separated. Each conversation has its own context and task history.',
+              '将不同主题分开管理。每个会话拥有独立上下文与任务历史。',
+            )}</p>
             <div className={styles.sessionActions}>
               <button
                 className={styles.sessionActionPrimary}
@@ -208,13 +262,13 @@ export function ChatPage() {
                 }}
                 disabled={isRunning}
               >
-                New Session
+                {t('New Conversation', '新建会话')}
               </button>
               <button
                 className={styles.sessionActionSecondary}
                 onClick={() => void refreshSessionRuns()}
               >
-                Refresh History
+                {t('Refresh Tasks', '刷新任务')}
               </button>
             </div>
             <div className={styles.sessionList}>
@@ -238,68 +292,66 @@ export function ChatPage() {
                     disabled={sessionHistory.length <= 1 || item === sessionKey}
                     aria-label={`Remove ${item}`}
                   >
-                    Remove
+                    {t('Delete', '删除')}
                   </button>
                 </div>
               ))}
             </div>
           </div>
           <div className={styles.panelBlock}>
-            <h3>Run Mode</h3>
-            <p>Choose single-agent chat or group orchestration for new prompts.</p>
+            <h3>{t('Assistant', '助手')}</h3>
+            <p>{t('Choose who should handle this conversation.', '选择谁来处理这个会话。')}</p>
             <div className={styles.modeControls}>
               <label className={styles.modeField}>
-                <span>Mode</span>
+                <span>{t('Assistant', '助手')}</span>
                 <select
-                  value={runMode}
-                  onChange={event => setRunMode(event.target.value as 'single' | 'group')}
-                  disabled={isRunning}
+                  value={assistantTarget}
+                  onChange={event => setAssistantTarget(event.target.value)}
+                  disabled={isRunning || groupsLoading}
                 >
-                  <option value="single">single agent</option>
-                  <option value="group">group run</option>
+                  <option value={SOLO_ASSISTANT_TARGET}>{t('Personal Assistant', '个人助手')}</option>
+                  {groups.map(group => (
+                    <option key={group.id} value={group.id}>
+                      {group.name}
+                    </option>
+                  ))}
                 </select>
               </label>
-              {runMode === 'group' && (
-                <label className={styles.modeField}>
-                  <span>Group</span>
-                  <select
-                    value={selectedGroupId ?? ''}
-                    onChange={event => setSelectedGroupId(event.target.value || null)}
-                    disabled={isRunning || groupsLoading}
-                  >
-                    {groups.length === 0 ? (
-                      <option value="">No group available</option>
-                    ) : (
-                      groups.map(group => (
-                        <option key={group.id} value={group.id}>
-                          {group.name} ({group.id})
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
-              )}
             </div>
-            {runMode === 'group' && groups.length === 0 && (
-              <p className={styles.warningText}>
-                No groups found. Create one in Orchestrator.
+            {runMode === 'group' && activeTeam && (
+              <p className={styles.infoText}>
+                {t(
+                  'Team mode is active. You will receive one final response synthesized by the team lead.',
+                  '当前为团队模式。你将收到由团队负责人综合后的最终回复。',
+                )}
+              </p>
+            )}
+            {groups.length === 0 && (
+              <p className={styles.infoText}>
+                {t(
+                  'No assistant teams configured yet. Build one in Team Studio if you want multi-expert collaboration.',
+                  '还没有配置助手团队。如需多专家协作，请先在团队工作台创建。',
+                )}
                 {' '}
                 <button
                   className={styles.inlineLink}
                   onClick={() => navigate('/orchestrator')}
                   disabled={isRunning}
                 >
-                  Open Orchestrator
+                  {t('Open Team Studio', '打开团队工作台')}
                 </button>
               </p>
             )}
           </div>
           <div className={styles.panelBlock}>
-            <h3>Model</h3>
-            <p>Choose provider and model per run. API credentials stay server-side.</p>
+            <h3>{t('Model Routing (Advanced)', '模型路由（高级）')}</h3>
+            <p>{t(
+              'Choose provider and model for new tasks. API credentials stay server-side.',
+              '为新任务选择 provider 和模型。API 凭据仅保存在服务端。',
+            )}</p>
             <div className={styles.modelControls}>
               <label className={styles.modelField}>
-                <span>Provider</span>
+                <span>{t('Provider', 'Provider')}</span>
                 <select
                   value={provider}
                   onChange={event => setProvider(event.target.value as 'openai' | 'anthropic' | 'mock')}
@@ -311,7 +363,7 @@ export function ChatPage() {
                 </select>
               </label>
               <label className={styles.modelField}>
-                <span>Model</span>
+                <span>{t('Model', '模型')}</span>
                 <select
                   value={model}
                   onChange={event => setModel(event.target.value)}
@@ -327,10 +379,10 @@ export function ChatPage() {
             </div>
           </div>
           <div className={styles.panelBlock}>
-            <h3>Quick Prompts</h3>
-            <p>Kickstart common tasks without typing full instructions.</p>
+            <h3>{t('Task Starters', '任务模板')}</h3>
+            <p>{t('Kick off common tasks quickly.', '快速发起常见任务。')}</p>
             <div className={styles.promptList}>
-              {QUICK_PROMPTS.map(prompt => (
+              {quickPrompts.map(prompt => (
                 <button
                   key={prompt}
                   className={styles.promptButton}
@@ -343,22 +395,22 @@ export function ChatPage() {
             </div>
           </div>
           <div className={styles.panelBlock}>
-            <h3>Recent Agent Output</h3>
+            <h3>{t('Recent Reply', '最近回复')}</h3>
             {latestAssistant ? (
               <p className={styles.outputPreview}>{latestAssistant}</p>
             ) : (
               <p className={styles.emptyText}>
-                No assistant output yet. Send the first prompt to begin.
+                {t('No reply yet. Send your first request to start.', '还没有回复，发送第一条请求开始。')}
               </p>
             )}
           </div>
           <div className={styles.panelBlock}>
-            <h3>Session Run History</h3>
+            <h3>{t('Conversation Tasks', '会话任务')}</h3>
             {runsLoading ? (
-              <p className={styles.emptyText}>Loading run history...</p>
+              <p className={styles.emptyText}>{t('Loading task history...', '正在加载任务历史...')}</p>
             ) : sessionRuns.length === 0 ? (
               <p className={styles.emptyText}>
-                This session has no runs yet.
+                {t('No tasks in this conversation yet.', '当前会话还没有任务。')}
               </p>
             ) : (
               <div className={styles.runHistoryList}>
@@ -378,11 +430,11 @@ export function ChatPage() {
             )}
           </div>
           <div className={styles.panelBlock}>
-            <h3>Workflow Tips</h3>
+            <h3>{t('Usage Tips', '使用建议')}</h3>
             <ul className={styles.tipList}>
-              <li>Use a stable session key to keep run history coherent.</li>
-              <li>Open Runs for queued status and cancellation actions.</li>
-              <li>Trace view includes event-level debugging and export.</li>
+              <li>{t('Use one conversation per topic for cleaner context.', '建议每个主题单独一个会话，便于上下文管理。')}</li>
+              <li>{t('Use team mode for multi-step analysis and review tasks.', '复杂分析或评审任务建议使用团队模式。')}</li>
+              <li>{t('Open Task Center for queue status and cancellation.', '在任务中心查看排队状态和取消任务。')}</li>
             </ul>
           </div>
         </aside>

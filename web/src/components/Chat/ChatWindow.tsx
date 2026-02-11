@@ -6,6 +6,7 @@ import { useRef, useEffect } from 'react';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import type { ChatMessage as ChatMessageType } from '../../types/events';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Chat.module.css';
 
 export interface ChatWindowProps {
@@ -27,6 +28,7 @@ export function ChatWindow({
   onOpenRun,
   latestRunId,
 }: ChatWindowProps) {
+  const { t } = useLocaleText();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
@@ -38,13 +40,15 @@ export function ChatWindow({
     <div className={styles.chatWindow}>
       <div className={styles.chatToolbar}>
         <div className={styles.chatToolbarInfo}>
-          <span className={styles.toolbarTitle}>Conversation</span>
-          <span className={styles.toolbarMeta}>{messages.length} messages</span>
+          <span className={styles.toolbarTitle}>{t('Conversation', '会话')}</span>
+          <span className={styles.toolbarMeta}>
+            {t(`${messages.length} messages`, `${messages.length} 条消息`)}
+          </span>
         </div>
         <div className={styles.chatToolbarActions}>
           {latestRunId && onOpenRun && (
             <button className={styles.secondaryButton} onClick={onOpenRun}>
-              Open Last Trace
+              {t('Open Last Trace', '打开最近追踪')}
             </button>
           )}
           {onClear && (
@@ -53,7 +57,7 @@ export function ChatWindow({
               onClick={onClear}
               disabled={messages.length === 0}
             >
-              Clear
+              {t('Clear', '清空')}
             </button>
           )}
         </div>
@@ -61,9 +65,12 @@ export function ChatWindow({
       <div className={styles.messagesContainer}>
         {messages.length === 0 ? (
           <div className={styles.emptyState}>
-            <p>Start a conversation with the Agent</p>
+            <p>{t('Start a conversation with the Agent', '开始与助手对话')}</p>
             <p className={styles.emptyStateHint}>
-              Ask for implementation plans, debugging steps, or run analysis.
+              {t(
+                'Ask for implementation plans, debugging steps, or run analysis.',
+                '你可以让它给出实现方案、排障步骤或任务分析。',
+              )}
             </p>
           </div>
         ) : (
@@ -74,12 +81,12 @@ export function ChatWindow({
         {isRunning && (
           <div className={styles.typingIndicator} aria-live="polite">
             <span className={styles.pulsingDot} />
-            <span>Agent is thinking...</span>
+            <span>{t('Agent is thinking...', '助手正在思考...')}</span>
           </div>
         )}
         {error && (
           <div className={styles.errorMessage}>
-            Error: {error.message}
+            {t('Error:', '错误：')} {error.message}
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -87,7 +94,7 @@ export function ChatWindow({
       <ChatInput
         onSend={onSend}
         disabled={isRunning}
-        placeholder={isRunning ? 'Waiting for response...' : 'Type a message...'}
+        placeholder={isRunning ? t('Waiting for response...', '等待回复中...') : t('Type a message...', '输入消息...')}
       />
     </div>
   );

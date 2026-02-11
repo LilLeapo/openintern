@@ -3,6 +3,7 @@
  */
 
 import type { Event } from '../../types/events';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Trace.module.css';
 
 export interface EventListProps {
@@ -11,12 +12,13 @@ export interface EventListProps {
 }
 
 export function EventList({ events, filter }: EventListProps) {
+  const { t } = useLocaleText();
   const filteredEvents = filter
     ? events.filter((e) => e.type === filter)
     : events;
 
   if (filteredEvents.length === 0) {
-    return <div className={styles.emptySteps}>No events found.</div>;
+    return <div className={styles.emptySteps}>{t('No events found.', '未找到事件。')}</div>;
   }
 
   return (
@@ -29,6 +31,7 @@ export function EventList({ events, filter }: EventListProps) {
 }
 
 function EventItem({ event }: { event: Event }) {
+  const { t } = useLocaleText();
   const time = new Date(event.ts).toLocaleTimeString();
   const payloadPreview = JSON.stringify(event.payload)
     .replaceAll('"', '')
@@ -43,8 +46,8 @@ function EventItem({ event }: { event: Event }) {
         <span className={styles.eventTime}>{time}</span>
       </div>
       <div className={styles.eventDetails}>
-        <span>Step: {event.step_id}</span>
-        <span>Span: {event.span_id}</span>
+        <span>{t('Step:', '步骤：')} {event.step_id}</span>
+        <span>{t('Span:', '跨度：')} {event.span_id}</span>
       </div>
       <p className={styles.eventPayload}>{payloadPreview}</p>
     </div>

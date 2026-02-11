@@ -3,6 +3,7 @@
  */
 
 import type { BlackboardMemory } from '../../types';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './BlackboardPanel.module.css';
 
 interface DecisionCardProps {
@@ -10,6 +11,7 @@ interface DecisionCardProps {
 }
 
 export function DecisionCard({ memory }: DecisionCardProps) {
+  const { t } = useLocaleText();
   const lines = memory.text.split('\n');
   const decisionLine = lines.find((l) => l.startsWith('DECISION:'));
   const rationaleLine = lines.find((l) => l.startsWith('Rationale:'));
@@ -24,7 +26,7 @@ export function DecisionCard({ memory }: DecisionCardProps) {
   return (
     <div className={styles.card}>
       <div className={styles.cardHeader}>
-        <span className={styles.badge}>DECISION</span>
+        <span className={styles.badge}>{t('Decision', '决策')}</span>
         <span className={styles.timestamp}>
           {new Date(memory.created_at).toLocaleString()}
         </span>

@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { ToolCallCard } from './ToolCallCard';
 import type { Event } from '../../types/events';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Trace.module.css';
 
 export interface StepCardProps {
@@ -14,6 +15,7 @@ export interface StepCardProps {
 }
 
 export function StepCard({ stepId, stepNumber, events }: StepCardProps) {
+  const { t } = useLocaleText();
   const [expanded, setExpanded] = useState(true);
 
   // Find step events
@@ -48,7 +50,7 @@ export function StepCard({ stepId, stepNumber, events }: StepCardProps) {
         className={styles.stepHeader}
         onClick={() => setExpanded(!expanded)}
       >
-        <span className={styles.stepNumber}>Step {stepNumber}</span>
+        <span className={styles.stepNumber}>{t(`Step ${stepNumber}`, `步骤 ${stepNumber}`)}</span>
         <span className={styles.stepId}>{stepId}</span>
         {resultType && (
           <span className={`${styles.resultType} ${styles[resultType]}`}>
@@ -59,7 +61,7 @@ export function StepCard({ stepId, stepNumber, events }: StepCardProps) {
           <span className={styles.duration}>{duration}ms</span>
         )}
         <span className={styles.expandIcon}>
-          {expanded ? 'Collapse' : 'Expand'}
+          {expanded ? t('Collapse', '收起') : t('Expand', '展开')}
         </span>
       </button>
 
@@ -68,8 +70,8 @@ export function StepCard({ stepId, stepNumber, events }: StepCardProps) {
           {/* LLM info */}
           {llmCalled?.type === 'llm.called' && (
             <div className={styles.llmInfo}>
-              <span>Model: {llmCalled.payload.model}</span>
-              <span>Tokens: {llmCalled.payload.totalTokens}</span>
+              <span>{t('Model:', '模型：')} {llmCalled.payload.model}</span>
+              <span>{t('Tokens:', 'Token：')} {llmCalled.payload.totalTokens}</span>
             </div>
           )}
 

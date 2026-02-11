@@ -5,6 +5,7 @@ import { useRuns } from '../hooks/useRuns';
 import { apiClient } from '../api/client';
 import { AppShell } from '../components/Layout/AppShell';
 import { useAppPreferences } from '../context/AppPreferencesContext';
+import { useLocaleText } from '../i18n/useLocaleText';
 import type { RunStatus } from '../types';
 import styles from './RunsPage.module.css';
 
@@ -19,6 +20,7 @@ const STATUS_FILTERS: Array<'all' | RunStatus> = [
 
 export function RunsPage() {
   const { sessionKey } = useAppPreferences();
+  const { t } = useLocaleText();
   const navigate = useNavigate();
   const { runs, loading, error, total, page, loadRuns, refresh } = useRuns(sessionKey);
   const [statusFilter, setStatusFilter] = useState<'all' | RunStatus>('all');
@@ -26,6 +28,25 @@ export function RunsPage() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [cancelingRunId, setCancelingRunId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  const statusLabel = (status: 'all' | RunStatus): string => {
+    switch (status) {
+      case 'all':
+        return t('all', '全部');
+      case 'pending':
+        return t('pending', '等待中');
+      case 'running':
+        return t('running', '运行中');
+      case 'completed':
+        return t('completed', '已完成');
+      case 'failed':
+        return t('failed', '失败');
+      case 'cancelled':
+        return t('cancelled', '已取消');
+      default:
+        return status;
+    }
+  };
 
   const handleRunClick = (runId: string) => {
     navigate(`/trace/${runId}`);
@@ -85,53 +106,56 @@ export function RunsPage() {
 
   return (
     <AppShell
-      title="Runs History"
-      subtitle={`Session ${sessionKey} run operations`}
+      title={t('Task Center', '任务中心')}
+      subtitle={t(
+        `Task operations for conversation ${sessionKey}`,
+        `会话 ${sessionKey} 的任务操作`,
+      )}
       actions={
         <button className={styles.pageAction} onClick={() => void refresh()}>
-          Refresh Now
+          {t('Refresh Now', '立即刷新')}
         </button>
       }
     >
       <div className={styles.layout}>
         <section className={styles.statsGrid}>
           <article className={styles.statCard}>
-            <span>Total Runs</span>
+            <span>{t('Total Tasks', '任务总数')}</span>
             <strong>{total}</strong>
           </article>
           <article className={styles.statCard}>
-            <span>Completed</span>
+            <span>{t('Completed', '已完成')}</span>
             <strong>{stats.completed}</strong>
           </article>
           <article className={styles.statCard}>
-            <span>Failed</span>
+            <span>{t('Failed', '失败')}</span>
             <strong>{stats.failed}</strong>
           </article>
           <article className={styles.statCard}>
-            <span>Pending</span>
+            <span>{t('Pending', '等待中')}</span>
             <strong>{stats.pending}</strong>
           </article>
           <article className={styles.statCard}>
-            <span>Average Duration</span>
+            <span>{t('Average Duration', '平均耗时')}</span>
             <strong>{stats.averageDuration}</strong>
           </article>
         </section>
         <section className={styles.controlsCard}>
           <div className={styles.searchWrap}>
             <input
-              className={styles.searchInput}
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Search by run id or status"
-              aria-label="Search runs"
-            />
-            <label className={styles.toggle}>
+                className={styles.searchInput}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder={t('Search by task id or status', '按任务 ID 或状态搜索')}
+                aria-label={t('Search tasks', '搜索任务')}
+              />
+              <label className={styles.toggle}>
               <input
                 type="checkbox"
                 checked={autoRefresh}
                 onChange={e => setAutoRefresh(e.target.checked)}
               />
-              <span>Auto refresh (8s)</span>
+              <span>{t('Auto refresh (8s)', '自动刷新（8秒）')}</span>
             </label>
           </div>
           <div className={styles.filters}>
@@ -143,7 +167,7 @@ export function RunsPage() {
                 }`}
                 onClick={() => setStatusFilter(status)}
               >
-                {status}
+                {statusLabel(status)}
               </button>
             ))}
           </div>

@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { TraceView, EventList } from '../components/Trace';
 import { apiClient } from '../api/client';
 import { useSSE } from '../hooks/useSSE';
+import { useLocaleText } from '../i18n/useLocaleText';
 import type { Event } from '../types/events';
 import { AppShell } from '../components/Layout/AppShell';
 import styles from './TracePage.module.css';
@@ -22,6 +23,7 @@ const EVENT_FILTERS: Array<Event['type'] | 'all'> = [
 
 export function TracePage() {
   const { runId } = useParams<{ runId: string }>();
+  const { t } = useLocaleText();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -40,11 +42,11 @@ export function TracePage() {
       const data = await apiClient.getEvents(runId);
       setEvents(data);
     } catch (err) {
-      setError(err instanceof Error ? err : new Error('Failed to load'));
+      setError(err instanceof Error ? err : new Error(t('Failed to load', '加载失败')));
     } finally {
       setLoading(false);
     }
-  }, [runId]);
+  }, [runId, t]);
 
   useEffect(() => {
     void loadEvents();
@@ -63,8 +65,8 @@ export function TracePage() {
 
   if (!runId) {
     return (
-      <AppShell title="Trace Viewer" subtitle="Run details">
-        <div className={styles.errorBox}>Run ID is required.</div>
+      <AppShell title={t('Trace Viewer', '追踪查看器')} subtitle={t('Run details', '运行详情')}>
+        <div className={styles.errorBox}>{t('Run ID is required.', '缺少 Run ID。')}</div>
       </AppShell>
     );
   }
@@ -81,7 +83,7 @@ export function TracePage() {
     event => event.type === 'run.completed' || event.type === 'run.failed',
   );
   const durationText = (() => {
-    if (!runStarted) return 'N/A';
+    if (!runStarted) return t('N/A', '无');
     const endTs = runFinished ? new Date(runFinished.ts).getTime() : Date.now();
     const startTs = new Date(runStarted.ts).getTime();
     const elapsed = Math.max(0, endTs - startTs);
@@ -104,14 +106,14 @@ export function TracePage() {
   return (
     <AppShell
       title={`Trace ${runId}`}
-      subtitle={isConnected ? 'Live stream connected' : 'Awaiting live stream'}
+      subtitle={isConnected ? t('Live stream connected', '实时流已连接') : t('Awaiting live stream', '等待实时流连接')}
       actions={
         <>
           <button className={styles.pageAction} onClick={() => void loadEvents()}>
-            Reload
+            {t('Reload', '重新加载')}
           </button>
           <button className={styles.pageActionSecondary} onClick={exportJson}>
-            Export JSON
+            {t('Export JSON', '导出 JSON')}
           </button>
         </>
       }
@@ -119,30 +121,30 @@ export function TracePage() {
       <div className={styles.layout}>
         <section className={styles.summaryGrid}>
           <article className={styles.summaryCard}>
-            <span>Total Events</span>
+            <span>{t('Total Events', '事件总数')}</span>
             <strong>{events.length}</strong>
           </article>
           <article className={styles.summaryCard}>
-            <span>Steps</span>
+            <span>{t('Steps', '步骤')}</span>
             <strong>{stepCount}</strong>
           </article>
           <article className={styles.summaryCard}>
-            <span>Tool Calls</span>
+            <span>{t('Tool Calls', '工具调用')}</span>
             <strong>{toolCalls}</strong>
           </article>
           <article className={styles.summaryCard}>
-            <span>LLM Calls</span>
+            <span>{t('LLM Calls', '模型调用')}</span>
             <strong>{llmCalls}</strong>
           </article>
           <article className={styles.summaryCard}>
-            <span>Elapsed</span>
+            <span>{t('Elapsed', '耗时')}</span>
             <strong>{durationText}</strong>
           </article>
         </section>
         <section className={styles.controlsCard}>
           <div className={styles.badges}>
             <span className={`${styles.badge} ${isConnected ? styles.badgeOk : styles.badgeWarn}`}>
-              {isConnected ? 'Live' : 'Disconnected'}
+              {isConnected ? t('Live', '实时') : t('Disconnected', '已断开')}
             </span>
             {sseError && <span className={`${styles.badge} ${styles.badgeError}`}>{sseError.message}</span>}
           </div>
@@ -151,20 +153,20 @@ export function TracePage() {
               className={`${styles.switchButton} ${viewMode === 'steps' ? styles.switchButtonActive : ''}`}
               onClick={() => setViewMode('steps')}
             >
-              Steps
+              {t('Steps', '步骤')}
             </button>
             <button
               className={`${styles.switchButton} ${viewMode === 'events' ? styles.switchButtonActive : ''}`}
               onClick={() => setViewMode('events')}
             >
-              Raw Events
+              {t('Raw Events', '原始事件')}
             </button>
           </div>
           <select
             className={styles.select}
             value={eventFilter}
             onChange={e => setEventFilter(e.target.value as Event['type'] | 'all')}
-            aria-label="Filter events by type"
+            aria-label={t('Filter events by type', '按类型筛选事件')}
           >
             {EVENT_FILTERS.map(filter => (
               <option key={filter} value={filter}>
@@ -175,7 +177,7 @@ export function TracePage() {
         </section>
         <section className={styles.traceSection}>
         {loading ? (
-          <div className={styles.loading}>Loading trace...</div>
+          <div className={styles.loading}>{t('Loading trace...', '正在加载追踪...')}</div>
         ) : error ? (
           <div className={styles.errorBox}>{error.message}</div>
         ) : (

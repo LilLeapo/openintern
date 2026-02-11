@@ -5,6 +5,7 @@
 import { useMemo } from 'react';
 import { StepCard } from './StepCard';
 import type { Event } from '../../types/events';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Trace.module.css';
 
 export interface TraceViewProps {
@@ -19,6 +20,7 @@ function parseStepIndex(stepId: string): number {
 }
 
 export function TraceView({ events, runId, eventFilter = 'all' }: TraceViewProps) {
+  const { t, isZh } = useLocaleText();
   const visibleEvents = useMemo(
     () => (eventFilter === 'all' ? events : events.filter(event => event.type === eventFilter)),
     [events, eventFilter],
@@ -50,25 +52,38 @@ export function TraceView({ events, runId, eventFilter = 'all' }: TraceViewProps
     : runCompleted
       ? 'completed'
       : 'running';
+  const statusLabel = (() => {
+    if (!isZh) return status;
+    switch (status) {
+      case 'running':
+        return '运行中';
+      case 'completed':
+        return '已完成';
+      case 'failed':
+        return '失败';
+      default:
+        return status;
+    }
+  })();
 
   return (
     <div className={styles.traceView}>
       <div className={styles.traceHeader}>
-        <h2>Run: {runId}</h2>
+        <h2>{t('Run:', '运行：')} {runId}</h2>
         <span className={`${styles.status} ${styles[status]}`}>
-          {status}
+          {statusLabel}
         </span>
       </div>
 
       {runStarted?.type === 'run.started' && (
         <div className={styles.runInput}>
-          <strong>Input:</strong> {runStarted.payload.input}
+          <strong>{t('Input:', '输入：')}</strong> {runStarted.payload.input}
         </div>
       )}
 
       <div className={styles.stepsContainer}>
         {stepGroups.length === 0 ? (
-          <div className={styles.emptySteps}>No events for this filter.</div>
+          <div className={styles.emptySteps}>{t('No events for this filter.', '当前筛选条件下没有事件。')}</div>
         ) : (
           stepGroups.map(([stepId, stepEvents]) => {
             const firstCompleted = stepEvents.find(
@@ -92,13 +107,13 @@ export function TraceView({ events, runId, eventFilter = 'all' }: TraceViewProps
 
       {runCompleted?.type === 'run.completed' && (
         <div className={styles.runOutput}>
-          <strong>Output:</strong> {runCompleted.payload.output}
+          <strong>{t('Output:', '输出：')}</strong> {runCompleted.payload.output}
         </div>
       )}
 
       {runFailed?.type === 'run.failed' && (
         <div className={styles.runError}>
-          <strong>Error:</strong> {runFailed.payload.error.message}
+          <strong>{t('Error:', '错误：')}</strong> {runFailed.payload.error.message}
         </div>
       )}
     </div>

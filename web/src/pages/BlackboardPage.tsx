@@ -4,12 +4,14 @@ import { apiClient } from '../api/client';
 import { BlackboardPanel } from '../components/Blackboard';
 import { AppShell } from '../components/Layout/AppShell';
 import { useAppPreferences } from '../context/AppPreferencesContext';
+import { useLocaleText } from '../i18n/useLocaleText';
 import type { Group, Role, EpisodicType } from '../types';
 import styles from './BlackboardPage.module.css';
 
 export function BlackboardPage() {
   const { groupId } = useParams<{ groupId: string }>();
   const { selectedGroupId, setSelectedGroupId, sessionKey } = useAppPreferences();
+  const { t } = useLocaleText();
   const navigate = useNavigate();
   const [groups, setGroups] = useState<Group[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
@@ -37,14 +39,14 @@ export function BlackboardPage() {
         setRoles(roleData);
         setRoleId(prev => prev || roleData[0]?.id || '');
       } catch (err) {
-        setCatalogError(err instanceof Error ? err.message : 'Failed to load groups and roles');
+        setCatalogError(err instanceof Error ? err.message : t('Failed to load teams and expert profiles', '加载团队和专家画像失败'));
       } finally {
         setCatalogLoading(false);
       }
     };
 
     void loadCatalog();
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!groupId) return;
@@ -65,7 +67,7 @@ export function BlackboardPage() {
 
   const handleWrite = async (): Promise<void> => {
     if (!activeGroupId || !roleId || !text.trim()) {
-      setSubmitError('Group, role and content are required.');
+      setSubmitError(t('Team, author, and content are required.', '团队、作者和内容为必填项。'));
       return;
     }
 
@@ -98,7 +100,7 @@ export function BlackboardPage() {
       setRationale('');
       setRefreshNonce(value => value + 1);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Failed to write to blackboard');
+      setSubmitError(err instanceof Error ? err.message : t('Failed to save note', '保存笔记失败'));
     } finally {
       setIsSubmitting(false);
     }
@@ -106,24 +108,24 @@ export function BlackboardPage() {
 
   return (
     <AppShell
-      title="Group Blackboard"
-      subtitle="Consensus, evidence, and actionable TODO memory"
+      title={t('Team Notes', '团队笔记')}
+      subtitle={t('Shared decisions, evidence, and action items', '共享决策、证据与行动项')}
       actions={
         <button
           className={styles.pageAction}
           onClick={() => navigate('/')}
         >
-          Back to Chat
+          {t('Back to Assistant', '返回助手')}
         </button>
       }
     >
       <div className={styles.layout}>
         <section className={styles.formCard}>
-          <h3>Write Memory</h3>
+          <h3>{t('Add Team Note', '添加团队笔记')}</h3>
           {catalogError && <p className={styles.errorText}>{catalogError}</p>}
           <div className={styles.formGrid}>
             <label className={styles.field}>
-              <span>Group</span>
+              <span>{t('Team', '团队')}</span>
               <select
                 value={activeGroupId ?? ''}
                 onChange={e => {
@@ -136,47 +138,47 @@ export function BlackboardPage() {
                 disabled={catalogLoading}
               >
                 {groups.length === 0 ? (
-                  <option value="">No group available</option>
+                  <option value="">{t('No team available', '没有可用团队')}</option>
                 ) : (
                   groups.map(group => (
                     <option key={group.id} value={group.id}>
-                      {group.name} ({group.id})
+                      {group.name}
                     </option>
                   ))
                 )}
               </select>
             </label>
             <label className={styles.field}>
-              <span>Role</span>
+              <span>{t('Author', '作者')}</span>
               <select
                 value={roleId}
                 onChange={e => setRoleId(e.target.value)}
                 disabled={catalogLoading}
               >
                 {roles.length === 0 ? (
-                  <option value="">No role available</option>
+                  <option value="">{t('No expert profile available', '没有可用专家画像')}</option>
                 ) : (
                   roles.map(role => (
                     <option key={role.id} value={role.id}>
-                      {role.name} ({role.id})
+                      {role.name}
                     </option>
                   ))
                 )}
               </select>
             </label>
             <label className={styles.field}>
-              <span>Type</span>
+              <span>{t('Note Type', '笔记类型')}</span>
               <select
                 value={memoryType}
                 onChange={e => setMemoryType(e.target.value as EpisodicType)}
               >
-                <option value="DECISION">DECISION</option>
-                <option value="EVIDENCE">EVIDENCE</option>
-                <option value="TODO">TODO</option>
+                <option value="DECISION">{t('Decision', '决策')}</option>
+                <option value="EVIDENCE">{t('Evidence', '证据')}</option>
+                <option value="TODO">{t('Action Item', '行动项')}</option>
               </select>
             </label>
             <label className={styles.field}>
-              <span>Importance ({importance.toFixed(2)})</span>
+              <span>{t(`Importance (${importance.toFixed(2)})`, `重要性（${importance.toFixed(2)}）`)}</span>
               <input
                 type="range"
                 min={0}
@@ -188,25 +190,25 @@ export function BlackboardPage() {
             </label>
           </div>
           <label className={styles.field}>
-            <span>Content</span>
+            <span>{t('Content', '内容')}</span>
             <textarea
               className={styles.textarea}
               value={text}
               onChange={e => setText(e.target.value)}
               placeholder={
                 memoryType === 'TODO'
-                  ? 'Describe the action item'
-                  : 'Describe this memory clearly'
+                  ? t('Describe the action item', '描述具体行动项')
+                  : t('Describe this note clearly', '清晰描述这条笔记')
               }
             />
           </label>
           {memoryType === 'DECISION' && (
             <label className={styles.field}>
-              <span>Rationale (optional)</span>
+              <span>{t('Rationale (optional)', '依据（可选）')}</span>
               <input
                 value={rationale}
                 onChange={e => setRationale(e.target.value)}
-                placeholder="Why this decision was made"
+                placeholder={t('Why this decision was made', '说明该决策的原因')}
               />
             </label>
           )}
@@ -216,7 +218,7 @@ export function BlackboardPage() {
             onClick={() => void handleWrite()}
             disabled={isSubmitting || !activeGroupId || !roleId || !text.trim()}
           >
-            {isSubmitting ? 'Writing...' : 'Write to Blackboard'}
+            {isSubmitting ? t('Saving...', '保存中...') : t('Save Note', '保存笔记')}
           </button>
         </section>
         <section className={styles.panelSection}>

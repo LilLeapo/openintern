@@ -4,6 +4,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { KeyboardEvent, ChangeEvent } from 'react';
+import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Chat.module.css';
 
 export interface ChatInputProps {
@@ -17,6 +18,7 @@ export function ChatInput({
   disabled = false,
   placeholder = 'Type a message...',
 }: ChatInputProps) {
+  const { t } = useLocaleText();
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -61,17 +63,17 @@ export function ChatInput({
         disabled={disabled}
         rows={1}
         maxLength={4000}
-        aria-label="Message input"
+        aria-label={t('Message input', '消息输入框')}
       />
       <button
         className={styles.sendButton}
         onClick={handleSend}
         disabled={disabled || !value.trim()}
       >
-        Send
+        {t('Send', '发送')}
       </button>
       <div className={styles.inputHint}>
-        Enter to send · Shift+Enter for newline
+        {t('Enter to send · Shift+Enter for newline', 'Enter 发送 · Shift+Enter 换行')}
       </div>
     </div>
   );

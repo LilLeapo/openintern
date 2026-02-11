@@ -170,6 +170,28 @@
   font-size: 0.76rem;
 }
 
+.localeRow {
+  margin-top: 0.55rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.localeLabel {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.localeSelect {
+  border: 1px solid var(--border);
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 0.32rem 0.44rem;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
 .main {
   position: relative;
   z-index: 1;
