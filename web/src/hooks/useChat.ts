@@ -16,6 +16,13 @@ interface ActiveRunState {
 type MessageMap = Record<string, ChatMessage[]>;
 type RunIdMap = Record<string, string | null>;
 type ErrorMap = Record<string, Error | null>;
+type RunMode = 'single' | 'group';
+
+interface UseChatConfig {
+  llmConfig?: RunLLMConfig;
+  runMode?: RunMode;
+  groupId?: string | null;
+}
 
 export interface UseChatResult {
   messages: ChatMessage[];
@@ -31,23 +38,70 @@ function generateId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+const MESSAGE_STORAGE_KEY = 'openintern.chat.messages.v1';
+const RUN_STORAGE_KEY = 'openintern.chat.latest_runs.v1';
+const MAX_MESSAGES_PER_SESSION = 200;
+
+function readStoredMessages(): MessageMap {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(MESSAGE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as MessageMap;
+  } catch {
+    return {};
+  }
+}
+
+function readStoredLatestRuns(): RunIdMap {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(RUN_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as RunIdMap;
+  } catch {
+    return {};
+  }
+}
+
+function trimMessageMap(map: MessageMap): MessageMap {
+  return Object.fromEntries(
+    Object.entries(map).map(([session, messages]) => [
+      session,
+      messages.slice(-MAX_MESSAGES_PER_SESSION),
+    ]),
+  );
+}
+
 function updateSessionMessages(
   prev: MessageMap,
   targetSessionKey: string,
   updater: (messages: ChatMessage[]) => ChatMessage[],
 ): MessageMap {
   const currentMessages = prev[targetSessionKey] ?? [];
+  const nextMessages = updater(currentMessages).slice(-MAX_MESSAGES_PER_SESSION);
   return {
     ...prev,
-    [targetSessionKey]: updater(currentMessages),
+    [targetSessionKey]: nextMessages,
   };
 }
 
-export function useChat(sessionKey: string, llmConfig?: RunLLMConfig): UseChatResult {
-  const [messagesBySession, setMessagesBySession] = useState<MessageMap>({});
-  const [latestRunBySession, setLatestRunBySession] = useState<RunIdMap>({});
+export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResult {
+  const [messagesBySession, setMessagesBySession] = useState<MessageMap>(readStoredMessages);
+  const [latestRunBySession, setLatestRunBySession] = useState<RunIdMap>(readStoredLatestRuns);
   const [errorBySession, setErrorBySession] = useState<ErrorMap>({});
   const [activeRun, setActiveRun] = useState<ActiveRunState | null>(null);
+  const runMode = config?.runMode ?? 'single';
+  const selectedGroupId = config?.groupId ?? null;
+  const llmConfig = config?.llmConfig;
 
   const streamRunId = activeRun?.runId ?? null;
   const currentRunId = activeRun?.sessionKey === sessionKey ? activeRun.runId : null;
@@ -66,6 +120,19 @@ export function useChat(sessionKey: string, llmConfig?: RunLLMConfig): UseChatRe
   useEffect(() => {
     activeRunRef.current = activeRun;
   }, [activeRun]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      MESSAGE_STORAGE_KEY,
+      JSON.stringify(trimMessageMap(messagesBySession)),
+    );
+  }, [messagesBySession]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(RUN_STORAGE_KEY, JSON.stringify(latestRunBySession));
+  }, [latestRunBySession]);
 
   // Process SSE events to update messages (supports streaming tokens)
   useEffect(() => {
@@ -192,6 +259,13 @@ export function useChat(sessionKey: string, llmConfig?: RunLLMConfig): UseChatRe
   const sendMessage = useCallback(
     async (input: string) => {
       if (!input.trim() || activeRunRef.current) return;
+      if (runMode === 'group' && !selectedGroupId) {
+        setErrorBySession(prev => ({
+          ...prev,
+          [sessionKey]: new Error('Group mode requires selecting a group first.'),
+        }));
+        return;
+      }
 
       // Add user message
       const userMessage: ChatMessage = {
@@ -206,7 +280,13 @@ export function useChat(sessionKey: string, llmConfig?: RunLLMConfig): UseChatRe
       setErrorBySession(prev => ({ ...prev, [sessionKey]: null }));
 
       try {
-        const response = await apiClient.createRun(sessionKey, input, llmConfig);
+        const response = runMode === 'group' && selectedGroupId
+          ? await apiClient.createGroupRun(selectedGroupId, {
+              input,
+              session_key: sessionKey,
+              ...(llmConfig ? { llm_config: llmConfig } : {}),
+            })
+          : await apiClient.createRun(sessionKey, input, llmConfig);
         const nextRun = { runId: response.run_id, sessionKey };
         setActiveRun(nextRun);
         setLatestRunBySession(prev => ({ ...prev, [sessionKey]: response.run_id }));
@@ -217,7 +297,7 @@ export function useChat(sessionKey: string, llmConfig?: RunLLMConfig): UseChatRe
         }));
       }
     },
-    [sessionKey, llmConfig],
+    [sessionKey, llmConfig, runMode, selectedGroupId],
   );
 
   // Reset streaming state when runId changes

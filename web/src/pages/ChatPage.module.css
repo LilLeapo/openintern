@@ -119,6 +119,35 @@
   gap: 0.5rem;
 }
 
+.modeControls {
+  margin-top: 0.62rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.modeField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.24rem;
+}
+
+.modeField span {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.modeField select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.42rem 0.48rem;
+  font-size: 0.78rem;
+  background: #ffffff;
+  color: var(--text-secondary);
+}
+
 .modelField {
   display: flex;
   flex-direction: column;
@@ -139,6 +168,22 @@
   font-size: 0.78rem;
   background: #ffffff;
   color: var(--text-secondary);
+}
+
+.warningText {
+  margin-top: 0.62rem;
+  color: #7f1d1d;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.inlineLink {
+  border: none;
+  background: transparent;
+  color: #0f766e;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
 }
 
 .sessionItem {
@@ -315,6 +360,10 @@
   }
 
   .modelControls {
+    grid-template-columns: 1fr;
+  }
+
+  .modeControls {
     grid-template-columns: 1fr;
   }
 }

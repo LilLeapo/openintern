@@ -6,6 +6,8 @@ import { useRuns } from '../hooks/useRuns';
 import { AppShell } from '../components/Layout/AppShell';
 import { useAppPreferences } from '../context/AppPreferencesContext';
 import type { RunLLMConfig } from '../api/client';
+import { apiClient } from '../api/client';
+import type { Group } from '../types';
 import styles from './ChatPage.module.css';
 
 const QUICK_PROMPTS = [
@@ -17,6 +19,7 @@ const QUICK_PROMPTS = [
 
 const PROVIDER_STORAGE_KEY = 'openintern.chat.provider';
 const MODEL_STORAGE_KEY = 'openintern.chat.model';
+const RUN_MODE_STORAGE_KEY = 'openintern.chat.run_mode';
 
 const MODEL_OPTIONS: Record<'openai' | 'anthropic' | 'mock', string[]> = {
   openai: ['gpt-4o', 'gpt-4o-mini'],
@@ -47,12 +50,31 @@ function readStoredModel(provider: 'openai' | 'anthropic' | 'mock'): string {
   return options[0]!;
 }
 
+function readStoredRunMode(): 'single' | 'group' {
+  if (typeof window === 'undefined') {
+    return 'single';
+  }
+  const value = window.localStorage.getItem(RUN_MODE_STORAGE_KEY);
+  return value === 'group' ? 'group' : 'single';
+}
+
 export function ChatPage() {
-  const { sessionKey, sessionHistory, setSessionKey, createSession, removeSession } =
+  const {
+    sessionKey,
+    sessionHistory,
+    setSessionKey,
+    createSession,
+    removeSession,
+    selectedGroupId,
+    setSelectedGroupId,
+  } =
     useAppPreferences();
   const navigate = useNavigate();
   const [provider, setProvider] = useState<'openai' | 'anthropic' | 'mock'>(readStoredProvider);
   const [model, setModel] = useState<string>(() => readStoredModel(readStoredProvider()));
+  const [runMode, setRunMode] = useState<'single' | 'group'>(readStoredRunMode);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
 
   useEffect(() => {
     const options = MODEL_OPTIONS[provider];
@@ -69,6 +91,33 @@ export function ChatPage() {
     window.localStorage.setItem(MODEL_STORAGE_KEY, model);
   }, [model]);
 
+  useEffect(() => {
+    window.localStorage.setItem(RUN_MODE_STORAGE_KEY, runMode);
+  }, [runMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadGroups = async () => {
+      setGroupsLoading(true);
+      try {
+        const result = await apiClient.listGroups();
+        if (cancelled) return;
+        setGroups(result);
+        if (!selectedGroupId && result.length > 0) {
+          setSelectedGroupId(result[0]!.id);
+        }
+      } finally {
+        if (!cancelled) {
+          setGroupsLoading(false);
+        }
+      }
+    };
+    void loadGroups();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedGroupId, setSelectedGroupId]);
+
   const llmConfig = useMemo<RunLLMConfig>(
     () => ({
       provider,
@@ -78,7 +127,11 @@ export function ChatPage() {
   );
 
   const { messages, isRunning, error, sendMessage, clearMessages, latestRunId } =
-    useChat(sessionKey, llmConfig);
+    useChat(sessionKey, {
+      llmConfig,
+      runMode,
+      groupId: selectedGroupId,
+    });
   const {
     runs: sessionRuns,
     loading: runsLoading,
@@ -190,6 +243,56 @@ export function ChatPage() {
                 </div>
               ))}
             </div>
+          </div>
+          <div className={styles.panelBlock}>
+            <h3>Run Mode</h3>
+            <p>Choose single-agent chat or group orchestration for new prompts.</p>
+            <div className={styles.modeControls}>
+              <label className={styles.modeField}>
+                <span>Mode</span>
+                <select
+                  value={runMode}
+                  onChange={event => setRunMode(event.target.value as 'single' | 'group')}
+                  disabled={isRunning}
+                >
+                  <option value="single">single agent</option>
+                  <option value="group">group run</option>
+                </select>
+              </label>
+              {runMode === 'group' && (
+                <label className={styles.modeField}>
+                  <span>Group</span>
+                  <select
+                    value={selectedGroupId ?? ''}
+                    onChange={event => setSelectedGroupId(event.target.value || null)}
+                    disabled={isRunning || groupsLoading}
+                  >
+                    {groups.length === 0 ? (
+                      <option value="">No group available</option>
+                    ) : (
+                      groups.map(group => (
+                        <option key={group.id} value={group.id}>
+                          {group.name} ({group.id})
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+              )}
+            </div>
+            {runMode === 'group' && groups.length === 0 && (
+              <p className={styles.warningText}>
+                No groups found. Create one in Orchestrator.
+                {' '}
+                <button
+                  className={styles.inlineLink}
+                  onClick={() => navigate('/orchestrator')}
+                  disabled={isRunning}
+                >
+                  Open Orchestrator
+                </button>
+              </p>
+            )}
           </div>
           <div className={styles.panelBlock}>
             <h3>Model</h3>
