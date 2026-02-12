@@ -58,7 +58,7 @@ Memory workflow:
 2) Use memory_get for full text when needed.
 3) Use memory_write to store durable insights.
 4) Use feishu_ingest_doc to ingest Feishu docs into archival knowledge when needed.
-5) Use mineru_ingest_pdf to ingest external PDF URLs into archival knowledge when needed.
+5) Use mineru_ingest_pdf to ingest PDF URLs or local PDF file paths into archival knowledge when needed.
 
 Tool usage:
 - Read-only tools (read_file, glob_files, grep_files, memory_search) can run in parallel.

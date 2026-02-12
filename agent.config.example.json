@@ -46,7 +46,8 @@
   },
   "mineru": {
     "enabled": false,
-    "apiKey": "ak_xxx_or_sk_xxx",
+    "mode": "v4",
+    "apiKey": "your_api_token_or_ak_sk",
     "baseUrl": "https://mineru.net/api/v4",
     "uidToken": "",
     "timeoutMs": 20000,

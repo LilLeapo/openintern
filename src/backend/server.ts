@@ -70,6 +70,7 @@ export interface ServerConfig {
   };
   mineru?: {
     enabled?: boolean;
+    mode?: 'v4';
     apiKey?: string;
     baseUrl?: string;
     uidToken?: string;
@@ -160,14 +161,16 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     finalConfig.mineru?.enabled ??
       finalConfig.mineru?.apiKey
   );
+  const mineruHasRequiredConfig = Boolean(finalConfig.mineru?.apiKey);
   const mineruClient =
-    mineruEnabledByConfig && finalConfig.mineru?.apiKey
+    mineruEnabledByConfig && mineruHasRequiredConfig
       ? new MineruClient({
-          apiKey: finalConfig.mineru.apiKey,
-          ...(finalConfig.mineru.baseUrl ? { baseUrl: finalConfig.mineru.baseUrl } : {}),
-          ...(finalConfig.mineru.uidToken ? { uidToken: finalConfig.mineru.uidToken } : {}),
-          ...(finalConfig.mineru.timeoutMs ? { timeoutMs: finalConfig.mineru.timeoutMs } : {}),
-          ...(finalConfig.mineru.maxRetries ? { maxRetries: finalConfig.mineru.maxRetries } : {}),
+          ...(finalConfig.mineru?.mode ? { mode: finalConfig.mineru.mode } : {}),
+          ...(finalConfig.mineru?.apiKey ? { apiKey: finalConfig.mineru.apiKey } : {}),
+          ...(finalConfig.mineru?.baseUrl ? { baseUrl: finalConfig.mineru.baseUrl } : {}),
+          ...(finalConfig.mineru?.uidToken ? { uidToken: finalConfig.mineru.uidToken } : {}),
+          ...(finalConfig.mineru?.timeoutMs ? { timeoutMs: finalConfig.mineru.timeoutMs } : {}),
+          ...(finalConfig.mineru?.maxRetries ? { maxRetries: finalConfig.mineru.maxRetries } : {}),
         })
       : null;
   const mineruIngestService = new MineruIngestService(

@@ -84,6 +84,7 @@ export async function devCommand(options: DevOptions): Promise<void> {
         ...(agentConfig.mineru.enabled !== undefined
           ? { enabled: agentConfig.mineru.enabled }
           : {}),
+        ...(agentConfig.mineru.mode ? { mode: agentConfig.mineru.mode } : {}),
         ...(agentConfig.mineru.apiKey ? { apiKey: agentConfig.mineru.apiKey } : {}),
         ...(agentConfig.mineru.baseUrl ? { baseUrl: agentConfig.mineru.baseUrl } : {}),
         ...(agentConfig.mineru.uidToken ? { uidToken: agentConfig.mineru.uidToken } : {}),

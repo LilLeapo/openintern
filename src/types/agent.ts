@@ -247,6 +247,7 @@ export interface AgentConfig {
   };
   mineru?: {
     enabled?: boolean;
+    mode?: 'v4';
     apiKey?: string;
     baseUrl?: string;
     uidToken?: string;

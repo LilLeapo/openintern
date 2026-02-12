@@ -81,6 +81,7 @@ describe('RuntimeToolRouter', () => {
         source_key: 'mineru:test',
         task_id: 'task_x',
         data_id: 'data_x',
+        mode: 'v4',
         title: 'PDF',
         chunk_count: 5,
         content_hash: 'pdf-hash',
@@ -210,7 +211,7 @@ describe('RuntimeToolRouter', () => {
     const result = await router.callTool('mineru_ingest_pdf', {});
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('file_url is required');
+    expect(result.error).toContain('one of file_url or file_path is required');
     expect(mineruIngestService.ingestPdf).not.toHaveBeenCalled();
   });
 
@@ -257,6 +258,23 @@ describe('RuntimeToolRouter', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('mineru ingest service is not configured');
+  });
+
+  it('calls mineru_ingest_pdf with local file path', async () => {
+    const router = createRouter();
+    const result = await router.callTool('mineru_ingest_pdf', {
+      file_path: '/tmp/demo.pdf',
+    });
+
+    expect(result.success).toBe(true);
+    expect(mineruIngestService.ingestPdf).toHaveBeenCalledWith({
+      scope: {
+        orgId: 'org_test',
+        userId: 'user_test',
+        projectId: null,
+      },
+      file_path: '/tmp/demo.pdf',
+    });
   });
 
   it('rejects invalid path escape for read_file', async () => {

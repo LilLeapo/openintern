@@ -511,11 +511,12 @@ export class RuntimeToolRouter {
 
     this.tools.set('mineru_ingest_pdf', {
       name: 'mineru_ingest_pdf',
-      description: 'Ingest one PDF URL via MinerU into archival knowledge memory',
+      description: 'Ingest one PDF (URL or local file path) via MinerU into archival knowledge memory',
       parameters: {
         type: 'object',
         properties: {
           file_url: { type: 'string', description: 'Publicly accessible PDF URL' },
+          file_path: { type: 'string', description: 'Local PDF absolute path' },
           title: { type: 'string', description: 'Optional title override' },
           source_key: { type: 'string', description: 'Optional stable source key' },
           options: {
@@ -535,7 +536,6 @@ export class RuntimeToolRouter {
           project_shared: { type: 'boolean', default: true },
           metadata: { type: 'object' },
         },
-        required: ['file_url'],
       },
       source: 'builtin',
       metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
@@ -545,8 +545,15 @@ export class RuntimeToolRouter {
           throw new ToolError('mineru ingest service is not configured', 'mineru_ingest_pdf');
         }
         const fileUrl = extractString(params['file_url']);
-        if (!fileUrl) {
-          throw new ToolError('file_url is required', 'mineru_ingest_pdf');
+        const filePath = extractString(params['file_path']);
+        if (!fileUrl && !filePath) {
+          throw new ToolError('one of file_url or file_path is required', 'mineru_ingest_pdf');
+        }
+        if (fileUrl && filePath) {
+          throw new ToolError(
+            'file_url and file_path cannot both be set',
+            'mineru_ingest_pdf'
+          );
         }
         const title = extractString(params['title']);
         const sourceKey = extractString(params['source_key']);
@@ -604,7 +611,8 @@ export class RuntimeToolRouter {
             userId: this.scope.userId,
             projectId: this.scope.projectId,
           },
-          file_url: fileUrl,
+          ...(fileUrl ? { file_url: fileUrl } : {}),
+          ...(filePath ? { file_path: filePath } : {}),
           ...(title ? { title } : {}),
           ...(sourceKey ? { source_key: sourceKey } : {}),
           ...(projectShared !== null ? { project_shared: projectShared } : {}),

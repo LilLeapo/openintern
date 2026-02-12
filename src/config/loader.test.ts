@@ -27,7 +27,7 @@ const ENV_KEYS = [
   'PORT', 'DATA_DIR',
   'FEISHU_ENABLED', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_BASE_URL',
   'FEISHU_TIMEOUT_MS', 'FEISHU_MAX_RETRIES', 'FEISHU_POLL_INTERVAL_MS',
-  'MINERU_ENABLED', 'MINERU_API_KEY', 'MINERU_BASE_URL', 'MINERU_UID_TOKEN',
+  'MINERU_ENABLED', 'MINERU_MODE', 'MINERU_API_KEY', 'MINERU_BASE_URL', 'MINERU_UID_TOKEN',
   'MINERU_TIMEOUT_MS', 'MINERU_MAX_RETRIES', 'MINERU_POLL_INTERVAL_MS',
   'MINERU_MAX_POLL_ATTEMPTS', 'MINERU_DEFAULT_MODEL_VERSION',
 ];
@@ -118,6 +118,7 @@ describe('loadConfig', () => {
 
   it('should apply MinerU env var overrides', async () => {
     process.env['MINERU_ENABLED'] = 'true';
+    process.env['MINERU_MODE'] = 'v4';
     process.env['MINERU_API_KEY'] = 'ak_test_key';
     process.env['MINERU_POLL_INTERVAL_MS'] = '4500';
     process.env['MINERU_MAX_POLL_ATTEMPTS'] = '80';
@@ -126,6 +127,7 @@ describe('loadConfig', () => {
     const config = await loadConfig('/tmp/test');
 
     expect(config.mineru?.enabled).toBe(true);
+    expect(config.mineru?.mode).toBe('v4');
     expect(config.mineru?.apiKey).toBe('ak_test_key');
     expect(config.mineru?.pollIntervalMs).toBe(4500);
     expect(config.mineru?.maxPollAttempts).toBe(80);

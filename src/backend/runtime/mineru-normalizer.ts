@@ -64,7 +64,7 @@ function buildSnippet(text: string): string {
 }
 
 function collectStringValues(value: unknown, depth: number = 0): string[] {
-  if (depth > 3) {
+  if (depth > 5) {
     return [];
   }
   if (typeof value === 'string') {

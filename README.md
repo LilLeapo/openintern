@@ -298,7 +298,8 @@ pytest
 {
   "mineru": {
     "enabled": true,
-    "apiKey": "ak_xxx_or_sk_xxx",
+    "mode": "v4",
+    "apiKey": "your_api_token_or_ak_sk",
     "baseUrl": "https://mineru.net/api/v4",
     "uidToken": "",
     "timeoutMs": 20000,
@@ -312,7 +313,11 @@ pytest
 
 说明：
 - 运行时工具 `mineru_ingest_pdf` 使用该配置调用 MinerU 官方 API 并将结果写入 archival 知识层
-- 若未配置 `mineru.apiKey`，工具调用会返回 `MINERU_DISABLED`
+- 仅支持 `mode=v4`（走 `/api/v4`）
+  - `file_url`：走 `extract/task`
+  - `file_path`：走 `file-urls/batch -> PUT 上传 -> extract-results/batch`
+  - `apiKey` 可使用 MinerU 官方 API Token（Bearer）或 AK/SK
+- 若配置不完整，工具调用会返回 `MINERU_DISABLED` 或参数错误
 
 ### 常用环境变量
 
@@ -324,7 +329,7 @@ pytest
 - `VITE_API_PROXY_TARGET`（web dev 代理）
 - `VITE_ORG_ID` / `VITE_USER_ID` / `VITE_PROJECT_ID`
 - `FEISHU_ENABLED` / `FEISHU_APP_ID` / `FEISHU_APP_SECRET`
-- `MINERU_ENABLED` / `MINERU_API_KEY` / `MINERU_BASE_URL` / `MINERU_UID_TOKEN`
+- `MINERU_ENABLED` / `MINERU_MODE` / `MINERU_API_KEY` / `MINERU_BASE_URL` / `MINERU_UID_TOKEN`
 
 ## 项目结构
 

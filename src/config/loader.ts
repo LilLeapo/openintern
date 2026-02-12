@@ -206,6 +206,7 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
 
   // MinerU ingest env overrides
   const envMineruEnabled = process.env['MINERU_ENABLED'];
+  const envMineruMode = process.env['MINERU_MODE'];
   const envMineruApiKey = process.env['MINERU_API_KEY'];
   const envMineruBaseUrl = process.env['MINERU_BASE_URL'];
   const envMineruUidToken = process.env['MINERU_UID_TOKEN'];
@@ -216,6 +217,7 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
   const envMineruDefaultModelVersion = process.env['MINERU_DEFAULT_MODEL_VERSION'];
   if (
     envMineruEnabled !== undefined ||
+    envMineruMode ||
     envMineruApiKey ||
     envMineruBaseUrl ||
     envMineruUidToken ||
@@ -228,6 +230,9 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
     if (!result.mineru) result.mineru = {};
     if (envMineruEnabled !== undefined) {
       result.mineru.enabled = envMineruEnabled === 'true';
+    }
+    if (envMineruMode === 'v4') {
+      result.mineru.mode = envMineruMode;
     }
     if (envMineruApiKey) result.mineru.apiKey = envMineruApiKey;
     if (envMineruBaseUrl) result.mineru.baseUrl = envMineruBaseUrl;
