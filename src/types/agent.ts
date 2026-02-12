@@ -245,6 +245,17 @@ export interface AgentConfig {
     maxRetries?: number;
     pollIntervalMs?: number;
   };
+  mineru?: {
+    enabled?: boolean;
+    apiKey?: string;
+    baseUrl?: string;
+    uidToken?: string;
+    timeoutMs?: number;
+    maxRetries?: number;
+    pollIntervalMs?: number;
+    maxPollAttempts?: number;
+    defaultModelVersion?: 'pipeline' | 'vlm' | 'MinerU-HTML';
+  };
   sandbox?: {
     enabled?: boolean;
     jailDir?: string;

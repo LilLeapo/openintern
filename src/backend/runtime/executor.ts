@@ -23,6 +23,7 @@ import { TokenBudgetManager } from './token-budget-manager.js';
 import { ToolCallScheduler } from './tool-scheduler.js';
 import { RuntimeToolRouter } from './tool-router.js';
 import type { FeishuSyncService } from './feishu-sync-service.js';
+import type { MineruIngestService } from './mineru-ingest-service.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
 type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
@@ -33,6 +34,7 @@ const BUILTIN_TOOL_RISK_LEVELS: Record<string, 'low' | 'medium' | 'high'> = {
   memory_get: 'low',
   memory_write: 'medium',
   feishu_ingest_doc: 'medium',
+  mineru_ingest_pdf: 'medium',
   read_file: 'low',
   write_file: 'medium',
   list_files: 'low',
@@ -55,6 +57,7 @@ export interface RuntimeExecutorConfig {
   groupRepository: GroupRepository;
   roleRepository: RoleRepository;
   feishuSyncService?: FeishuSyncService;
+  mineruIngestService?: MineruIngestService;
   maxSteps: number;
   defaultModelConfig: LLMConfig;
   workDir: string;
@@ -197,6 +200,7 @@ export function createRuntimeExecutor(
           memoryService: config.memoryService,
           eventService: config.eventService,
           ...(config.feishuSyncService ? { feishuSyncService: config.feishuSyncService } : {}),
+          ...(config.mineruIngestService ? { mineruIngestService: config.mineruIngestService } : {}),
           workDir: config.workDir,
           ...(config.mcp ? { mcp: config.mcp } : {}),
         });

@@ -204,6 +204,48 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
     }
   }
 
+  // MinerU ingest env overrides
+  const envMineruEnabled = process.env['MINERU_ENABLED'];
+  const envMineruApiKey = process.env['MINERU_API_KEY'];
+  const envMineruBaseUrl = process.env['MINERU_BASE_URL'];
+  const envMineruUidToken = process.env['MINERU_UID_TOKEN'];
+  const envMineruTimeoutMs = process.env['MINERU_TIMEOUT_MS'];
+  const envMineruMaxRetries = process.env['MINERU_MAX_RETRIES'];
+  const envMineruPollIntervalMs = process.env['MINERU_POLL_INTERVAL_MS'];
+  const envMineruMaxPollAttempts = process.env['MINERU_MAX_POLL_ATTEMPTS'];
+  const envMineruDefaultModelVersion = process.env['MINERU_DEFAULT_MODEL_VERSION'];
+  if (
+    envMineruEnabled !== undefined ||
+    envMineruApiKey ||
+    envMineruBaseUrl ||
+    envMineruUidToken ||
+    envMineruTimeoutMs ||
+    envMineruMaxRetries ||
+    envMineruPollIntervalMs ||
+    envMineruMaxPollAttempts ||
+    envMineruDefaultModelVersion
+  ) {
+    if (!result.mineru) result.mineru = {};
+    if (envMineruEnabled !== undefined) {
+      result.mineru.enabled = envMineruEnabled === 'true';
+    }
+    if (envMineruApiKey) result.mineru.apiKey = envMineruApiKey;
+    if (envMineruBaseUrl) result.mineru.baseUrl = envMineruBaseUrl;
+    if (envMineruUidToken) result.mineru.uidToken = envMineruUidToken;
+    if (envMineruTimeoutMs) result.mineru.timeoutMs = parseInt(envMineruTimeoutMs, 10);
+    if (envMineruMaxRetries) result.mineru.maxRetries = parseInt(envMineruMaxRetries, 10);
+    if (envMineruPollIntervalMs) {
+      result.mineru.pollIntervalMs = parseInt(envMineruPollIntervalMs, 10);
+    }
+    if (envMineruMaxPollAttempts) {
+      result.mineru.maxPollAttempts = parseInt(envMineruMaxPollAttempts, 10);
+    }
+    if (envMineruDefaultModelVersion) {
+      result.mineru.defaultModelVersion = envMineruDefaultModelVersion as
+        'pipeline' | 'vlm' | 'MinerU-HTML';
+    }
+  }
+
   return result;
 }
 

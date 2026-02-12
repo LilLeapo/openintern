@@ -4,12 +4,14 @@ import { execFile } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from '../../types/agent.js';
 import type { Skill } from '../../types/skill.js';
 import type { FeishuChunkingConfig } from '../../types/feishu.js';
+import type { MineruExtractOptions } from '../../types/mineru.js';
 import type { ScopeContext } from './scope.js';
 import { ToolError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 import { MCPClient } from '../agent/mcp-client.js';
 import type { EventService } from './event-service.js';
 import type { FeishuSyncService } from './feishu-sync-service.js';
+import type { MineruIngestService } from './mineru-ingest-service.js';
 import type { MemoryService } from './memory-service.js';
 import type { AgentContext } from './tool-policy.js';
 import { ToolPolicy } from './tool-policy.js';
@@ -51,6 +53,19 @@ function extractString(value: unknown): string | null {
 function extractBoolean(value: unknown): boolean | null {
   if (typeof value === 'boolean') {
     return value;
+  }
+  return null;
+}
+
+function extractNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
   }
   return null;
 }
@@ -155,6 +170,7 @@ export interface RuntimeToolRouterConfig {
   memoryService: MemoryService;
   eventService: EventService;
   feishuSyncService?: FeishuSyncService;
+  mineruIngestService?: MineruIngestService;
   workDir: string;
   mcp?: {
     enabled: boolean;
@@ -489,6 +505,111 @@ export class RuntimeToolRouter {
           ...(chunking ? { chunking } : {}),
           ...(projectShared !== null ? { project_shared: projectShared } : {}),
           ...(metadata ? { metadata } : {}),
+        });
+      },
+    });
+
+    this.tools.set('mineru_ingest_pdf', {
+      name: 'mineru_ingest_pdf',
+      description: 'Ingest one PDF URL via MinerU into archival knowledge memory',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_url: { type: 'string', description: 'Publicly accessible PDF URL' },
+          title: { type: 'string', description: 'Optional title override' },
+          source_key: { type: 'string', description: 'Optional stable source key' },
+          options: {
+            type: 'object',
+            properties: {
+              model_version: { type: 'string', enum: ['pipeline', 'vlm', 'MinerU-HTML'] },
+              is_ocr: { type: 'boolean' },
+              enable_formula: { type: 'boolean' },
+              enable_table: { type: 'boolean' },
+              language: { type: 'string' },
+              page_ranges: { type: 'string' },
+              no_cache: { type: 'boolean' },
+              cache_tolerance: { type: 'number' },
+              data_id: { type: 'string' },
+            },
+          },
+          project_shared: { type: 'boolean', default: true },
+          metadata: { type: 'object' },
+        },
+        required: ['file_url'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const service = this.config.mineruIngestService;
+        if (!service) {
+          throw new ToolError('mineru ingest service is not configured', 'mineru_ingest_pdf');
+        }
+        const fileUrl = extractString(params['file_url']);
+        if (!fileUrl) {
+          throw new ToolError('file_url is required', 'mineru_ingest_pdf');
+        }
+        const title = extractString(params['title']);
+        const sourceKey = extractString(params['source_key']);
+        const projectShared = extractBoolean(params['project_shared']);
+        const metadataRaw = params['metadata'];
+        const metadata =
+          typeof metadataRaw === 'object' && metadataRaw !== null
+            ? (metadataRaw as Record<string, unknown>)
+            : undefined;
+        const optionsRaw = params['options'];
+        const optionsObject =
+          typeof optionsRaw === 'object' && optionsRaw !== null
+            ? (optionsRaw as Record<string, unknown>)
+            : null;
+        const modelVersionRaw = optionsObject ? extractString(optionsObject['model_version']) : null;
+        const modelVersion =
+          modelVersionRaw && ['pipeline', 'vlm', 'MinerU-HTML'].includes(modelVersionRaw)
+            ? (modelVersionRaw as 'pipeline' | 'vlm' | 'MinerU-HTML')
+            : null;
+        const options: MineruExtractOptions | undefined = optionsObject
+          ? {
+              ...(modelVersion
+                ? { model_version: modelVersion }
+                : {}),
+              ...(extractBoolean(optionsObject['is_ocr']) !== null
+                ? { is_ocr: extractBoolean(optionsObject['is_ocr']) as boolean }
+                : {}),
+              ...(extractBoolean(optionsObject['enable_formula']) !== null
+                ? { enable_formula: extractBoolean(optionsObject['enable_formula']) as boolean }
+                : {}),
+              ...(extractBoolean(optionsObject['enable_table']) !== null
+                ? { enable_table: extractBoolean(optionsObject['enable_table']) as boolean }
+                : {}),
+              ...(extractString(optionsObject['language'])
+                ? { language: extractString(optionsObject['language']) as string }
+                : {}),
+              ...(extractString(optionsObject['page_ranges'])
+                ? { page_ranges: extractString(optionsObject['page_ranges']) as string }
+                : {}),
+              ...(extractBoolean(optionsObject['no_cache']) !== null
+                ? { no_cache: extractBoolean(optionsObject['no_cache']) as boolean }
+                : {}),
+              ...(extractNumber(optionsObject['cache_tolerance']) !== null
+                ? { cache_tolerance: extractNumber(optionsObject['cache_tolerance']) as number }
+                : {}),
+              ...(extractString(optionsObject['data_id'])
+                ? { data_id: extractString(optionsObject['data_id']) as string }
+                : {}),
+            }
+          : undefined;
+
+        return service.ingestPdf({
+          scope: {
+            orgId: this.scope.orgId,
+            userId: this.scope.userId,
+            projectId: this.scope.projectId,
+          },
+          file_url: fileUrl,
+          ...(title ? { title } : {}),
+          ...(sourceKey ? { source_key: sourceKey } : {}),
+          ...(projectShared !== null ? { project_shared: projectShared } : {}),
+          ...(metadata ? { metadata } : {}),
+          ...(options ? { options } : {}),
         });
       },
     });

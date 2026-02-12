@@ -7,6 +7,7 @@ import { RuntimeToolRouter } from './tool-router.js';
 import type { MemoryService } from './memory-service.js';
 import type { EventService } from './event-service.js';
 import type { FeishuSyncService } from './feishu-sync-service.js';
+import type { MineruIngestService } from './mineru-ingest-service.js';
 import type { AgentContext } from './tool-policy.js';
 import { SkillRegistry } from './skill-registry.js';
 
@@ -24,11 +25,16 @@ interface MockFeishuSyncService {
   ingestDoc: Mock;
 }
 
+interface MockMineruIngestService {
+  ingestPdf: Mock;
+}
+
 describe('RuntimeToolRouter', () => {
   let workDir: string;
   let memoryService: MockMemoryService;
   let eventService: MockEventService;
   let feishuSyncService: MockFeishuSyncService;
+  let mineruIngestService: MockMineruIngestService;
 
   beforeEach(async () => {
     workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'runtime-tool-router-'));
@@ -69,6 +75,18 @@ describe('RuntimeToolRouter', () => {
         replaced: 1,
       }),
     };
+    mineruIngestService = {
+      ingestPdf: vi.fn().mockResolvedValue({
+        memory_id: '22222222-2222-2222-2222-222222222222',
+        source_key: 'mineru:test',
+        task_id: 'task_x',
+        data_id: 'data_x',
+        title: 'PDF',
+        chunk_count: 5,
+        content_hash: 'pdf-hash',
+        replaced: 0,
+      }),
+    };
   });
 
   afterEach(async () => {
@@ -78,7 +96,7 @@ describe('RuntimeToolRouter', () => {
 
   function createRouter(
     timeoutMs = 50,
-    options: { withFeishu?: boolean } = {}
+    options: { withFeishu?: boolean; withMineru?: boolean } = {}
   ): RuntimeToolRouter {
     return new RuntimeToolRouter({
       scope: {
@@ -91,6 +109,9 @@ describe('RuntimeToolRouter', () => {
       ...(options.withFeishu === false
         ? {}
         : { feishuSyncService: feishuSyncService as unknown as FeishuSyncService }),
+      ...(options.withMineru === false
+        ? {}
+        : { mineruIngestService: mineruIngestService as unknown as MineruIngestService }),
       workDir,
       timeoutMs,
     });
@@ -106,6 +127,7 @@ describe('RuntimeToolRouter', () => {
         'memory_get',
         'memory_write',
         'feishu_ingest_doc',
+        'mineru_ingest_pdf',
         'read_file',
         'export_trace',
         'skills_list',
@@ -181,6 +203,60 @@ describe('RuntimeToolRouter', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('feishu sync service is not configured');
+  });
+
+  it('validates required params for mineru_ingest_pdf', async () => {
+    const router = createRouter();
+    const result = await router.callTool('mineru_ingest_pdf', {});
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('file_url is required');
+    expect(mineruIngestService.ingestPdf).not.toHaveBeenCalled();
+  });
+
+  it('calls mineru_ingest_pdf with mapped scope and payload', async () => {
+    const router = createRouter();
+    const result = await router.callTool('mineru_ingest_pdf', {
+      file_url: 'https://example.com/demo.pdf',
+      title: 'Demo PDF',
+      source_key: 'pdf:demo',
+      options: {
+        model_version: 'vlm',
+        is_ocr: true,
+        page_ranges: '1-3',
+      },
+      metadata: { team: 'group1' },
+      project_shared: false,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mineruIngestService.ingestPdf).toHaveBeenCalledWith({
+      scope: {
+        orgId: 'org_test',
+        userId: 'user_test',
+        projectId: null,
+      },
+      file_url: 'https://example.com/demo.pdf',
+      title: 'Demo PDF',
+      source_key: 'pdf:demo',
+      options: {
+        model_version: 'vlm',
+        is_ocr: true,
+        page_ranges: '1-3',
+      },
+      metadata: { team: 'group1' },
+      project_shared: false,
+    });
+  });
+
+  it('returns explicit error when mineru service is not configured', async () => {
+    const router = createRouter(50, { withMineru: false });
+    const result = await router.callTool('mineru_ingest_pdf', {
+      file_url: 'https://example.com/demo.pdf',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('mineru ingest service is not configured');
   });
 
   it('rejects invalid path escape for read_file', async () => {
@@ -330,6 +406,7 @@ describe('RuntimeToolRouter', () => {
           'memory_get',
           'memory_write',
           'feishu_ingest_doc',
+          'mineru_ingest_pdf',
           'read_file',
           'export_trace',
           'skills_list',
@@ -340,6 +417,7 @@ describe('RuntimeToolRouter', () => {
           memory_get: 'low',
           memory_write: 'medium',
           feishu_ingest_doc: 'medium',
+          mineru_ingest_pdf: 'medium',
           read_file: 'low',
           export_trace: 'low',
           skills_list: 'low',
@@ -442,6 +520,7 @@ describe('RuntimeToolRouter', () => {
           'memory_get',
           'memory_write',
           'feishu_ingest_doc',
+          'mineru_ingest_pdf',
           'read_file',
           'export_trace',
           'skills_list',

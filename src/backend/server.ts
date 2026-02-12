@@ -35,6 +35,8 @@ import { SkillRepository } from './runtime/skill-repository.js';
 import { FeishuRepository } from './runtime/feishu-repository.js';
 import { FeishuClient } from './runtime/feishu-client.js';
 import { FeishuSyncService } from './runtime/feishu-sync-service.js';
+import { MineruClient } from './runtime/mineru-client.js';
+import { MineruIngestService } from './runtime/mineru-ingest-service.js';
 import { closeSharedPostgresPool, getPostgresPool, runPostgresMigrations } from './db/index.js';
 
 /**
@@ -65,6 +67,17 @@ export interface ServerConfig {
     timeoutMs?: number;
     maxRetries?: number;
     pollIntervalMs?: number;
+  };
+  mineru?: {
+    enabled?: boolean;
+    apiKey?: string;
+    baseUrl?: string;
+    uidToken?: string;
+    timeoutMs?: number;
+    maxRetries?: number;
+    pollIntervalMs?: number;
+    maxPollAttempts?: number;
+    defaultModelVersion?: 'pipeline' | 'vlm' | 'MinerU-HTML';
   };
 }
 
@@ -143,6 +156,36 @@ export function createApp(config: Partial<ServerConfig> = {}): {
         : {}),
     }
   );
+  const mineruEnabledByConfig = Boolean(
+    finalConfig.mineru?.enabled ??
+      finalConfig.mineru?.apiKey
+  );
+  const mineruClient =
+    mineruEnabledByConfig && finalConfig.mineru?.apiKey
+      ? new MineruClient({
+          apiKey: finalConfig.mineru.apiKey,
+          ...(finalConfig.mineru.baseUrl ? { baseUrl: finalConfig.mineru.baseUrl } : {}),
+          ...(finalConfig.mineru.uidToken ? { uidToken: finalConfig.mineru.uidToken } : {}),
+          ...(finalConfig.mineru.timeoutMs ? { timeoutMs: finalConfig.mineru.timeoutMs } : {}),
+          ...(finalConfig.mineru.maxRetries ? { maxRetries: finalConfig.mineru.maxRetries } : {}),
+        })
+      : null;
+  const mineruIngestService = new MineruIngestService(
+    memoryService,
+    mineruClient,
+    {
+      enabled: mineruEnabledByConfig,
+      ...(finalConfig.mineru?.pollIntervalMs
+        ? { pollIntervalMs: finalConfig.mineru.pollIntervalMs }
+        : {}),
+      ...(finalConfig.mineru?.maxPollAttempts
+        ? { maxPollAttempts: finalConfig.mineru.maxPollAttempts }
+        : {}),
+      ...(finalConfig.mineru?.defaultModelVersion
+        ? { defaultModelVersion: finalConfig.mineru.defaultModelVersion }
+        : {}),
+    }
+  );
 
   // Set up runtime executor for the run queue
   const runtimeExecutor = createRuntimeExecutor({
@@ -155,6 +198,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     groupRepository,
     roleRepository,
     feishuSyncService,
+    mineruIngestService,
     maxSteps: finalConfig.maxSteps ?? 10,
     defaultModelConfig: finalConfig.defaultModelConfig ?? {
       provider: 'mock',

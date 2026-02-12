@@ -43,5 +43,16 @@
     "timeoutMs": 20000,
     "maxRetries": 3,
     "pollIntervalMs": 120000
+  },
+  "mineru": {
+    "enabled": false,
+    "apiKey": "ak_xxx_or_sk_xxx",
+    "baseUrl": "https://mineru.net/api/v4",
+    "uidToken": "",
+    "timeoutMs": 20000,
+    "maxRetries": 3,
+    "pollIntervalMs": 3000,
+    "maxPollAttempts": 120,
+    "defaultModelVersion": "pipeline"
   }
 }

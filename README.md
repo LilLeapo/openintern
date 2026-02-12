@@ -292,6 +292,28 @@ pytest
 - 同步产物写入 `memories/memory_chunks` 的 `archival` 层（带 `source_type=feishu_*` metadata）
 - 若未配置 `feishu.appId/appSecret`，同步接口会返回 `FEISHU_SYNC_DISABLED`
 
+可选：MinerU PDF 摄入配置（写在 `agent.config.json` 顶层）：
+
+```json
+{
+  "mineru": {
+    "enabled": true,
+    "apiKey": "ak_xxx_or_sk_xxx",
+    "baseUrl": "https://mineru.net/api/v4",
+    "uidToken": "",
+    "timeoutMs": 20000,
+    "maxRetries": 3,
+    "pollIntervalMs": 3000,
+    "maxPollAttempts": 120,
+    "defaultModelVersion": "pipeline"
+  }
+}
+```
+
+说明：
+- 运行时工具 `mineru_ingest_pdf` 使用该配置调用 MinerU 官方 API 并将结果写入 archival 知识层
+- 若未配置 `mineru.apiKey`，工具调用会返回 `MINERU_DISABLED`
+
 ### 常用环境变量
 
 - `DATABASE_URL`
@@ -301,6 +323,8 @@ pytest
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
 - `VITE_API_PROXY_TARGET`（web dev 代理）
 - `VITE_ORG_ID` / `VITE_USER_ID` / `VITE_PROJECT_ID`
+- `FEISHU_ENABLED` / `FEISHU_APP_ID` / `FEISHU_APP_SECRET`
+- `MINERU_ENABLED` / `MINERU_API_KEY` / `MINERU_BASE_URL` / `MINERU_UID_TOKEN`
 
 ## 项目结构
 

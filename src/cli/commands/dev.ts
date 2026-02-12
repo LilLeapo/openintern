@@ -79,6 +79,27 @@ export async function devCommand(options: DevOptions): Promise<void> {
           : {}),
       };
     }
+    if (agentConfig.mineru) {
+      serverConfig.mineru = {
+        ...(agentConfig.mineru.enabled !== undefined
+          ? { enabled: agentConfig.mineru.enabled }
+          : {}),
+        ...(agentConfig.mineru.apiKey ? { apiKey: agentConfig.mineru.apiKey } : {}),
+        ...(agentConfig.mineru.baseUrl ? { baseUrl: agentConfig.mineru.baseUrl } : {}),
+        ...(agentConfig.mineru.uidToken ? { uidToken: agentConfig.mineru.uidToken } : {}),
+        ...(agentConfig.mineru.timeoutMs ? { timeoutMs: agentConfig.mineru.timeoutMs } : {}),
+        ...(agentConfig.mineru.maxRetries ? { maxRetries: agentConfig.mineru.maxRetries } : {}),
+        ...(agentConfig.mineru.pollIntervalMs
+          ? { pollIntervalMs: agentConfig.mineru.pollIntervalMs }
+          : {}),
+        ...(agentConfig.mineru.maxPollAttempts
+          ? { maxPollAttempts: agentConfig.mineru.maxPollAttempts }
+          : {}),
+        ...(agentConfig.mineru.defaultModelVersion
+          ? { defaultModelVersion: agentConfig.mineru.defaultModelVersion }
+          : {}),
+      };
+    }
     serverConfig.mcp = {
       enabled: options.mcpStdio,
       pythonPath: 'python3',
