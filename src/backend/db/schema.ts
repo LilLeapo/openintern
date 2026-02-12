@@ -79,6 +79,7 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
     chunk_text TEXT NOT NULL,
     snippet TEXT NOT NULL,
     embedding VECTOR(256) NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     search_tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple', chunk_text)) STORED,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
@@ -224,4 +225,69 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
   END $$`,
   `CREATE INDEX IF NOT EXISTS memory_chunks_group_idx ON memory_chunks (group_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS memory_chunks_agent_instance_idx ON memory_chunks (agent_instance_id, created_at DESC)`,
+
+  // Add metadata to memory_chunks table (idempotent)
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'memory_chunks' AND column_name = 'metadata'
+    ) THEN
+      ALTER TABLE memory_chunks ADD COLUMN metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+    END IF;
+  END $$`,
+
+  // ─── Feishu Connector: connector config + sync jobs + source state ───
+  `CREATE TABLE IF NOT EXISTS feishu_connectors (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'paused')),
+    config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by TEXT NOT NULL,
+    last_sync_at TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_error TEXT,
+    last_polled_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS feishu_connectors_scope_idx
+    ON feishu_connectors (org_id, project_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS feishu_connectors_status_idx
+    ON feishu_connectors (status, last_polled_at ASC NULLS FIRST)`,
+
+  `CREATE TABLE IF NOT EXISTS feishu_sync_jobs (
+    id TEXT PRIMARY KEY,
+    connector_id TEXT NOT NULL REFERENCES feishu_connectors(id) ON DELETE CASCADE,
+    org_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    trigger TEXT NOT NULL CHECK (trigger IN ('manual', 'poll')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    started_at TIMESTAMPTZ,
+    ended_at TIMESTAMPTZ,
+    stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS feishu_sync_jobs_connector_idx
+    ON feishu_sync_jobs (connector_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS feishu_sync_jobs_scope_idx
+    ON feishu_sync_jobs (org_id, project_id, created_at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS feishu_source_state (
+    connector_id TEXT NOT NULL REFERENCES feishu_connectors(id) ON DELETE CASCADE,
+    source_key TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK (source_type IN ('docx', 'bitable')),
+    source_id TEXT NOT NULL,
+    revision_id TEXT,
+    content_hash TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ,
+    last_synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (connector_id, source_key)
+  )`,
+  `CREATE INDEX IF NOT EXISTS feishu_source_state_connector_idx
+    ON feishu_source_state (connector_id, source_type, last_synced_at DESC)`,
 ];

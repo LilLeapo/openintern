@@ -173,6 +173,37 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
     if (envEmbeddingApiModel) result.embedding.apiModel = envEmbeddingApiModel;
   }
 
+  // Feishu connector env overrides
+  const envFeishuEnabled = process.env['FEISHU_ENABLED'];
+  const envFeishuAppId = process.env['FEISHU_APP_ID'];
+  const envFeishuAppSecret = process.env['FEISHU_APP_SECRET'];
+  const envFeishuBaseUrl = process.env['FEISHU_BASE_URL'];
+  const envFeishuTimeoutMs = process.env['FEISHU_TIMEOUT_MS'];
+  const envFeishuMaxRetries = process.env['FEISHU_MAX_RETRIES'];
+  const envFeishuPollIntervalMs = process.env['FEISHU_POLL_INTERVAL_MS'];
+  if (
+    envFeishuEnabled !== undefined ||
+    envFeishuAppId ||
+    envFeishuAppSecret ||
+    envFeishuBaseUrl ||
+    envFeishuTimeoutMs ||
+    envFeishuMaxRetries ||
+    envFeishuPollIntervalMs
+  ) {
+    if (!result.feishu) result.feishu = {};
+    if (envFeishuEnabled !== undefined) {
+      result.feishu.enabled = envFeishuEnabled === 'true';
+    }
+    if (envFeishuAppId) result.feishu.appId = envFeishuAppId;
+    if (envFeishuAppSecret) result.feishu.appSecret = envFeishuAppSecret;
+    if (envFeishuBaseUrl) result.feishu.baseUrl = envFeishuBaseUrl;
+    if (envFeishuTimeoutMs) result.feishu.timeoutMs = parseInt(envFeishuTimeoutMs, 10);
+    if (envFeishuMaxRetries) result.feishu.maxRetries = parseInt(envFeishuMaxRetries, 10);
+    if (envFeishuPollIntervalMs) {
+      result.feishu.pollIntervalMs = parseInt(envFeishuPollIntervalMs, 10);
+    }
+  }
+
   return result;
 }
 

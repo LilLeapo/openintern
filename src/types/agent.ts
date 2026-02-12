@@ -236,6 +236,15 @@ export interface AgentConfig {
     apiUrl?: string;
     apiModel?: string;
   };
+  feishu?: {
+    enabled?: boolean;
+    appId?: string;
+    appSecret?: string;
+    baseUrl?: string;
+    timeoutMs?: number;
+    maxRetries?: number;
+    pollIntervalMs?: number;
+  };
   sandbox?: {
     enabled?: boolean;
     jailDir?: string;

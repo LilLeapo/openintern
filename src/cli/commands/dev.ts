@@ -64,6 +64,21 @@ export async function devCommand(options: DevOptions): Promise<void> {
         ...(agentConfig.embedding.apiModel ? { apiModel: agentConfig.embedding.apiModel } : {}),
       };
     }
+    if (agentConfig.feishu) {
+      serverConfig.feishu = {
+        ...(agentConfig.feishu.enabled !== undefined
+          ? { enabled: agentConfig.feishu.enabled }
+          : {}),
+        ...(agentConfig.feishu.appId ? { appId: agentConfig.feishu.appId } : {}),
+        ...(agentConfig.feishu.appSecret ? { appSecret: agentConfig.feishu.appSecret } : {}),
+        ...(agentConfig.feishu.baseUrl ? { baseUrl: agentConfig.feishu.baseUrl } : {}),
+        ...(agentConfig.feishu.timeoutMs ? { timeoutMs: agentConfig.feishu.timeoutMs } : {}),
+        ...(agentConfig.feishu.maxRetries ? { maxRetries: agentConfig.feishu.maxRetries } : {}),
+        ...(agentConfig.feishu.pollIntervalMs
+          ? { pollIntervalMs: agentConfig.feishu.pollIntervalMs }
+          : {}),
+      };
+    }
     serverConfig.mcp = {
       enabled: options.mcpStdio,
       pythonPath: 'python3',

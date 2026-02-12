@@ -25,6 +25,8 @@ const ENV_KEYS = [
   'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
   'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL',
   'PORT', 'DATA_DIR',
+  'FEISHU_ENABLED', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET', 'FEISHU_BASE_URL',
+  'FEISHU_TIMEOUT_MS', 'FEISHU_MAX_RETRIES', 'FEISHU_POLL_INTERVAL_MS',
 ];
 
 let savedEnv: Record<string, string | undefined>;
@@ -95,6 +97,20 @@ describe('loadConfig', () => {
 
     expect(config.server?.port).toBe(9090);
     expect(config.server?.baseDir).toBe('/custom/data');
+  });
+
+  it('should apply Feishu env var overrides', async () => {
+    process.env['FEISHU_ENABLED'] = 'true';
+    process.env['FEISHU_APP_ID'] = 'cli_app_id';
+    process.env['FEISHU_APP_SECRET'] = 'cli_app_secret';
+    process.env['FEISHU_POLL_INTERVAL_MS'] = '180000';
+
+    const config = await loadConfig('/tmp/test');
+
+    expect(config.feishu?.enabled).toBe(true);
+    expect(config.feishu?.appId).toBe('cli_app_id');
+    expect(config.feishu?.appSecret).toBe('cli_app_secret');
+    expect(config.feishu?.pollIntervalMs).toBe(180000);
   });
 
   it('should auto-detect from OPENAI_API_KEY', async () => {

@@ -78,3 +78,17 @@ export function generateAgentInstanceId(): string {
 export function generateSkillId(): string {
   return `skill_${randomAlphanumeric(12)}`;
 }
+
+/**
+ * Generate a Feishu connector ID (format: fconn_<alphanumeric>)
+ */
+export function generateFeishuConnectorId(): string {
+  return `fconn_${randomAlphanumeric(12)}`;
+}
+
+/**
+ * Generate a Feishu sync job ID (format: fsjob_<alphanumeric>)
+ */
+export function generateFeishuSyncJobId(): string {
+  return `fsjob_${randomAlphanumeric(12)}`;
+}

@@ -19,6 +19,7 @@ import { createRolesRouter } from './api/roles.js';
 import { createGroupsRouter } from './api/groups.js';
 import { createBlackboardRouter } from './api/blackboard.js';
 import { createSkillsRouter } from './api/skills.js';
+import { createFeishuConnectorsRouter } from './api/feishu-connectors.js';
 import { RunQueue } from './queue/run-queue.js';
 import { SSEManager } from './api/sse.js';
 import { AgentError } from '../utils/errors.js';
@@ -31,6 +32,9 @@ import { CheckpointService, createRuntimeExecutor, EventService, MemoryService, 
 import { RoleRepository } from './runtime/role-repository.js';
 import { GroupRepository } from './runtime/group-repository.js';
 import { SkillRepository } from './runtime/skill-repository.js';
+import { FeishuRepository } from './runtime/feishu-repository.js';
+import { FeishuClient } from './runtime/feishu-client.js';
+import { FeishuSyncService } from './runtime/feishu-sync-service.js';
 import { closeSharedPostgresPool, getPostgresPool, runPostgresMigrations } from './db/index.js';
 
 /**
@@ -53,6 +57,15 @@ export interface ServerConfig {
     cwd?: string;
     timeoutMs?: number;
   };
+  feishu?: {
+    enabled?: boolean;
+    appId?: string;
+    appSecret?: string;
+    baseUrl?: string;
+    timeoutMs?: number;
+    maxRetries?: number;
+    pollIntervalMs?: number;
+  };
 }
 
 const DEFAULT_CONFIG: ServerConfig = {
@@ -69,6 +82,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   runQueue: RunQueue;
   sseManager: SSEManager;
   dbReady: Promise<void>;
+  feishuSyncService: FeishuSyncService;
 } {
   const finalConfig = { ...DEFAULT_CONFIG, ...config };
   const app = express();
@@ -85,6 +99,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   const roleRepository = new RoleRepository(pool);
   const groupRepository = new GroupRepository(pool);
   const skillRepository = new SkillRepository(pool);
+  const feishuRepository = new FeishuRepository(pool);
   const eventService = new EventService(runRepository);
   const checkpointService = new CheckpointService(runRepository);
   const requestedEmbedding = finalConfig.embeddingConfig ?? finalConfig.embedding ?? {
@@ -103,6 +118,32 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   });
   const memoryService = new MemoryService(pool, embeddingProvider);
 
+  const feishuEnabledByConfig = Boolean(
+    finalConfig.feishu?.enabled ??
+      (finalConfig.feishu?.appId && finalConfig.feishu?.appSecret)
+  );
+  const feishuClient =
+    feishuEnabledByConfig && finalConfig.feishu?.appId && finalConfig.feishu?.appSecret
+      ? new FeishuClient({
+          appId: finalConfig.feishu.appId,
+          appSecret: finalConfig.feishu.appSecret,
+          ...(finalConfig.feishu.baseUrl ? { baseUrl: finalConfig.feishu.baseUrl } : {}),
+          ...(finalConfig.feishu.timeoutMs ? { timeoutMs: finalConfig.feishu.timeoutMs } : {}),
+          ...(finalConfig.feishu.maxRetries ? { maxRetries: finalConfig.feishu.maxRetries } : {}),
+        })
+      : null;
+  const feishuSyncService = new FeishuSyncService(
+    feishuRepository,
+    memoryService,
+    feishuClient,
+    {
+      enabled: feishuEnabledByConfig,
+      ...(finalConfig.feishu?.pollIntervalMs
+        ? { pollIntervalMs: finalConfig.feishu.pollIntervalMs }
+        : {}),
+    }
+  );
+
   // Set up runtime executor for the run queue
   const runtimeExecutor = createRuntimeExecutor({
     runRepository,
@@ -113,6 +154,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     sseManager,
     groupRepository,
     roleRepository,
+    feishuSyncService,
     maxSteps: finalConfig.maxSteps ?? 10,
     defaultModelConfig: finalConfig.defaultModelConfig ?? {
       provider: 'mock',
@@ -185,6 +227,12 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   const skillsRouter = createSkillsRouter({ skillRepository });
   app.use('/api', skillsRouter);
 
+  const feishuRouter = createFeishuConnectorsRouter({
+    repository: feishuRepository,
+    syncService: feishuSyncService,
+  });
+  app.use('/api', feishuRouter);
+
   // Error handling middleware
   app.use(errorHandler);
 
@@ -199,7 +247,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     res.status(404).json(response);
   });
 
-  return { app, runQueue, sseManager, dbReady };
+  return { app, runQueue, sseManager, dbReady, feishuSyncService };
 }
 
 /**
@@ -251,7 +299,7 @@ export interface ServerInstance {
  */
 export function createServer(config: Partial<ServerConfig> = {}): ServerInstance {
   const finalConfig = { ...DEFAULT_CONFIG, ...config };
-  const { app, runQueue, sseManager, dbReady } = createApp(config);
+  const { app, runQueue, sseManager, dbReady, feishuSyncService } = createApp(config);
 
   let server: ReturnType<typeof app.listen> | null = null;
 
@@ -263,6 +311,7 @@ export function createServer(config: Partial<ServerConfig> = {}): ServerInstance
       return new Promise((resolve) => {
         // Start SSE heartbeat
         sseManager.startHeartbeat();
+        feishuSyncService.start();
 
         server = app.listen(finalConfig.port, () => {
           logger.info('Server started', {
@@ -278,6 +327,7 @@ export function createServer(config: Partial<ServerConfig> = {}): ServerInstance
       return new Promise((resolve, reject) => {
         // Stop SSE manager
         sseManager.shutdown();
+        feishuSyncService.stop();
 
         // Clear queue
         runQueue.clearCompleted();

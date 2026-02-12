@@ -22,6 +22,7 @@ import { SkillRepository } from './skill-repository.js';
 import { TokenBudgetManager } from './token-budget-manager.js';
 import { ToolCallScheduler } from './tool-scheduler.js';
 import { RuntimeToolRouter } from './tool-router.js';
+import type { FeishuSyncService } from './feishu-sync-service.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
 type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
@@ -31,6 +32,7 @@ const BUILTIN_TOOL_RISK_LEVELS: Record<string, 'low' | 'medium' | 'high'> = {
   memory_search: 'low',
   memory_get: 'low',
   memory_write: 'medium',
+  feishu_ingest_doc: 'medium',
   read_file: 'low',
   write_file: 'medium',
   list_files: 'low',
@@ -52,6 +54,7 @@ export interface RuntimeExecutorConfig {
   sseManager: SSEManager;
   groupRepository: GroupRepository;
   roleRepository: RoleRepository;
+  feishuSyncService?: FeishuSyncService;
   maxSteps: number;
   defaultModelConfig: LLMConfig;
   workDir: string;
@@ -193,6 +196,7 @@ export function createRuntimeExecutor(
           scope,
           memoryService: config.memoryService,
           eventService: config.eventService,
+          ...(config.feishuSyncService ? { feishuSyncService: config.feishuSyncService } : {}),
           workDir: config.workDir,
           ...(config.mcp ? { mcp: config.mcp } : {}),
         });

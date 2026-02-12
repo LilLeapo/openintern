@@ -6,6 +6,7 @@ import type { Mock } from 'vitest';
 import { RuntimeToolRouter } from './tool-router.js';
 import type { MemoryService } from './memory-service.js';
 import type { EventService } from './event-service.js';
+import type { FeishuSyncService } from './feishu-sync-service.js';
 import type { AgentContext } from './tool-policy.js';
 import { SkillRegistry } from './skill-registry.js';
 
@@ -19,10 +20,15 @@ interface MockEventService {
   list: Mock;
 }
 
+interface MockFeishuSyncService {
+  ingestDoc: Mock;
+}
+
 describe('RuntimeToolRouter', () => {
   let workDir: string;
   let memoryService: MockMemoryService;
   let eventService: MockEventService;
+  let feishuSyncService: MockFeishuSyncService;
 
   beforeEach(async () => {
     workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'runtime-tool-router-'));
@@ -51,6 +57,18 @@ describe('RuntimeToolRouter', () => {
         next_cursor: null,
       }),
     };
+    feishuSyncService = {
+      ingestDoc: vi.fn().mockResolvedValue({
+        memory_id: '11111111-1111-1111-1111-111111111111',
+        source_key: 'docx:RJMNwnAHIiVsYzkzhsYcilM0nxd',
+        document_id: 'RJMNwnAHIiVsYzkzhsYcilM0nxd',
+        revision_id: '42',
+        title: 'Doc',
+        chunk_count: 3,
+        content_hash: 'hash',
+        replaced: 1,
+      }),
+    };
   });
 
   afterEach(async () => {
@@ -58,7 +76,10 @@ describe('RuntimeToolRouter', () => {
     await fs.promises.rm(workDir, { recursive: true, force: true });
   });
 
-  function createRouter(timeoutMs = 50): RuntimeToolRouter {
+  function createRouter(
+    timeoutMs = 50,
+    options: { withFeishu?: boolean } = {}
+  ): RuntimeToolRouter {
     return new RuntimeToolRouter({
       scope: {
         orgId: 'org_test',
@@ -67,6 +88,9 @@ describe('RuntimeToolRouter', () => {
       },
       memoryService: memoryService as unknown as MemoryService,
       eventService: eventService as unknown as EventService,
+      ...(options.withFeishu === false
+        ? {}
+        : { feishuSyncService: feishuSyncService as unknown as FeishuSyncService }),
       workDir,
       timeoutMs,
     });
@@ -81,6 +105,7 @@ describe('RuntimeToolRouter', () => {
         'memory_search',
         'memory_get',
         'memory_write',
+        'feishu_ingest_doc',
         'read_file',
         'export_trace',
         'skills_list',
@@ -114,6 +139,48 @@ describe('RuntimeToolRouter', () => {
     expect(invalid.success).toBe(false);
     expect(invalid.error).toContain('invalid memory type');
     expect(memoryService.memory_write).not.toHaveBeenCalled();
+  });
+
+  it('validates required params for feishu_ingest_doc', async () => {
+    const router = createRouter();
+    const result = await router.callTool('feishu_ingest_doc', {});
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('doc_token or doc_url is required');
+    expect(feishuSyncService.ingestDoc).not.toHaveBeenCalled();
+  });
+
+  it('calls feishu_ingest_doc with mapped scope and payload', async () => {
+    const router = createRouter();
+    const result = await router.callTool('feishu_ingest_doc', {
+      doc_url: 'https://example.feishu.cn/wiki/RJMNwnAHIiVsYzkzhsYcilM0nxd',
+      project_shared: false,
+      chunking: { target_tokens: 480 },
+      metadata: { group: 'group1' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(feishuSyncService.ingestDoc).toHaveBeenCalledWith({
+      scope: {
+        orgId: 'org_test',
+        userId: 'user_test',
+        projectId: null,
+      },
+      doc_url: 'https://example.feishu.cn/wiki/RJMNwnAHIiVsYzkzhsYcilM0nxd',
+      project_shared: false,
+      chunking: { target_tokens: 480 },
+      metadata: { group: 'group1' },
+    });
+  });
+
+  it('returns explicit error when feishu service is not configured', async () => {
+    const router = createRouter(50, { withFeishu: false });
+    const result = await router.callTool('feishu_ingest_doc', {
+      doc_token: 'RJMNwnAHIiVsYzkzhsYcilM0nxd',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('feishu sync service is not configured');
   });
 
   it('rejects invalid path escape for read_file', async () => {
@@ -258,11 +325,21 @@ describe('RuntimeToolRouter', () => {
     function createRouterWithRegistry(timeoutMs = 50): RuntimeToolRouter {
       const registry = new SkillRegistry();
       registry.registerBuiltinTools(
-        ['memory_search', 'memory_get', 'memory_write', 'read_file', 'export_trace', 'skills_list', 'skills_get'],
+        [
+          'memory_search',
+          'memory_get',
+          'memory_write',
+          'feishu_ingest_doc',
+          'read_file',
+          'export_trace',
+          'skills_list',
+          'skills_get',
+        ],
         {
           memory_search: 'low',
           memory_get: 'low',
           memory_write: 'medium',
+          feishu_ingest_doc: 'medium',
           read_file: 'low',
           export_trace: 'low',
           skills_list: 'low',
@@ -360,7 +437,16 @@ describe('RuntimeToolRouter', () => {
     it('uses skillRegistry risk level for policy decisions', async () => {
       const registry = new SkillRegistry();
       registry.registerBuiltinTools(
-        ['memory_search', 'memory_get', 'memory_write', 'read_file', 'export_trace', 'skills_list', 'skills_get'],
+        [
+          'memory_search',
+          'memory_get',
+          'memory_write',
+          'feishu_ingest_doc',
+          'read_file',
+          'export_trace',
+          'skills_list',
+          'skills_get',
+        ],
         { memory_write: 'high' }
       );
       const router = new RuntimeToolRouter({

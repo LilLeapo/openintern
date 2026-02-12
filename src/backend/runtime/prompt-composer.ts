@@ -57,10 +57,11 @@ Memory workflow:
 1) Use memory_search for recall.
 2) Use memory_get for full text when needed.
 3) Use memory_write to store durable insights.
+4) Use feishu_ingest_doc to ingest Feishu docs into archival knowledge when needed.
 
 Tool usage:
 - Read-only tools (read_file, glob_files, grep_files, memory_search) can run in parallel.
-- Write tools (write_file, exec_command, apply_patch) run one at a time.
+- Write tools (write_file, exec_command, apply_patch, memory_write, feishu_ingest_doc) run one at a time.
 - If a tool fails, analyze the error and retry with corrected parameters.
 - Do NOT repeat the same tool call with identical parameters.
 

@@ -12,7 +12,6 @@ import type { IEmbeddingProvider } from '../store/embedding-provider.js';
 import { splitIntoChunks } from './text-chunker.js';
 import {
   appendScopePredicate,
-  appendMemoryScopePredicate,
   toScopeContext,
   toMemoryScopeContext,
   type MemoryScopeContext,
@@ -39,6 +38,25 @@ interface MemorySearchInput {
   scope: MemoryScope;
   top_k: number;
   filters?: Record<string, unknown>;
+}
+
+interface FeishuChunkInput {
+  text: string;
+  snippet?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface ReplaceArchivalDocumentInput {
+  scope: MemoryScope;
+  source: {
+    source_type: string;
+    source_key: string;
+  };
+  text: string;
+  metadata?: Record<string, unknown>;
+  chunks: FeishuChunkInput[];
+  importance?: number;
+  project_shared?: boolean;
 }
 
 function toIso(value: string | Date): string {
@@ -78,6 +96,8 @@ function extractTypeFilter(filters: Record<string, unknown> | undefined): Memory
   }
   return [];
 }
+
+const PROJECT_SHARED_USER_ID = 'user_project_shared';
 
 export class MemoryService {
   constructor(
@@ -156,31 +176,185 @@ export class MemoryService {
     }
   }
 
+  /**
+   * Replace project-level archival memory for one external source (e.g. Feishu doc/table).
+   * Existing records with the same source key are removed and rebuilt with new chunks.
+   */
+  async replace_archival_document(input: ReplaceArchivalDocumentInput): Promise<{ id: string; replaced: number }> {
+    const projectShared = input.project_shared ?? true;
+    const sourceScope = projectShared
+      ? {
+          ...input.scope,
+          user_id: PROJECT_SHARED_USER_ID,
+        }
+      : input.scope;
+    const scope = toMemoryScopeContext(sourceScope);
+    if (projectShared && !scope.projectId) {
+      throw new Error('project_id is required for project-shared archival documents');
+    }
+
+    const chunkInputs = input.chunks
+      .map((chunk) => ({
+        text: chunk.text.trim(),
+        snippet: chunk.snippet?.trim() || '',
+        metadata: chunk.metadata ?? {},
+      }))
+      .filter((chunk) => chunk.text.length > 0);
+    const chunkTexts = chunkInputs.map((chunk) => chunk.text);
+    const embeddings = chunkTexts.length > 0
+      ? await this.embeddingProvider.embedBatch(chunkTexts)
+      : [];
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existing = await client.query<{ id: string }>(
+        `SELECT id::text AS id
+        FROM memories
+        WHERE org_id = $1
+          AND user_id = $2
+          AND project_id IS NOT DISTINCT FROM $3
+          AND type = 'archival'
+          AND metadata->>'source_type' = $4
+          AND metadata->>'source_key' = $5`,
+        [
+          scope.orgId,
+          scope.userId,
+          scope.projectId,
+          input.source.source_type,
+          input.source.source_key,
+        ]
+      );
+      const replaced = existing.rows.length;
+      if (replaced > 0) {
+        const ids = existing.rows.map((row) => row.id);
+        await client.query(
+          `DELETE FROM memories WHERE id = ANY($1::uuid[])`,
+          [ids]
+        );
+      }
+
+      const mergedMetadata: Record<string, unknown> = {
+        ...(input.metadata ?? {}),
+        source_type: input.source.source_type,
+        source_key: input.source.source_key,
+        project_shared: projectShared,
+      };
+
+      const memoryResult = await client.query<{ id: string }>(
+        `INSERT INTO memories (
+          org_id,
+          user_id,
+          project_id,
+          group_id,
+          agent_instance_id,
+          type,
+          text,
+          metadata,
+          importance
+        ) VALUES ($1, $2, $3, NULL, NULL, 'archival', $4, $5::jsonb, $6)
+        RETURNING id::text AS id`,
+        [
+          scope.orgId,
+          scope.userId,
+          scope.projectId,
+          input.text,
+          JSON.stringify(mergedMetadata),
+          input.importance ?? 0.8,
+        ]
+      );
+      const memoryId = memoryResult.rows[0]?.id;
+      if (!memoryId) {
+        throw new Error('Failed to insert archival document');
+      }
+
+      for (let i = 0; i < chunkInputs.length; i++) {
+        const chunk = chunkInputs[i];
+        const embedding = embeddings[i];
+        if (!chunk || !embedding) {
+          continue;
+        }
+        await this.insertChunk(client, {
+          memoryId,
+          orgId: scope.orgId,
+          userId: scope.userId,
+          projectId: scope.projectId,
+          groupId: null,
+          agentInstanceId: null,
+          chunkIndex: i,
+          chunkText: chunk.text,
+          snippet: chunk.snippet || chunk.text.slice(0, 180),
+          embedding,
+          metadata: chunk.metadata,
+        });
+      }
+
+      await client.query('COMMIT');
+      return {
+        id: memoryId,
+        replaced,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async memory_get(id: string, scope: MemoryScope): Promise<MemoryGetResponse | null> {
     const scopeContext = toScopeContext(scope);
-    const predicates: string[] = ['id = $1::uuid'];
-    const params: unknown[] = [id];
-    appendScopePredicate(predicates, params, scopeContext);
+    const directPredicates: string[] = ['id = $1::uuid'];
+    const directParams: unknown[] = [id];
+    appendScopePredicate(directPredicates, directParams, scopeContext);
 
-    const result = await this.pool.query<MemoryRow>(
+    const direct = await this.pool.query<MemoryRow>(
       `SELECT id::text AS id, type, text, metadata, created_at, updated_at
       FROM memories
-      WHERE ${predicates.join(' AND ')}
+      WHERE ${directPredicates.join(' AND ')}
       LIMIT 1`,
-      params
+      directParams
     );
-    const row = result.rows[0];
-    if (!row) {
+    const directRow = direct.rows[0];
+    if (directRow) {
+      return {
+        id: directRow.id,
+        type: directRow.type,
+        text: directRow.text,
+        metadata: directRow.metadata ?? {},
+        created_at: toIso(directRow.created_at),
+        updated_at: toIso(directRow.updated_at),
+      };
+    }
+
+    if (!scopeContext.projectId) {
       return null;
     }
 
+    const shared = await this.pool.query<MemoryRow>(
+      `SELECT id::text AS id, type, text, metadata, created_at, updated_at
+      FROM memories
+      WHERE id = $1::uuid
+        AND org_id = $2
+        AND project_id IS NOT DISTINCT FROM $3
+        AND user_id = $4
+        AND type = 'archival'
+        AND COALESCE(metadata->>'source_type', '') LIKE 'feishu_%'
+      LIMIT 1`,
+      [id, scopeContext.orgId, scopeContext.projectId, PROJECT_SHARED_USER_ID]
+    );
+    const sharedRow = shared.rows[0];
+    if (!sharedRow) {
+      return null;
+    }
     return {
-      id: row.id,
-      type: row.type,
-      text: row.text,
-      metadata: row.metadata ?? {},
-      created_at: toIso(row.created_at),
-      updated_at: toIso(row.updated_at),
+      id: sharedRow.id,
+      type: sharedRow.type,
+      text: sharedRow.text,
+      metadata: sharedRow.metadata ?? {},
+      created_at: toIso(sharedRow.created_at),
+      updated_at: toIso(sharedRow.updated_at),
     };
   }
 
@@ -370,7 +544,7 @@ export class MemoryService {
   ): Promise<SearchRow[]> {
     const predicates: string[] = [];
     const params: unknown[] = [];
-    appendMemoryScopePredicate(predicates, params, scope, 'mc');
+    this.appendChunkScopePredicate(predicates, params, scope, 'mc', 'm');
     if (typeFilters.length > 0) {
       const filterIndex = params.push(typeFilters);
       predicates.push(`m.type = ANY($${filterIndex}::text[])`);
@@ -408,7 +582,7 @@ export class MemoryService {
   ): Promise<SearchRow[]> {
     const predicates: string[] = [];
     const params: unknown[] = [];
-    appendMemoryScopePredicate(predicates, params, scope, 'mc');
+    this.appendChunkScopePredicate(predicates, params, scope, 'mc', 'm');
     if (typeFilters.length > 0) {
       const filterIndex = params.push(typeFilters);
       predicates.push(`m.type = ANY($${filterIndex}::text[])`);
@@ -446,6 +620,43 @@ export class MemoryService {
     return this.keepBestRows(result.rows);
   }
 
+  private appendChunkScopePredicate(
+    predicates: string[],
+    params: unknown[],
+    scope: MemoryScopeContext,
+    chunkAlias: string,
+    memoryAlias: string
+  ): void {
+    const orgIdx = params.push(scope.orgId);
+    predicates.push(`${chunkAlias}.org_id = $${orgIdx}`);
+
+    const projectIdx = params.push(scope.projectId);
+    predicates.push(`${chunkAlias}.project_id IS NOT DISTINCT FROM $${projectIdx}`);
+
+    const userIdx = params.push(scope.userId);
+    if (scope.projectId) {
+      const sharedUserIdx = params.push(PROJECT_SHARED_USER_ID);
+      predicates.push(
+        `(${chunkAlias}.user_id = $${userIdx} OR (` +
+        `${chunkAlias}.user_id = $${sharedUserIdx} ` +
+        `AND ${memoryAlias}.type = 'archival' ` +
+        `AND COALESCE(${memoryAlias}.metadata->>'source_type', '') LIKE 'feishu_%'))`
+      );
+    } else {
+      predicates.push(`${chunkAlias}.user_id = $${userIdx}`);
+    }
+
+    if (scope.groupId) {
+      const groupIdx = params.push(scope.groupId);
+      predicates.push(`${chunkAlias}.group_id = $${groupIdx}`);
+    }
+
+    if (scope.agentInstanceId) {
+      const agentIdx = params.push(scope.agentInstanceId);
+      predicates.push(`${chunkAlias}.agent_instance_id = $${agentIdx}`);
+    }
+  }
+
   private keepBestRows(rows: SearchRow[]): SearchRow[] {
     const byMemory = new Map<string, SearchRow>();
     for (const row of rows) {
@@ -470,6 +681,7 @@ export class MemoryService {
       chunkText: string;
       snippet: string;
       embedding: number[];
+      metadata?: Record<string, unknown>;
     }
   ): Promise<void> {
     await client.query(
@@ -483,8 +695,9 @@ export class MemoryService {
         chunk_index,
         chunk_text,
         snippet,
-        embedding
-      ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector)`,
+        embedding,
+        metadata
+      ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11::jsonb)`,
       [
         input.memoryId,
         input.orgId,
@@ -496,6 +709,7 @@ export class MemoryService {
         input.chunkText,
         input.snippet,
         toVectorLiteral(input.embedding),
+        JSON.stringify(input.metadata ?? {}),
       ]
     );
   }

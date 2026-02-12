@@ -137,6 +137,10 @@ CLI 默认 scope：
 
 ## API 概览
 
+完整文档：
+- `docs/api/all-apis.md`
+- `docs/api/feishu-connectors.md`
+
 ### Runs
 
 - `POST /api/runs`
@@ -168,6 +172,14 @@ CLI 默认 scope：
   - `GET /api/skills`
   - `GET /api/skills/:skill_id`
   - `DELETE /api/skills/:skill_id`
+- Feishu Connectors
+  - `POST /api/feishu/connectors`
+  - `GET /api/feishu/connectors`
+  - `GET /api/feishu/connectors/:connector_id`
+  - `PATCH /api/feishu/connectors/:connector_id`
+  - `POST /api/feishu/connectors/:connector_id/sync`
+  - `GET /api/feishu/connectors/:connector_id/jobs`
+  - 详细文档：`docs/api/feishu-connectors.md`
 
 ### 事件类型（当前主用）
 
@@ -258,6 +270,27 @@ pytest
 
 - `agent.config.json`（`agent init` 可生成）
 - 优先级：配置文件 < 环境变量 < CLI 参数 < API 请求参数
+
+可选：Feishu Connector 配置（写在 `agent.config.json` 顶层）：
+
+```json
+{
+  "feishu": {
+    "enabled": true,
+    "appId": "cli_xxx",
+    "appSecret": "xxxx",
+    "baseUrl": "https://open.feishu.cn",
+    "timeoutMs": 20000,
+    "maxRetries": 3,
+    "pollIntervalMs": 120000
+  }
+}
+```
+
+说明：
+- Connector 作用域按 `org_id + project_id` 绑定（请求头 `x-org-id` + `x-project-id`）
+- 同步产物写入 `memories/memory_chunks` 的 `archival` 层（带 `source_type=feishu_*` metadata）
+- 若未配置 `feishu.appId/appSecret`，同步接口会返回 `FEISHU_SYNC_DISABLED`
 
 ### 常用环境变量
 

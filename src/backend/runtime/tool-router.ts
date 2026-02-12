@@ -3,11 +3,13 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from '../../types/agent.js';
 import type { Skill } from '../../types/skill.js';
+import type { FeishuChunkingConfig } from '../../types/feishu.js';
 import type { ScopeContext } from './scope.js';
 import { ToolError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 import { MCPClient } from '../agent/mcp-client.js';
 import type { EventService } from './event-service.js';
+import type { FeishuSyncService } from './feishu-sync-service.js';
 import type { MemoryService } from './memory-service.js';
 import type { AgentContext } from './tool-policy.js';
 import { ToolPolicy } from './tool-policy.js';
@@ -44,6 +46,13 @@ const MCP_RETRYABLE_ERROR_MARKERS = [
 
 function extractString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function extractBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  return null;
 }
 
 interface McpToolPayload {
@@ -145,6 +154,7 @@ export interface RuntimeToolRouterConfig {
   scope: ScopeContext;
   memoryService: MemoryService;
   eventService: EventService;
+  feishuSyncService?: FeishuSyncService;
   workDir: string;
   mcp?: {
     enabled: boolean;
@@ -206,10 +216,20 @@ export class RuntimeToolRouter {
   }
 
   listTools(): ToolDefinition[] {
-    return [...this.tools.values()].map(({ name, description, parameters }) => ({
+    return [...this.tools.values()].map(({ name, description, parameters, metadata }) => ({
       name,
       description,
       parameters,
+      ...(metadata
+        ? {
+            metadata: {
+              risk_level: metadata.risk_level ?? 'low',
+              mutating: metadata.mutating ?? false,
+              supports_parallel: metadata.supports_parallel ?? true,
+              ...(metadata.timeout_ms !== undefined ? { timeout_ms: metadata.timeout_ms } : {}),
+            },
+          }
+        : {}),
     }));
   }
 
@@ -406,6 +426,73 @@ export class RuntimeToolRouter {
       },
     });
 
+    this.tools.set('feishu_ingest_doc', {
+      name: 'feishu_ingest_doc',
+      description: 'Ingest one Feishu document into archival knowledge memory',
+      parameters: {
+        type: 'object',
+        properties: {
+          doc_token: { type: 'string', description: 'Feishu doc token (or wiki token)' },
+          doc_url: { type: 'string', description: 'Feishu document URL; token will be parsed from path' },
+          title: { type: 'string', description: 'Optional title override' },
+          source_key: { type: 'string', description: 'Optional stable source key, default: docx:<document_id>' },
+          chunking: {
+            type: 'object',
+            properties: {
+              target_tokens: { type: 'number' },
+              max_tokens: { type: 'number' },
+              min_tokens: { type: 'number' },
+              media_context_blocks: { type: 'number' },
+            },
+          },
+          project_shared: { type: 'boolean', default: true },
+          metadata: { type: 'object' },
+        },
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const service = this.config.feishuSyncService;
+        if (!service) {
+          throw new ToolError('feishu sync service is not configured', 'feishu_ingest_doc');
+        }
+        const docToken = extractString(params['doc_token']);
+        const docUrl = extractString(params['doc_url']);
+        if (!docToken && !docUrl) {
+          throw new ToolError('doc_token or doc_url is required', 'feishu_ingest_doc');
+        }
+        const title = extractString(params['title']);
+        const sourceKey = extractString(params['source_key']);
+
+        const chunkingRaw = params['chunking'];
+        const chunking =
+          typeof chunkingRaw === 'object' && chunkingRaw !== null
+            ? (chunkingRaw as Partial<FeishuChunkingConfig>)
+            : undefined;
+        const metadataRaw = params['metadata'];
+        const metadata =
+          typeof metadataRaw === 'object' && metadataRaw !== null
+            ? (metadataRaw as Record<string, unknown>)
+            : undefined;
+        const projectShared = extractBoolean(params['project_shared']);
+
+        return service.ingestDoc({
+          scope: {
+            orgId: this.scope.orgId,
+            userId: this.scope.userId,
+            projectId: this.scope.projectId,
+          },
+          ...(docToken ? { doc_token: docToken } : {}),
+          ...(docUrl ? { doc_url: docUrl } : {}),
+          ...(title ? { title } : {}),
+          ...(sourceKey ? { source_key: sourceKey } : {}),
+          ...(chunking ? { chunking } : {}),
+          ...(projectShared !== null ? { project_shared: projectShared } : {}),
+          ...(metadata ? { metadata } : {}),
+        });
+      },
+    });
+
     this.tools.set('read_file', {
       name: 'read_file',
       description: 'Read a UTF-8 file from the workspace',
@@ -469,7 +556,7 @@ export class RuntimeToolRouter {
         },
       },
       source: 'builtin',
-      handler: async (params) => {
+      handler: (params) => {
         const includeTools = params['include_tools'] !== false;
         const provider = extractString(params['provider']);
         const riskLevel = extractString(params['risk_level']);
@@ -482,7 +569,7 @@ export class RuntimeToolRouter {
           skills = skills.filter((skill) => skill.risk_level === riskLevel);
         }
 
-        return {
+        return Promise.resolve({
           count: skills.length,
           skills: skills.map((skill) => ({
             id: skill.id,
@@ -495,7 +582,7 @@ export class RuntimeToolRouter {
               ? { tools: skill.tools.map((tool) => tool.name) }
               : {}),
           })),
-        };
+        });
       },
     });
 
@@ -510,13 +597,13 @@ export class RuntimeToolRouter {
         required: ['skill_id'],
       },
       source: 'builtin',
-      handler: async (params) => {
+      handler: (params) => {
         const skillId = extractString(params['skill_id']);
         if (!skillId) {
           throw new ToolError('skill_id is required', 'skills_get');
         }
         const skill = this.getSkillOrThrow(skillId);
-        return {
+        return Promise.resolve({
           id: skill.id,
           name: skill.name,
           description: skill.description,
@@ -524,7 +611,7 @@ export class RuntimeToolRouter {
           risk_level: skill.risk_level,
           health_status: skill.health_status,
           tools: skill.tools,
-        };
+        });
       },
     });
 
