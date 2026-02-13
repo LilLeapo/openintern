@@ -6,6 +6,7 @@ import { z } from 'zod';
 export const RunStatusSchema = z.enum([
   'pending',
   'running',
+  'waiting',
   'completed',
   'failed',
   'cancelled',

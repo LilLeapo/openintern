@@ -22,6 +22,7 @@ import { SkillRepository } from './skill-repository.js';
 import { TokenBudgetManager } from './token-budget-manager.js';
 import { ToolCallScheduler } from './tool-scheduler.js';
 import { RuntimeToolRouter } from './tool-router.js';
+import { EscalationService } from './escalation-service.js';
 import type { FeishuSyncService } from './feishu-sync-service.js';
 import type { MineruIngestService } from './mineru-ingest-service.js';
 
@@ -45,6 +46,7 @@ const BUILTIN_TOOL_RISK_LEVELS: Record<string, 'low' | 'medium' | 'high'> = {
   export_trace: 'low',
   skills_list: 'low',
   skills_get: 'low',
+  escalate_to_group: 'medium',
 };
 
 export interface RuntimeExecutorConfig {
@@ -195,6 +197,10 @@ export function createRuntimeExecutor(
     }
     if (!sharedToolRouterInit) {
       sharedToolRouterInit = (async () => {
+        const escalationService = new EscalationService({
+          runRepository: config.runRepository,
+          groupRepository: config.groupRepository,
+        });
         const router = new RuntimeToolRouter({
           scope,
           memoryService: config.memoryService,
@@ -203,6 +209,7 @@ export function createRuntimeExecutor(
           ...(config.mineruIngestService ? { mineruIngestService: config.mineruIngestService } : {}),
           workDir: config.workDir,
           ...(config.mcp ? { mcp: config.mcp } : {}),
+          escalationService,
         });
         await router.start();
         sharedToolRouter = router;
@@ -260,6 +267,9 @@ export function createRuntimeExecutor(
     const toolRouter = await getSharedToolRouter(scope);
     const skillLoader = await getSkillLoader();
     const mcpManager = await getMcpManager();
+
+    // Set run context so escalation tool knows the current run
+    toolRouter.setRunContext(run.run_id, run.session_key);
 
     await config.runRepository.setRunRunning(run.run_id);
 

@@ -2,6 +2,7 @@ export { RunRepository } from './run-repository.js';
 export { EventService } from './event-service.js';
 export { CheckpointService } from './checkpoint-service.js';
 export { MemoryService } from './memory-service.js';
+export { EscalationService, type EscalationServiceConfig } from './escalation-service.js';
 export { FeishuRepository, type FeishuSourceState } from './feishu-repository.js';
 export { FeishuClient, type FeishuClientConfig } from './feishu-client.js';
 export { FeishuSyncService, type FeishuSyncServiceConfig } from './feishu-sync-service.js';

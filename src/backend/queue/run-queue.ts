@@ -4,8 +4,9 @@
  * Features:
  * - Run-level serial execution (one run at a time)
  * - Queue management: enqueue, dequeue, peek
- * - Status tracking: pending, running, completed, failed
+ * - Status tracking: pending, running, waiting, completed, failed
  * - Event emission for queue state changes
+ * - Nested run support: waiting runs release the queue for child runs
  */
 
 import { EventEmitter } from 'node:events';
@@ -23,6 +24,8 @@ export type QueueEventType =
   | 'run.completed'
   | 'run.cancelled'
   | 'run.failed'
+  | 'run.waiting'
+  | 'run.resumed'
   | 'queue.empty';
 
 /**
@@ -66,6 +69,8 @@ export class RunQueue extends EventEmitter {
   private queue: QueuedRun[] = [];
   private runningRun: QueuedRun | null = null;
   private completedRuns: Map<string, QueuedRun> = new Map();
+  /** Runs that are in 'waiting' state (parent waiting for child) */
+  private waitingRuns: Map<string, QueuedRun> = new Map();
   private config: QueueConfig;
   private executor: RunExecutor | null = null;
   private processing = false;
@@ -136,6 +141,12 @@ export class RunQueue extends EventEmitter {
       return 'running';
     }
 
+    // Check waiting runs
+    const waiting = this.waitingRuns.get(runId);
+    if (waiting) {
+      return 'waiting';
+    }
+
     // Check completed runs
     const completed = this.completedRuns.get(runId);
     if (completed) {
@@ -158,6 +169,12 @@ export class RunQueue extends EventEmitter {
     // Check if currently running
     if (this.runningRun?.run_id === runId) {
       return this.runningRun;
+    }
+
+    // Check waiting runs
+    const waiting = this.waitingRuns.get(runId);
+    if (waiting) {
+      return waiting;
     }
 
     // Check completed runs
@@ -186,7 +203,7 @@ export class RunQueue extends EventEmitter {
    * Check if queue is empty
    */
   isEmpty(): boolean {
-    return this.queue.length === 0 && this.runningRun === null;
+    return this.queue.length === 0 && this.runningRun === null && this.waitingRuns.size === 0;
   }
 
   /**
@@ -204,6 +221,62 @@ export class RunQueue extends EventEmitter {
   }
 
   /**
+   * Get all waiting runs
+   */
+  getWaitingRuns(): QueuedRun[] {
+    return Array.from(this.waitingRuns.values());
+  }
+
+  /**
+   * Notify the queue that a run has entered 'waiting' state.
+   * This releases the queue lock so the next pending run can start.
+   */
+  notifyRunWaiting(runId: string): void {
+    if (this.runningRun?.run_id !== runId) {
+      logger.warn('notifyRunWaiting called for non-running run', { runId });
+      return;
+    }
+
+    const waitingRun: QueuedRun = {
+      ...this.runningRun,
+      status: 'waiting',
+    };
+    this.waitingRuns.set(runId, waitingRun);
+    this.runningRun = null;
+    this.currentAbortController = null;
+    this.emit('run.waiting', waitingRun);
+    logger.info('Run entered waiting state, queue released', { runId });
+
+    // Trigger processing of next queued run on next event loop tick.
+    // We use setTimeout(0) rather than queueMicrotask because the caller
+    // may be inside an executor whose processQueue frame is still on the stack.
+    if (this.queue.length > 0) {
+      this.processing = false;
+      setTimeout(() => {
+        void this.processQueue();
+      }, 0);
+    }
+  }
+
+  /**
+   * Notify the queue that a waiting run has been resumed.
+   * The run is removed from the waiting set. It does not re-enter the queue;
+   * the executor promise that originally started it is still alive and will
+   * continue running once the escalation service resolves.
+   */
+  notifyRunResumed(runId: string): void {
+    const waiting = this.waitingRuns.get(runId);
+    if (!waiting) {
+      logger.warn('notifyRunResumed called for non-waiting run', { runId });
+      return;
+    }
+
+    this.waitingRuns.delete(runId);
+    this.emit('run.resumed', { ...waiting, status: 'running' });
+    logger.info('Waiting run resumed', { runId });
+  }
+
+  /**
    * Process the queue (execute runs serially)
    */
   async processQueue(): Promise<void> {
@@ -215,6 +288,12 @@ export class RunQueue extends EventEmitter {
 
     try {
       while (this.queue.length > 0) {
+        // Only start a new run if nothing is currently running
+        // (waiting runs don't block the queue)
+        if (this.runningRun !== null) {
+          break;
+        }
+
         const run = this.dequeue();
         if (!run) {
           break;
@@ -223,7 +302,9 @@ export class RunQueue extends EventEmitter {
         await this.executeRun(run);
       }
 
-      this.emit('queue.empty', null);
+      if (this.queue.length === 0 && this.runningRun === null && this.waitingRuns.size === 0) {
+        this.emit('queue.empty', null);
+      }
     } finally {
       this.processing = false;
     }
@@ -311,7 +392,10 @@ export class RunQueue extends EventEmitter {
       });
     } finally {
       this.currentAbortController = null;
-      this.runningRun = null;
+      // Only clear runningRun if it hasn't been moved to waiting
+      if (this.runningRun?.run_id === run.run_id) {
+        this.runningRun = null;
+      }
       this.persistRewrite();
     }
   }

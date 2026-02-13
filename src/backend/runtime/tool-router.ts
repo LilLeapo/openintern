@@ -16,6 +16,7 @@ import type { MemoryService } from './memory-service.js';
 import type { AgentContext } from './tool-policy.js';
 import { ToolPolicy } from './tool-policy.js';
 import type { SkillRegistry } from './skill-registry.js';
+import type { EscalationService } from './escalation-service.js';
 
 type ToolHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -181,6 +182,12 @@ export interface RuntimeToolRouterConfig {
   };
   timeoutMs?: number;
   skillRegistry?: SkillRegistry;
+  /** Escalation service for PA -> Group delegation */
+  escalationService?: EscalationService;
+  /** Current run ID (needed for escalation tool) */
+  currentRunId?: string;
+  /** Current session key (needed for escalation tool) */
+  currentSessionKey?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -192,12 +199,16 @@ export class RuntimeToolRouter {
   private readonly toolPolicy: ToolPolicy;
   private skillRegistry: SkillRegistry | null;
   private scope: ScopeContext;
+  private currentRunId: string | null;
+  private currentSessionKey: string | null;
 
   constructor(private readonly config: RuntimeToolRouterConfig) {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.scope = config.scope;
     this.toolPolicy = new ToolPolicy();
     this.skillRegistry = config.skillRegistry ?? null;
+    this.currentRunId = config.currentRunId ?? null;
+    this.currentSessionKey = config.currentSessionKey ?? null;
     this.mcpClient = config.mcp?.enabled
       ? new MCPClient({
           ...(config.mcp.pythonPath ? { pythonPath: config.mcp.pythonPath } : {}),
@@ -211,6 +222,11 @@ export class RuntimeToolRouter {
 
   setScope(scope: ScopeContext): void {
     this.scope = scope;
+  }
+
+  setRunContext(runId: string, sessionKey: string): void {
+    this.currentRunId = runId;
+    this.currentSessionKey = sessionKey;
   }
 
   setSkillRegistry(skillRegistry: SkillRegistry | null): void {
@@ -741,6 +757,78 @@ export class RuntimeToolRouter {
           health_status: skill.health_status,
           tools: skill.tools,
         });
+      },
+    });
+
+    // ─── Escalation tool ──────────────────────────────────────
+
+    this.tools.set('escalate_to_group', {
+      name: 'escalate_to_group',
+      description:
+        'Escalate a complex task to a specialized group of agents. Use this when the task requires expertise or capabilities beyond your own.',
+      parameters: {
+        type: 'object',
+        properties: {
+          group_id: {
+            type: 'string',
+            description:
+              'The ID of the group to escalate to (e.g., grp_abc123).',
+          },
+          goal: {
+            type: 'string',
+            description:
+              'Clear description of what the group should accomplish',
+          },
+          context: {
+            type: 'string',
+            description:
+              'Relevant context from the current conversation that the group needs to know',
+          },
+        },
+        required: ['goal', 'group_id'],
+      },
+      source: 'builtin',
+      metadata: {
+        risk_level: 'medium',
+        mutating: true,
+        supports_parallel: false,
+      },
+      handler: async (params) => {
+        const escalationService = this.config.escalationService;
+        if (!escalationService) {
+          throw new ToolError(
+            'Escalation service is not configured',
+            'escalate_to_group'
+          );
+        }
+        if (!this.currentRunId || !this.currentSessionKey) {
+          throw new ToolError(
+            'Run context is not set; cannot escalate outside of a run',
+            'escalate_to_group'
+          );
+        }
+
+        const groupId = extractString(params['group_id']);
+        const goal = extractString(params['goal']);
+        const context = extractString(params['context']);
+
+        if (!groupId) {
+          throw new ToolError('group_id is required', 'escalate_to_group');
+        }
+        if (!goal) {
+          throw new ToolError('goal is required', 'escalate_to_group');
+        }
+
+        const result = await escalationService.escalate({
+          parentRunId: this.currentRunId,
+          scope: this.scope,
+          sessionKey: this.currentSessionKey,
+          groupId,
+          goal,
+          ...(context ? { context } : {}),
+        });
+
+        return result;
       },
     });
 

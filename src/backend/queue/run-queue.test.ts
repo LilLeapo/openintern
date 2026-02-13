@@ -340,4 +340,164 @@ describe('RunQueue', () => {
       expect(content.trim()).toBe('');
     });
   });
+
+  describe('waiting / resume (nested runs)', () => {
+    it('should move a running run to waiting state', async () => {
+      let resolveExecutor: (() => void) | undefined;
+      queue.setExecutor(async () => {
+        await new Promise<void>((resolve) => {
+          resolveExecutor = resolve;
+        });
+      });
+
+      const run = createMockRun({ run_id: 'run_waitparent1' });
+      queue.enqueue(run);
+      const processing = queue.processQueue();
+
+      // Wait for run to start
+      const started = Date.now();
+      while (queue.getStatus(run.run_id) !== 'running') {
+        if (Date.now() - started > 3000) throw new Error('Timed out waiting for running');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      const waitingHandler = vi.fn();
+      queue.on('run.waiting', waitingHandler);
+
+      queue.notifyRunWaiting(run.run_id);
+
+      expect(queue.getStatus(run.run_id)).toBe('waiting');
+      expect(queue.getCurrentRun()).toBeNull();
+      expect(queue.getWaitingRuns()).toHaveLength(1);
+      expect(waitingHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ run_id: run.run_id, status: 'waiting' })
+      );
+
+      // Resolve the executor so processQueue finishes
+      resolveExecutor?.();
+      await processing;
+    });
+
+    it('should allow a child run to execute while parent is waiting', async () => {
+      // Use autoProcess: false for deterministic control
+      const nestedQueue = new RunQueue({ autoProcess: false });
+      const executionOrder: string[] = [];
+      let parentResolve: (() => void) | undefined;
+
+      nestedQueue.setExecutor(async (run) => {
+        executionOrder.push(run.run_id);
+        if (run.run_id === 'run_parentwait1') {
+          // Simulate parent entering waiting state
+          nestedQueue.notifyRunWaiting(run.run_id);
+          await new Promise<void>((resolve) => {
+            parentResolve = resolve;
+          });
+        }
+        // Child runs complete immediately
+      });
+
+      const parent = createMockRun({ run_id: 'run_parentwait1' });
+      const child = createMockRun({ run_id: 'run_childexec01' });
+
+      nestedQueue.enqueue(parent);
+      nestedQueue.enqueue(child);
+
+      // Start processing -- this will execute parent, which enters waiting
+      const parentProcessing = nestedQueue.processQueue();
+
+      // Wait for parent to enter waiting state
+      const started = Date.now();
+      while (nestedQueue.getStatus('run_parentwait1') !== 'waiting') {
+        if (Date.now() - started > 3000) throw new Error('Timed out waiting for waiting state');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      // Parent is waiting, queue should be released. Process child.
+      const childProcessing = nestedQueue.processQueue();
+      await childProcessing;
+
+      expect(nestedQueue.getStatus('run_childexec01')).toBe('completed');
+      expect(executionOrder).toContain('run_parentwait1');
+      expect(executionOrder).toContain('run_childexec01');
+
+      // Resume parent
+      nestedQueue.notifyRunResumed('run_parentwait1');
+      parentResolve?.();
+      await parentProcessing;
+
+      expect(nestedQueue.getStatus('run_parentwait1')).toBe('completed');
+    });
+
+    it('should remove run from waiting set on resume', async () => {
+      let resolveExecutor: (() => void) | undefined;
+      queue.setExecutor(async () => {
+        await new Promise<void>((resolve) => {
+          resolveExecutor = resolve;
+        });
+      });
+
+      const run = createMockRun({ run_id: 'run_resumetest' });
+      queue.enqueue(run);
+      const processing = queue.processQueue();
+
+      const started = Date.now();
+      while (queue.getStatus(run.run_id) !== 'running') {
+        if (Date.now() - started > 3000) throw new Error('Timed out');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      queue.notifyRunWaiting(run.run_id);
+      expect(queue.getWaitingRuns()).toHaveLength(1);
+
+      const resumedHandler = vi.fn();
+      queue.on('run.resumed', resumedHandler);
+
+      queue.notifyRunResumed(run.run_id);
+      expect(queue.getWaitingRuns()).toHaveLength(0);
+      expect(resumedHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ run_id: run.run_id, status: 'running' })
+      );
+
+      resolveExecutor?.();
+      await processing;
+    });
+
+    it('should not emit warning when notifyRunWaiting called for non-running run', () => {
+      // Should not throw, just log a warning
+      queue.notifyRunWaiting('run_nonexistent');
+      expect(queue.getWaitingRuns()).toHaveLength(0);
+    });
+
+    it('should not emit warning when notifyRunResumed called for non-waiting run', () => {
+      // Should not throw, just log a warning
+      queue.notifyRunResumed('run_nonexistent');
+    });
+
+    it('should include waiting runs in isEmpty check', async () => {
+      let resolveExecutor: (() => void) | undefined;
+      queue.setExecutor(async () => {
+        await new Promise<void>((resolve) => {
+          resolveExecutor = resolve;
+        });
+      });
+
+      const run = createMockRun({ run_id: 'run_emptycheck1' });
+      queue.enqueue(run);
+      const processing = queue.processQueue();
+
+      const started = Date.now();
+      while (queue.getStatus(run.run_id) !== 'running') {
+        if (Date.now() - started > 3000) throw new Error('Timed out');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      queue.notifyRunWaiting(run.run_id);
+
+      // Queue has no pending or running runs, but has a waiting run
+      expect(queue.isEmpty()).toBe(false);
+
+      resolveExecutor?.();
+      await processing;
+    });
+  });
 });

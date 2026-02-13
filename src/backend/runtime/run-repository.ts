@@ -18,6 +18,7 @@ interface RunRow {
   llm_config: LLMConfigRequest | null;
   result: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
+  parent_run_id: string | null;
   created_at: string | Date;
   started_at: string | Date | null;
   ended_at: string | Date | null;
@@ -59,6 +60,7 @@ function mapRunRow(row: RunRow): RunRecord {
     llmConfig: row.llm_config,
     result: row.result,
     error: row.error,
+    parentRunId: row.parent_run_id ?? null,
     createdAt: toIso(row.created_at) ?? new Date().toISOString(),
     startedAt: toIso(row.started_at),
     endedAt: toIso(row.ended_at),
@@ -88,8 +90,9 @@ export class RunRepository {
         input,
         status,
         agent_id,
-        llm_config
-      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
+        llm_config,
+        parent_run_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9)
       RETURNING *`,
       [
         input.id,
@@ -100,6 +103,7 @@ export class RunRepository {
         input.input,
         input.agentId,
         input.llmConfig,
+        input.parentRunId ?? null,
       ]
     );
     const row = result.rows[0];
@@ -172,9 +176,38 @@ export class RunRepository {
           cancelled_at = NOW(),
           ended_at = NOW()
       WHERE id = $1
-        AND status IN ('pending', 'running')`,
+        AND status IN ('pending', 'running', 'waiting')`,
       [runId]
     );
+  }
+
+  async setRunWaiting(runId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE runs
+      SET status = 'waiting'
+      WHERE id = $1
+        AND status = 'running'`,
+      [runId]
+    );
+  }
+
+  async setRunResumed(runId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE runs
+      SET status = 'running'
+      WHERE id = $1
+        AND status = 'waiting'`,
+      [runId]
+    );
+  }
+
+  async getRunById(runId: string): Promise<RunRecord | null> {
+    const result = await this.pool.query<RunRow>(
+      `SELECT * FROM runs WHERE id = $1 LIMIT 1`,
+      [runId]
+    );
+    const row = result.rows[0];
+    return row ? mapRunRow(row) : null;
   }
 
   async listRunsBySession(

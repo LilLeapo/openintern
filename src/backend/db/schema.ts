@@ -16,7 +16,7 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
     project_id TEXT,
     session_key TEXT NOT NULL,
     input TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'waiting', 'completed', 'failed', 'cancelled')),
     agent_id TEXT NOT NULL DEFAULT 'main',
     llm_config JSONB,
     result JSONB,
@@ -290,4 +290,27 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS feishu_source_state_connector_idx
     ON feishu_source_state (connector_id, source_type, last_synced_at DESC)`,
+
+  // ─── PA Escalation: parent_run_id + waiting status ─────────
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'runs' AND column_name = 'parent_run_id'
+    ) THEN
+      ALTER TABLE runs ADD COLUMN parent_run_id TEXT REFERENCES runs(id);
+    END IF;
+  END $$`,
+  `CREATE INDEX IF NOT EXISTS runs_parent_run_id_idx ON runs (parent_run_id)`,
+
+  // Update status CHECK constraint to include 'waiting' (idempotent)
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conname = 'runs_status_check_v2'
+    ) THEN
+      ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_status_check;
+      ALTER TABLE runs ADD CONSTRAINT runs_status_check_v2
+        CHECK (status IN ('pending', 'running', 'waiting', 'completed', 'failed', 'cancelled'));
+    END IF;
+  END $$`,
 ];
