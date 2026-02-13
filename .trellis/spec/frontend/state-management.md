@@ -6,532 +6,155 @@
 
 ## Overview
 
-This project uses **React built-in state management** (useState + Context) with minimal external libraries.
-
-**Key principles**:
-- Local state first (useState, useReducer)
-- Context for shared state (theme, session, user)
-- No Redux (keep it simple)
-- Server state via custom hooks (not global state)
-
-**Reference**: Based on component-guidelines.md and hook-guidelines.md patterns.
+The project uses React's built-in state primitives exclusively -- no Redux, Zustand, Jotai, or other external state libraries. State is managed through `useState`, `useCallback`, `useMemo`, `useRef`, `useContext`, and `useEffect`. Persistence to `localStorage` is done manually where needed.
 
 ---
 
 ## State Categories
 
-### 1. Local State (Component-Level)
+### Local Component State
 
-Use `useState` or `useReducer` for state that doesn't need to be shared.
+Most state lives in individual components or hooks via `useState`. This is the default choice.
 
-```tsx
-// src/web/components/chat/ChatInput.tsx
-
-export function ChatInput({ onSend }: ChatInputProps) {
-  // ✅ Local state (only used in this component)
-  const [text, setText] = useState('');
-  const [isFocused, setIsFocused] = useState(false);
-
-  return (
-    <textarea
-      value={text}
-      onChange={e => setText(e.target.value)}
-      onFocus={() => setIsFocused(true)}
-      onBlur={() => setIsFocused(false)}
-    />
-  );
-}
+```typescript
+// See web/src/pages/TracePage.tsx
+const [events, setEvents] = useState<Event[]>([]);
+const [loading, setLoading] = useState(true);
+const [error, setError] = useState<Error | null>(null);
+const [viewMode, setViewMode] = useState<'steps' | 'events'>('steps');
 ```
 
-**When to use**:
-- UI state (open/closed, focused/blurred)
-- Form inputs
-- Temporary flags
-- Data used only by one component
+### Hook-Encapsulated State
 
-### 2. Shared State (via Context)
+Data-fetching state is encapsulated in custom hooks that return a typed result object. Pages consume these hooks without managing the underlying state directly.
 
-Use React Context for state shared across multiple components.
+```typescript
+// See web/src/pages/ChatPage.tsx
+const { messages, isRunning, error, sendMessage, clearMessages, latestRunId } =
+  useChat(sessionKey, { llmConfig, runMode, groupId: activeGroupId });
+const { runs: sessionRuns, loading: runsLoading, refresh: refreshSessionRuns } =
+  useRuns(sessionKey, 8);
+```
 
-```tsx
-// src/web/contexts/SessionContext.tsx
+### Global State (React Context)
 
-import { createContext, useContext, useState, ReactNode } from 'react';
+Only one Context exists: `AppPreferencesContext` in `web/src/context/AppPreferencesContext.tsx`. It manages cross-cutting preferences that multiple pages need:
 
-interface SessionContextValue {
-  sessionKey: string;
-  setSessionKey: (key: string) => void;
-}
+- `sessionKey` / `setSessionKey` -- current conversation ID
+- `sessionHistory` -- list of recent session keys
+- `createSession` / `removeSession` -- session lifecycle
+- `selectedGroupId` / `setSelectedGroupId` -- active orchestrator group
+- `locale` / `setLocale` -- UI language (`'en'` or `'zh-CN'`)
 
-const SessionContext = createContext<SessionContextValue | null>(null);
+The provider wraps the entire app in `App.tsx`:
 
-export function SessionProvider({ children }: { children: ReactNode }) {
-  const [sessionKey, setSessionKey] = useState<string>('s_demo');
+```typescript
+<AppPreferencesProvider>
+  <BrowserRouter>
+    <Routes>...</Routes>
+  </BrowserRouter>
+</AppPreferencesProvider>
+```
 
-  return (
-    <SessionContext.Provider value={{ sessionKey, setSessionKey }}>
-      {children}
-    </SessionContext.Provider>
-  );
-}
+Consumed via the `useAppPreferences()` hook, which throws if used outside the provider:
 
-export function useSession() {
-  const context = useContext(SessionContext);
+```typescript
+export function useAppPreferences(): AppPreferencesContextValue {
+  const context = useContext(AppPreferencesContext);
   if (!context) {
-    throw new Error('useSession must be used within SessionProvider');
+    throw new Error('useAppPreferences must be used inside AppPreferencesProvider');
   }
   return context;
 }
 ```
 
-**When to use**:
-- Current session
-- Theme (light/dark mode)
-- User authentication
-- App-level settings
+### Persisted State (localStorage)
 
-### 3. Server State (Fetched Data)
+Several pieces of state are persisted to `localStorage` for cross-session continuity:
 
-Use custom hooks for data fetched from API (not global state).
+| Key | Owner | Purpose |
+|-----|-------|---------|
+| `openintern.session_key` | `AppPreferencesContext` | Current session ID |
+| `openintern.session_history` | `AppPreferencesContext` | Recent session list (max 24) |
+| `openintern.group_id` | `AppPreferencesContext` | Selected group ID |
+| `openintern.locale` | `AppPreferencesContext` | UI language preference |
+| `openintern.chat.messages.v1` | `useChat` | Chat messages by session (max 200 per session) |
+| `openintern.chat.latest_runs.v1` | `useChat` | Latest run ID per session |
+| `openintern.chat.provider` | `ChatPage` | Selected LLM provider |
+| `openintern.chat.model` | `ChatPage` | Selected LLM model |
+| `openintern.chat.assistant_target` | `ChatPage` | Solo vs team mode selection |
 
-```tsx
-// src/web/hooks/useRunMetadata.ts
+The persistence pattern uses `useEffect` to write on state change:
 
-export function useRunMetadata(runId: string) {
-  const [data, setData] = useState<RunMeta | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+```typescript
+// See web/src/hooks/useChat.ts lines 124-135
+useEffect(() => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(
+    MESSAGE_STORAGE_KEY,
+    JSON.stringify(trimMessageMap(messagesBySession)),
+  );
+}, [messagesBySession]);
+```
 
-  useEffect(() => {
-    // Fetch data
-  }, [runId]);
+And a read function for initialization:
 
-  return { data, isLoading, error };
-}
-
-// Usage (each component fetches independently)
-export function RunDetails({ runId }: { runId: string }) {
-  const { data, isLoading } = useRunMetadata(runId);
-  // ...
+```typescript
+function readStoredMessages(): MessageMap {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(MESSAGE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as MessageMap;
+  } catch {
+    return {};
+  }
 }
 ```
 
-**When to use**:
-- API responses
-- Event streams
-- Database queries
-- Any data that originates from server
+### URL State
 
-**Why not global state**:
-- Data is tied to specific params (runId, sessionKey)
-- Easier to invalidate/refetch
-- No stale data issues
-- Components are self-contained
+Route parameters are used for entity-specific pages via React Router:
 
-### 4. URL State (Router Params/Query)
-
-Use URL for state that should be shareable/bookmarkable.
-
-```tsx
-// src/web/pages/trace/TracePage.tsx
-
-import { useSearchParams } from 'react-router-dom';
-
-export function TracePage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  const runId = searchParams.get('runId') || '';
-  const filter = searchParams.get('filter') || 'all';
-
-  const setFilter = (newFilter: string) => {
-    setSearchParams({ runId, filter: newFilter });
-  };
-
-  return <TraceViewer runId={runId} filter={filter} />;
-}
+```typescript
+// See web/src/App.tsx
+<Route path="/trace/:runId" element={<TracePage />} />
+<Route path="/blackboard/:groupId" element={<BlackboardPage />} />
 ```
 
-**When to use**:
-- Current run/session ID
-- Filter/sort options
-- Pagination state
-- Any state user might want to share via URL
+Consumed with `useParams`:
+
+```typescript
+const { runId } = useParams<{ runId: string }>();
+```
 
 ---
 
 ## When to Use Global State
 
-### Decision Tree
+Add to `AppPreferencesContext` only when:
+- The value is needed by multiple unrelated pages (e.g., session key used by ChatPage, RunsPage, AppShell)
+- The value should persist across page navigation
+- The value affects the app shell/layout (e.g., locale changes the sidebar language)
 
-```
-Does the state need to be shared across multiple routes/pages?
-  ├─ NO  → Use local state (useState)
-  └─ YES → Is it server data (API response)?
-             ├─ YES → Use custom hook (not global)
-             └─ NO  → Is it user setting/preference?
-                      ├─ YES → Use Context
-                      └─ NO  → Can it go in URL?
-                               ├─ YES → Use URL params
-                               └─ NO  → Use Context
-```
-
-### Examples
-
-| State | Category | Solution |
-|-------|----------|----------|
-| Chat input text | Local | `useState` |
-| Modal open/closed | Local | `useState` |
-| Current theme | Shared | Context |
-| Current session | Shared | Context |
-| Run metadata | Server | Custom hook |
-| Event stream | Server | Custom hook |
-| Current run ID | URL | Search params |
-| Filter options | URL | Search params |
+Everything else stays local to the hook or component that owns it.
 
 ---
 
-## Context Patterns
+## Server State
 
-### Basic Context Setup
+There is no server-state caching layer. Each hook fetches fresh data on mount and provides a `refresh()` function for manual re-fetching. Real-time updates come through SSE (managed by `useSSE`), not polling.
 
-```tsx
-// src/web/contexts/ThemeContext.tsx
-
-import { createContext, useContext, useState, ReactNode, useMemo } from 'react';
-
-type Theme = 'light' | 'dark';
-
-interface ThemeContextValue {
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null);
-
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>('light');
-
-  // ✅ Memoize context value to prevent unnecessary re-renders
-  const value = useMemo(
-    () => ({ theme, setTheme }),
-    [theme]
-  );
-
-  return (
-    <ThemeContext.Provider value={value}>
-      {children}
-    </ThemeContext.Provider>
-  );
-}
-
-export function useTheme() {
-  const context = useContext(ThemeContext);
-  if (!context) {
-    throw new Error('useTheme must be used within ThemeProvider');
-  }
-  return context;
-}
-```
-
-### Context with LocalStorage Persistence
-
-```tsx
-// src/web/contexts/SessionContext.tsx
-
-export function SessionProvider({ children }: { children: ReactNode }) {
-  const [sessionKey, setSessionKeyState] = useState<string>(() => {
-    // Load from localStorage on init
-    return localStorage.getItem('sessionKey') || 's_demo';
-  });
-
-  const setSessionKey = useCallback((key: string) => {
-    setSessionKeyState(key);
-    localStorage.setItem('sessionKey', key);
-  }, []);
-
-  const value = useMemo(
-    () => ({ sessionKey, setSessionKey }),
-    [sessionKey, setSessionKey]
-  );
-
-  return (
-    <SessionContext.Provider value={value}>
-      {children}
-    </SessionContext.Provider>
-  );
-}
-```
-
-### Multiple Contexts (Composition)
-
-```tsx
-// src/web/App.tsx
-
-export function App() {
-  return (
-    <ThemeProvider>
-      <SessionProvider>
-        <RouterProvider router={router} />
-      </SessionProvider>
-    </ThemeProvider>
-  );
-}
-```
+The `useChat` hook merges SSE events into local state as they arrive, processing `llm.token`, `run.completed`, and `run.failed` events to build the message stream (see `web/src/hooks/useChat.ts` lines 138-257).
 
 ---
 
-## Derived State
+## Common Mistakes
 
-### Compute Derived State During Render
-
-```tsx
-// ❌ Bad: Storing derived state in useState
-export function Component({ events }: { events: Event[] }) {
-  const [errorCount, setErrorCount] = useState(0);
-
-  useEffect(() => {
-    setErrorCount(events.filter(e => e.type === 'run.failed').length);
-  }, [events]);
-
-  return <div>Errors: {errorCount}</div>;
-}
-
-// ✅ Good: Compute during render
-export function Component({ events }: { events: Event[] }) {
-  const errorCount = events.filter(e => e.type === 'run.failed').length;
-  return <div>Errors: {errorCount}</div>;
-}
-
-// ✅ Better: Memoize if expensive
-export function Component({ events }: { events: Event[] }) {
-  const errorCount = useMemo(
-    () => events.filter(e => e.type === 'run.failed').length,
-    [events]
-  );
-  return <div>Errors: {errorCount}</div>;
-}
-```
-
-### Use Selectors for Complex Derivations
-
-```tsx
-// src/web/utils/selectors.ts
-
-export function selectErrorEvents(events: Event[]): Event[] {
-  return events.filter(e => e.type === 'run.failed' || e.payload.isError);
-}
-
-export function selectEventsByType(events: Event[], type: EventType): Event[] {
-  return events.filter(e => e.type === type);
-}
-
-// Usage
-export function TraceViewer({ events }: { events: Event[] }) {
-  const errors = useMemo(() => selectErrorEvents(events), [events]);
-  const toolCalls = useMemo(
-    () => selectEventsByType(events, 'tool.called'),
-    [events]
-  );
-
-  return (
-    <div>
-      <ErrorList events={errors} />
-      <ToolCallList events={toolCalls} />
-    </div>
-  );
-}
-```
-
----
-
-## State Synchronization
-
-### Syncing State with Props
-
-```tsx
-// ❌ Bad: Props not synced to state
-export function Component({ initialValue }: { initialValue: string }) {
-  const [value, setValue] = useState(initialValue);
-  // Problem: If initialValue changes, state doesn't update
-}
-
-// ✅ Good: Controlled component (no internal state)
-export function Component({ value, onChange }: {
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return <input value={value} onChange={e => onChange(e.target.value)} />;
-}
-
-// ✅ Also good: Sync via useEffect (if uncontrolled needed)
-export function Component({ initialValue }: { initialValue: string }) {
-  const [value, setValue] = useState(initialValue);
-
-  useEffect(() => {
-    setValue(initialValue);
-  }, [initialValue]);
-
-  return <input value={value} onChange={e => setValue(e.target.value)} />;
-}
-```
-
-### Syncing Multiple State Variables
-
-```tsx
-// Use useReducer for complex state logic
-import { useReducer } from 'react';
-
-type State = {
-  isLoading: boolean;
-  data: Data | null;
-  error: Error | null;
-};
-
-type Action =
-  | { type: 'FETCH_START' }
-  | { type: 'FETCH_SUCCESS'; payload: Data }
-  | { type: 'FETCH_ERROR'; payload: Error };
-
-function reducer(state: State, action: Action): State {
-  switch (action.type) {
-    case 'FETCH_START':
-      return { isLoading: true, data: null, error: null };
-    case 'FETCH_SUCCESS':
-      return { isLoading: false, data: action.payload, error: null };
-    case 'FETCH_ERROR':
-      return { isLoading: false, data: null, error: action.payload };
-    default:
-      return state;
-  }
-}
-
-export function useData() {
-  const [state, dispatch] = useReducer(reducer, {
-    isLoading: false,
-    data: null,
-    error: null,
-  });
-
-  const fetch = useCallback(async () => {
-    dispatch({ type: 'FETCH_START' });
-    try {
-      const data = await fetchData();
-      dispatch({ type: 'FETCH_SUCCESS', payload: data });
-    } catch (error) {
-      dispatch({ type: 'FETCH_ERROR', payload: error as Error });
-    }
-  }, []);
-
-  return { ...state, fetch };
-}
-```
-
----
-
-## Anti-patterns
-
-### ❌ Don't Use Global State for Server Data
-
-```tsx
-// ❌ Bad: Storing API response in global state
-const GlobalRunContext = createContext<RunMeta | null>(null);
-
-export function RunProvider({ children }) {
-  const [run, setRun] = useState<RunMeta | null>(null);
-
-  useEffect(() => {
-    runsApi.get('run_123').then(setRun);
-  }, []);
-
-  return <GlobalRunContext.Provider value={run}>{children}</GlobalRunContext.Provider>;
-}
-
-// ✅ Good: Fetch in custom hook (component-level)
-export function RunDetails({ runId }: { runId: string }) {
-  const { data } = useRunMetadata(runId);
-  return <div>{data?.title}</div>;
-}
-```
-
-### ❌ Don't Prop Drill More Than 2 Levels
-
-```tsx
-// ❌ Bad: Prop drilling through 5 levels
-<App theme={theme}>
-  <Layout theme={theme}>
-    <Sidebar theme={theme}>
-      <Nav theme={theme}>
-        <NavItem theme={theme} />
-      </Nav>
-    </Sidebar>
-  </Layout>
-</App>
-
-// ✅ Good: Use Context
-<ThemeProvider>
-  <App>
-    <Layout>
-      <Sidebar>
-        <Nav>
-          <NavItem />  {/* Gets theme from useTheme() */}
-        </Nav>
-      </Sidebar>
-    </Layout>
-  </App>
-</ThemeProvider>
-```
-
-### ❌ Don't Over-Use Context
-
-```tsx
-// ❌ Bad: Separate context for every piece of state
-<UserContext>
-  <ThemeContext>
-    <LanguageContext>
-      <SidebarContext>
-        <ModalContext>
-          <ToastContext>
-            <App />
-          </ToastContext>
-        </ModalContext>
-      </SidebarContext>
-    </LanguageContext>
-  </ThemeContext>
-</UserContext>
-
-// ✅ Good: Combine related state
-<AppContext>  {/* theme + language + user */}
-  <UIContext>  {/* sidebar + modal + toast */}
-    <App />
-  </UIContext>
-</AppContext>
-```
-
----
-
-## Verification
-
-### State Management Checklist
-
-- [ ] No server data in global state (use custom hooks)
-- [ ] Context values are memoized (prevent re-renders)
-- [ ] No prop drilling beyond 2 levels
-- [ ] Derived state computed during render (not stored)
-- [ ] Reducers used for complex state logic
-- [ ] URL params used for shareable state
-
-### Performance Check
-
-```tsx
-// Use React DevTools Profiler to check:
-// - Are components re-rendering unnecessarily?
-// - Is context value changing on every render? (should be memoized)
-```
-
----
-
-## Related Specs
-
-- [Hook Guidelines](./hook-guidelines.md) - Custom hooks for state
-- [Component Guidelines](./component-guidelines.md) - Local state patterns
-- [Type Safety](./type-safety.md) - Typing context values
+- **Putting everything in Context**: Only cross-cutting preferences belong in `AppPreferencesContext`. Feature-specific state (messages, events, runs) stays in hooks.
+- **Not guarding `localStorage` reads**: Always wrap `JSON.parse` in try/catch and check `typeof window !== 'undefined'` for SSR safety. Return a sensible default on failure.
+- **Unbounded localStorage growth**: The `useChat` hook caps messages at `MAX_MESSAGES_PER_SESSION = 200` per session and trims on write. New persisted state should have similar bounds.
+- **Derived state in `useState`**: Use `useMemo` for computed values instead of syncing derived state with `useEffect`. See `ChatPage.tsx` line 180 where `stats` is computed with `useMemo`, not stored separately.
+- **Missing `useMemo` on context value**: The `AppPreferencesContext` provider wraps its value object in `useMemo` to prevent unnecessary re-renders of all consumers. New context providers must do the same.

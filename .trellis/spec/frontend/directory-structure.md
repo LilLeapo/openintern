@@ -1,4 +1,4 @@
-# Frontend Directory Structure
+# Directory Structure
 
 > How frontend code is organized in this project.
 
@@ -6,433 +6,115 @@
 
 ## Overview
 
-This project uses **React + TypeScript** with a feature-based directory structure.
+The frontend is a React 18 SPA built with Vite, TypeScript, and React Router v6. It lives in the `web/` directory at the repo root, completely separate from the backend `src/` tree. Styling uses CSS Modules (`.module.css` files co-located with components). There is no CSS-in-JS or Tailwind.
 
-**Key principles**:
-- Features are self-contained (components + hooks + types)
-- Shared code is in `common/` or `utils/`
-- Pages are entry points that compose features
-- No deep nesting (max 3 levels)
-
-**Reference**: Based on backend/directory-structure.md pattern.
+Key dependencies: `react`, `react-dom`, `react-router-dom`. Dev tooling: Vite, Vitest, Playwright, ESLint with `@typescript-eslint` and `react-hooks` plugin.
 
 ---
 
 ## Directory Layout
 
 ```
-src/
-├── web/                                # React Web UI
-│   ├── pages/                          # Page entry points
-│   │   ├── chat/                       # Chat page
-│   │   │   ├── ChatPage.tsx            # Page component
-│   │   │   ├── ChatLayout.tsx          # Layout wrapper
-│   │   │   └── index.ts                # Barrel export
-│   │   ├── trace/                      # Trace viewer page
-│   │   │   ├── TracePage.tsx
-│   │   │   ├── TraceLayout.tsx
-│   │   │   └── index.ts
-│   │   └── index.tsx                   # Root router
-│   ├── components/                     # UI components
-│   │   ├── chat/                       # Chat feature components
-│   │   │   ├── ChatInput.tsx           # Message input
-│   │   │   ├── ChatMessages.tsx        # Message list
-│   │   │   ├── MessageItem.tsx         # Single message
-│   │   │   └── useChatState.ts         # Chat state hook
-│   │   ├── trace/                      # Trace feature components
-│   │   │   ├── TraceViewer.tsx         # Main trace viewer
-│   │   │   ├── EventList.tsx           # Event timeline
-│   │   │   ├── EventRenderer.tsx       # Renders individual events
-│   │   │   ├── SpanTree.tsx            # Span hierarchy tree
-│   │   │   └── useTraceData.ts         # Trace data hook
-│   │   └── common/                     # Shared components
-│   │       ├── Button.tsx
-│   │       ├── Input.tsx
-│   │       ├── Spinner.tsx
-│   │       └── ErrorBoundary.tsx
-│   ├── hooks/                          # Custom hooks
-│   │   ├── useEventStream.ts           # SSE event streaming
-│   │   ├── useRunMetadata.ts           # Run metadata fetching
-│   │   └── useDebounce.ts              # Utility hook
-│   ├── api/                            # API client
-│   │   ├── client.ts                   # Base HTTP client
-│   │   ├── runs.ts                     # Runs API endpoints
-│   │   ├── sessions.ts                 # Sessions API endpoints
-│   │   └── types.ts                    # API request/response types
-│   ├── types/                          # Frontend-specific types
-│   │   ├── ui.ts                       # UI state types
-│   │   └── index.ts                    # Re-exports
-│   ├── utils/                          # Utility functions
-│   │   ├── formatters.ts               # Date/time/duration formatters
-│   │   ├── colors.ts                   # Color schemes (event types, status)
-│   │   └── constants.ts                # UI constants
-│   └── App.tsx                         # Root app component
-├── types/                              # Shared types (backend + frontend)
-│   ├── events.ts                       # Event types
-│   ├── run.ts                          # Run metadata types
-│   └── ...
-└── ...
+web/src/
+├── api/                    # API client layer
+│   ├── client.ts           # APIClient class (REST calls via fetch)
+│   ├── sse.ts              # SSEClient class (EventSource wrapper)
+│   └── index.ts            # Barrel exports
+├── components/             # Reusable UI components, grouped by feature
+│   ├── Chat/               # Chat feature components
+│   │   ├── ChatWindow.tsx
+│   │   ├── ChatMessage.tsx
+│   │   ├── ChatInput.tsx
+│   │   ├── Chat.module.css
+│   │   └── index.ts        # Barrel: export { ChatWindow, ChatMessage, ChatInput }
+│   ├── Trace/              # Trace/event viewer components
+│   │   ├── TraceView.tsx
+│   │   ├── StepCard.tsx
+│   │   ├── EventList.tsx
+│   │   ├── ToolCallCard.tsx
+│   │   ├── Trace.module.css
+│   │   └── index.ts
+│   ├── Runs/               # Run list components
+│   │   ├── RunsList.tsx
+│   │   ├── RunCard.tsx
+│   │   ├── Runs.module.css
+│   │   └── index.ts
+│   ├── Blackboard/         # Blackboard/memory components
+│   │   ├── BlackboardPanel.tsx
+│   │   ├── DecisionCard.tsx
+│   │   ├── EvidenceList.tsx
+│   │   ├── TodoList.tsx
+│   │   ├── BlackboardPanel.module.css
+│   │   └── index.ts
+│   └── Layout/             # Shell/layout components
+│       ├── AppShell.tsx
+│       └── AppShell.module.css
+├── context/                # React Context providers
+│   └── AppPreferencesContext.tsx  # Session, locale, group preferences
+├── hooks/                  # Custom React hooks
+│   ├── useChat.ts          # Chat state + SSE streaming
+│   ├── useRuns.ts          # Run list fetching
+│   ├── useSSE.ts           # SSE connection management
+│   ├── useBlackboard.ts    # Blackboard data fetching
+│   └── index.ts            # Barrel exports
+├── i18n/                   # Internationalization
+│   └── useLocaleText.ts    # t(en, zh) helper hook
+├── pages/                  # Route-level page components
+│   ├── ChatPage.tsx
+│   ├── TracePage.tsx
+│   ├── RunsPage.tsx
+│   ├── BlackboardPage.tsx
+│   ├── OrchestratorPage.tsx
+│   ├── SkillsPage.tsx
+│   ├── *.module.css        # Page-specific styles
+│   └── index.ts            # Barrel exports
+├── styles/                 # Global styles
+│   └── global.css
+├── test/                   # Test files
+│   ├── setup.ts            # Vitest setup (jsdom)
+│   ├── ChatWindow.test.tsx
+│   ├── TraceView.test.tsx
+│   └── client.test.ts
+├── types/                  # TypeScript type definitions
+│   ├── index.ts            # Domain types (RunMeta, Group, Role, Skill, events, etc.)
+│   └── events.ts           # Specific event type unions and API response types
+├── App.tsx                 # Root component with BrowserRouter and Routes
+├── main.tsx                # Entry point (createRoot, StrictMode)
+└── vite-env.d.ts           # Vite type declarations
 ```
 
 ---
 
 ## Module Organization
 
-### Pages (Entry Points)
+New features follow this pattern:
 
-Pages are **thin wrappers** that compose features:
+1. **Types**: Add interfaces to `web/src/types/index.ts` (or a new file if the feature is large).
+2. **API methods**: Add methods to the `APIClient` class in `web/src/api/client.ts`.
+3. **Hook**: Create `web/src/hooks/use<Feature>.ts` for data fetching and state management.
+4. **Components**: Create `web/src/components/<Feature>/` directory with component files, a CSS module, and an `index.ts` barrel.
+5. **Page**: Create `web/src/pages/<Feature>Page.tsx` that composes the hook and components.
+6. **Route**: Add a `<Route>` entry in `web/src/App.tsx`.
 
-```tsx
-// src/web/pages/chat/ChatPage.tsx
-
-import { ChatLayout } from './ChatLayout';
-import { ChatMessages } from '@/web/components/chat/ChatMessages';
-import { ChatInput } from '@/web/components/chat/ChatInput';
-import { useChatState } from '@/web/components/chat/useChatState';
-
-export function ChatPage() {
-  const { messages, sendMessage, isLoading } = useChatState();
-
-  return (
-    <ChatLayout>
-      <ChatMessages messages={messages} />
-      <ChatInput onSend={sendMessage} disabled={isLoading} />
-    </ChatLayout>
-  );
-}
-```
-
-**Rules**:
-- No business logic in pages (only composition)
-- Use layout components for page structure
-- All state managed by hooks
-
-### Components (Features)
-
-Components are grouped by feature (not by type):
-
-```
-components/
-├── chat/                    # ✅ Feature-based
-│   ├── ChatInput.tsx
-│   ├── ChatMessages.tsx
-│   └── useChatState.ts
-└── trace/
-    ├── TraceViewer.tsx
-    └── useTraceData.ts
-
-NOT like this:
-components/
-├── inputs/                  # ❌ Type-based
-│   ├── ChatInput.tsx
-│   └── SearchInput.tsx
-└── lists/
-    └── ChatMessages.tsx
-```
-
-**Why feature-based**:
-- Related code stays together
-- Easy to move features
-- Clear ownership
-
-### Hooks (Custom Logic)
-
-**Location rules**:
-
-1. **Feature-specific hooks** → Co-located with components
-   ```tsx
-   // src/web/components/chat/useChatState.ts
-   export function useChatState() {
-     // Chat-specific state logic
-   }
-   ```
-
-2. **Shared hooks** → `src/web/hooks/`
-   ```tsx
-   // src/web/hooks/useEventStream.ts
-   export function useEventStream(runId: string) {
-     // Generic SSE streaming logic
-   }
-   ```
-
-3. **Utility hooks** → `src/web/hooks/`
-   ```tsx
-   // src/web/hooks/useDebounce.ts
-   export function useDebounce<T>(value: T, delay: number): T {
-     // Generic debouncing
-   }
-   ```
-
-### API Client (HTTP Layer)
-
-```typescript
-// src/web/api/client.ts
-export const apiClient = {
-  async get<T>(url: string): Promise<T> {
-    const response = await fetch(`/api${url}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.json();
-  },
-
-  async post<T>(url: string, data: unknown): Promise<T> {
-    const response = await fetch(`/api${url}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.json();
-  },
-};
-```
-
-```typescript
-// src/web/api/runs.ts
-import { apiClient } from './client';
-import type { RunMeta, CreateRunRequest } from './types';
-
-export const runsApi = {
-  async create(request: CreateRunRequest): Promise<RunMeta> {
-    return apiClient.post<RunMeta>('/runs', request);
-  },
-
-  async get(runId: string): Promise<RunMeta> {
-    return apiClient.get<RunMeta>(`/runs/${runId}`);
-  },
-
-  async list(sessionKey: string): Promise<RunMeta[]> {
-    return apiClient.get<RunMeta[]>(`/runs?session_key=${sessionKey}`);
-  },
-};
-```
-
-**Rules**:
-- One file per API resource (runs, sessions, memory)
-- All endpoints return typed results
-- Use shared `apiClient` for HTTP logic
+Example: the Blackboard feature follows `types/index.ts` (BlackboardMemory) -> `api/client.ts` (getBlackboard) -> `hooks/useBlackboard.ts` -> `components/Blackboard/` -> `pages/BlackboardPage.tsx` -> `App.tsx` route.
 
 ---
 
 ## Naming Conventions
 
-| Type | Convention | Example |
-|------|------------|---------|
-| React components | `PascalCase.tsx` | `ChatInput.tsx`, `TraceViewer.tsx` |
-| Custom hooks | `use*.ts` | `useChatState.ts`, `useTraceData.ts` |
-| Utility functions | `camelCase.ts` | `formatters.ts`, `colors.ts` |
-| Type files | `camelCase.ts` | `types/ui.ts`, `api/types.ts` |
-| Constants | `UPPER_SNAKE_CASE` | `MAX_MESSAGE_LENGTH`, `DEFAULT_PAGE_SIZE` |
-
-**Component file structure**:
-
-```tsx
-// ChatInput.tsx
-
-// 1. Imports
-import { useState } from 'react';
-import { Button } from '@/web/components/common/Button';
-
-// 2. Types (if local to component)
-interface ChatInputProps {
-  onSend: (message: string) => void;
-  disabled?: boolean;
-}
-
-// 3. Component
-export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
-  const [text, setText] = useState('');
-
-  const handleSubmit = () => {
-    if (text.trim()) {
-      onSend(text);
-      setText('');
-    }
-  };
-
-  return (
-    <div>
-      <input value={text} onChange={e => setText(e.target.value)} />
-      <Button onClick={handleSubmit} disabled={disabled}>
-        Send
-      </Button>
-    </div>
-  );
-}
-```
-
----
-
-## Import Path Rules
-
-Use **absolute imports** from `src/`:
-
-```tsx
-// ✅ Good: Absolute imports
-import { ChatInput } from '@/web/components/chat/ChatInput';
-import { Event } from '@/types/events';
-import { runsApi } from '@/web/api/runs';
-
-// ❌ Bad: Relative imports crossing modules
-import { ChatInput } from '../../components/chat/ChatInput';
-```
-
-**Setup**: Configure path aliases in `tsconfig.json`:
-
-```json
-{
-  "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    }
-  }
-}
-```
-
----
-
-## Anti-patterns
-
-### ❌ Don't Create Deep Nesting
-
-```
-❌ src/web/components/chat/messages/list/MessageList.tsx  (5 levels)
-✅ src/web/components/chat/ChatMessages.tsx                (3 levels)
-```
-
-**Max nesting**: 3 levels from `src/`
-
-### ❌ Don't Mix Features in One Directory
-
-```
-❌ components/
-    ├── ChatInput.tsx       # Chat feature
-    ├── TraceViewer.tsx     # Trace feature (different!)
-    └── MessageItem.tsx     # Chat feature
-
-✅ components/
-    ├── chat/
-    │   ├── ChatInput.tsx
-    │   └── MessageItem.tsx
-    └── trace/
-        └── TraceViewer.tsx
-```
-
-### ❌ Don't Put Logic in Components
-
-```tsx
-// ❌ Bad: Fetching logic in component
-export function ChatMessages() {
-  const [messages, setMessages] = useState([]);
-
-  useEffect(() => {
-    fetch('/api/messages')
-      .then(res => res.json())
-      .then(setMessages);
-  }, []);
-
-  return <div>{/* ... */}</div>;
-}
-
-// ✅ Good: Extract to hook
-export function ChatMessages() {
-  const messages = useMessages(); // Hook handles fetching
-  return <div>{/* ... */}</div>;
-}
-```
-
-### ❌ Don't Create Barrel Exports Everywhere
-
-```tsx
-// ❌ Bad: Barrel export for components
-// components/chat/index.ts
-export * from './ChatInput';
-export * from './ChatMessages';
-// (Hides dependencies, slows build)
-
-// ✅ Good: Direct imports
-import { ChatInput } from '@/web/components/chat/ChatInput';
-import { ChatMessages } from '@/web/components/chat/ChatMessages';
-```
-
-**Only use barrel exports for**:
-- Page directories (`pages/chat/index.ts`)
-- Type directories (`types/index.ts`)
+- Component files: `PascalCase.tsx` (e.g., `ChatWindow.tsx`, `RunCard.tsx`)
+- Hook files: `camelCase.ts` with `use` prefix (e.g., `useChat.ts`, `useSSE.ts`)
+- CSS Modules: `<Feature>.module.css` co-located with components (e.g., `Chat.module.css`)
+- Page files: `<Feature>Page.tsx` (e.g., `ChatPage.tsx`, `TracePage.tsx`)
+- Barrel files: `index.ts` in each component directory, exporting all public components
+- Type files: `camelCase.ts` in `types/` directory
+- Test files: `<Component>.test.tsx` in `test/` directory
 
 ---
 
 ## Examples
 
-### Well-Organized Feature
-
-```
-components/chat/
-├── ChatInput.tsx           # Input component
-├── ChatMessages.tsx        # Message list component
-├── MessageItem.tsx         # Single message component
-├── useChatState.ts         # Chat state hook
-└── types.ts                # Chat-specific types (if needed)
-```
-
-### Page Structure
-
-```tsx
-// pages/chat/ChatPage.tsx
-import { ChatLayout } from './ChatLayout';
-import { ChatMessages } from '@/web/components/chat/ChatMessages';
-import { ChatInput } from '@/web/components/chat/ChatInput';
-import { useChatState } from '@/web/components/chat/useChatState';
-
-export function ChatPage() {
-  const state = useChatState();
-
-  return (
-    <ChatLayout>
-      <ChatMessages {...state} />
-      <ChatInput {...state} />
-    </ChatLayout>
-  );
-}
-```
-
----
-
-## Verification
-
-### Check Structure
-
-```bash
-# Check directory depth (should be ≤3 from src/)
-find src/web -type f -name "*.tsx" | awk -F/ '{print NF-1, $0}' | sort -n | tail
-
-# Check for barrel exports (should be minimal)
-find src/web/components -name "index.ts" -o -name "index.tsx"
-
-# Check import paths (should use @/ alias)
-grep -r "from '\.\./" src/web/
-# (Should return minimal results)
-```
-
-### ESLint Rules
-
-```json
-// .eslintrc.json
-{
-  "rules": {
-    "no-restricted-imports": [
-      "error",
-      {
-        "patterns": ["../*", "../../*"]
-      }
-    ]
-  }
-}
-```
-
----
-
-## Related Specs
-
-- [Component Guidelines](./component-guidelines.md) - Component patterns
-- [Hook Guidelines](./hook-guidelines.md) - Custom hooks
-- [Type Safety](./type-safety.md) - TypeScript types
+- Well-structured component group: `web/src/components/Chat/` -- three components, one CSS module, one barrel
+- Page with hooks composition: `web/src/pages/ChatPage.tsx` -- uses `useChat`, `useRuns`, `useAppPreferences`, `useLocaleText`
+- API client pattern: `web/src/api/client.ts` -- class with scope headers, error parsing, typed responses
+- Context provider: `web/src/context/AppPreferencesContext.tsx` -- localStorage-backed preferences with `useAppPreferences` hook

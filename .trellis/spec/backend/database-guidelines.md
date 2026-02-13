@@ -1,490 +1,132 @@
 # Database Guidelines
 
-> Storage patterns for this project.
+> Database patterns and conventions for this project.
 
 ---
 
 ## Overview
 
-**This project does NOT use a traditional database.**
+The project uses PostgreSQL via the `pg` library (no ORM). Queries are written as raw SQL strings with parameterized placeholders (`$1`, `$2`, ...). The database layer lives in `src/backend/db/` for connection/schema management and `src/backend/runtime/` for repository classes.
 
-Instead, we use **event sourcing with JSONL files** for all persistent state.
-
-**Why no database**:
-- Simplicity: No DB setup, migrations, or connection pooling
-- Traceability: All events are append-only and immutable
-- Portability: Data is just files, easy to backup/inspect
-- Event-driven: Natural fit for agent runtime
-
-**Reference**: See backend/directory-structure.md section "Data Directory (Persistent State)".
+Key dependencies: `pg` for the driver, `pgvector` extension for embeddings, `pgcrypto` for UUID generation.
 
 ---
 
-## Storage Architecture
+## Query Patterns
 
-### JSONL Event Store (Primary Storage)
-
-All state is persisted as events in JSONL files:
-
-```
-data/
-├── sessions/<session_key>/
-│   └── runs/<run_id>/
-│       ├── events.jsonl               # Append-only event log
-│       ├── events.idx.jsonl           # Index for pagination
-│       ├── checkpoint.latest.json     # Latest state snapshot
-│       └── checkpoint/
-│           └── 000001.json            # Historical snapshots
-└── memory/
-    └── shared/
-        ├── items/<memory_id>.json     # Individual memory items
-        └── index/
-            └── keyword.json           # Keyword inverted index
-```
-
-### Why JSONL Instead of Database
-
-| Database | JSONL |
-|----------|-------|
-| Schema migrations | No migrations needed |
-| Connection pooling | Just file I/O |
-| Query language (SQL) | Stream processing |
-| Indexes & joins | Custom indexes (e.g., keyword.json) |
-| ACID transactions | File-level atomicity (append-only) |
-| Complex queries | Simple read/filter/map |
-
-**Trade-offs**:
-- ✅ Simpler setup and deployment
-- ✅ Events are immutable and traceable
-- ✅ Easy to debug (just open the file)
-- ❌ No complex queries (need to build custom indexes)
-- ❌ Performance limits at ~100k events per file (use pagination/sharding)
-
----
-
-## JSONL Patterns
-
-### Writing Events (Append-Only)
+All queries use parameterized placeholders. Never interpolate values into SQL strings.
 
 ```typescript
-// src/backend/store/event-store.ts
+// CORRECT: parameterized query (see src/backend/runtime/run-repository.ts lines 81-104)
+const result = await this.pool.query<RunRow>(
+  `INSERT INTO runs (id, org_id, user_id, project_id, session_key, input, status, agent_id, llm_config)
+   VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
+   RETURNING *`,
+  [input.id, input.scope.orgId, input.scope.userId, input.scope.projectId,
+   input.sessionKey, input.input, input.agentId, input.llmConfig]
+);
+```
 
-export class EventStore {
-  constructor(private filePath: string) {}
+JSONB columns are inserted by calling `JSON.stringify()` and casting with `::jsonb`:
 
-  async append(event: Event): Promise<void> {
-    try {
-      const line = JSON.stringify(event) + '\n';
-      await fs.promises.appendFile(this.filePath, line, { encoding: 'utf-8' });
-    } catch (error) {
-      throw new EventStoreError('Failed to append event', {
-        filePath: this.filePath,
-        eventType: event.type,
-      });
-    }
-  }
+```typescript
+// See src/backend/runtime/run-repository.ts lines 248-276
+await this.pool.query(
+  `INSERT INTO events (..., payload, ..., redaction)
+   VALUES ($1, ..., $6::jsonb, ..., $10::jsonb)`,
+  [event.run_id, ..., JSON.stringify(event.payload), ..., JSON.stringify(event.redaction)]
+);
+```
 
-  async appendBatch(events: Event[]): Promise<void> {
-    const lines = events.map(e => JSON.stringify(e) + '\n').join('');
-    await fs.promises.appendFile(this.filePath, lines, { encoding: 'utf-8' });
-  }
+Batch inserts build a dynamic VALUES clause with computed parameter offsets (see `appendEvents` in `src/backend/runtime/run-repository.ts` lines 278-322):
+
+```typescript
+const values: string[] = [];
+const params: unknown[] = [];
+for (const event of events) {
+  const offset = params.length;
+  values.push(`($${offset + 1}, $${offset + 2}, ...)`);
+  params.push(event.run_id, event.ts, ...);
 }
+await this.pool.query(`INSERT INTO events (...) VALUES ${values.join(',')} RETURNING id::text AS id`, params);
 ```
 
-**Rules**:
-- Never modify existing lines (append-only)
-- Always end with `\n` (newline)
-- Use `appendFile`, not `writeFile` (prevents overwrites)
-
-### Reading Events (Stream Processing)
+Cursor-based pagination uses a monotonic `id` column (see `getRunEvents` in `src/backend/runtime/run-repository.ts` lines 324-368):
 
 ```typescript
-import readline from 'readline';
-import fs from 'fs';
-
-export class EventStore {
-  async *readStream(): AsyncGenerator<Event> {
-    const fileStream = fs.createReadStream(this.filePath, { encoding: 'utf-8' });
-    const rl = readline.createInterface({ input: fileStream });
-
-    for await (const line of rl) {
-      if (!line.trim()) continue;
-      try {
-        const event = JSON.parse(line);
-        yield event as Event;
-      } catch (error) {
-        // Log parse error but continue (resilient to corrupted lines)
-        logger.warn('Failed to parse event line', { line, error });
-      }
-    }
-  }
-
-  async readAll(): Promise<Event[]> {
-    const events: Event[] = [];
-    for await (const event of this.readStream()) {
-      events.push(event);
-    }
-    return events;
-  }
-
-  async readFiltered(predicate: (event: Event) => boolean): Promise<Event[]> {
-    const events: Event[] = [];
-    for await (const event of this.readStream()) {
-      if (predicate(event)) {
-        events.push(event);
-      }
-    }
-    return events;
-  }
-}
+const result = await this.pool.query<EventRow>(
+  `SELECT ... FROM events WHERE run_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3`,
+  [run.id, cursorValue, limit]
+);
 ```
 
-**Rules**:
-- Use streaming for large files (avoid loading all into memory)
-- Handle parse errors gracefully (skip corrupted lines)
-- Filter during iteration (don't load everything first)
-
-### Pagination with Index
-
-For large event files, build a lightweight index:
+Multi-tenant scope filtering is done via a reusable helper `appendScopePredicate` (see `src/backend/runtime/scope.ts` lines 23-36):
 
 ```typescript
-// events.idx.jsonl format (one line per N events)
-// {"offset": 0, "line": 1, "ts": "2026-02-05T12:00:00Z"}
-// {"offset": 1234, "line": 100, "ts": "2026-02-05T12:05:00Z"}
-
-export class EventStore {
-  async readPage(pageSize: number = 100, offset: number = 0): Promise<Event[]> {
-    const events: Event[] = [];
-    let currentLine = 0;
-
-    for await (const event of this.readStream()) {
-      if (currentLine >= offset && events.length < pageSize) {
-        events.push(event);
-      }
-      currentLine++;
-      if (events.length >= pageSize) break;
-    }
-
-    return events;
-  }
-
-  async buildIndex(eventsPerEntry: number = 100): Promise<void> {
-    const indexPath = this.filePath.replace('.jsonl', '.idx.jsonl');
-    const indexStream = fs.createWriteStream(indexPath, { encoding: 'utf-8' });
-
-    let lineNumber = 0;
-    let byteOffset = 0;
-
-    for await (const event of this.readStream()) {
-      if (lineNumber % eventsPerEntry === 0) {
-        const indexEntry = {
-          offset: byteOffset,
-          line: lineNumber,
-          ts: event.ts,
-        };
-        indexStream.write(JSON.stringify(indexEntry) + '\n');
-      }
-
-      const lineSize = Buffer.byteLength(JSON.stringify(event) + '\n', 'utf-8');
-      byteOffset += lineSize;
-      lineNumber++;
-    }
-
-    indexStream.end();
-  }
+export function appendScopePredicate(clauses: string[], params: unknown[], scope: ScopeContext): void {
+  const orgIndex = params.push(scope.orgId);
+  const userIndex = params.push(scope.userId);
+  const projectIndex = params.push(scope.projectId);
+  clauses.push(`org_id = $${orgIndex}`);
+  clauses.push(`user_id = $${userIndex}`);
+  clauses.push(`project_id IS NOT DISTINCT FROM $${projectIndex}`);
 }
 ```
 
 ---
 
-## Checkpoint Snapshots
+## Migrations
 
-Checkpoints are **state snapshots** to avoid replaying all events:
+Schema migrations are defined as an array of idempotent SQL statements in `src/backend/db/schema.ts`. Each statement uses `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, or `DO $$ BEGIN ... END $$` blocks for `ALTER TABLE` operations.
+
+Migrations run at startup via `runPostgresMigrations(pool)` in `src/backend/db/postgres.ts`. A PostgreSQL advisory lock (`pg_advisory_lock`) prevents concurrent migration runs across multiple server instances:
 
 ```typescript
-// src/backend/store/checkpoint-store.ts
-
-export class CheckpointStore {
-  constructor(private baseDir: string) {}
-
-  async saveLatest(checkpoint: Checkpoint): Promise<void> {
-    const latestPath = path.join(this.baseDir, 'checkpoint.latest.json');
-    await fs.promises.writeFile(latestPath, JSON.stringify(checkpoint, null, 2));
+await client.query('SELECT pg_advisory_lock($1, $2)', [MIGRATION_LOCK_NAMESPACE, MIGRATION_LOCK_KEY]);
+try {
+  for (const statement of POSTGRES_SCHEMA_STATEMENTS) {
+    await client.query(statement);
   }
-
-  async loadLatest(): Promise<Checkpoint | null> {
-    const latestPath = path.join(this.baseDir, 'checkpoint.latest.json');
-    try {
-      const content = await fs.promises.readFile(latestPath, 'utf-8');
-      return JSON.parse(content);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return null; // No checkpoint yet
-      }
-      throw error;
-    }
-  }
-
-  async saveHistorical(checkpoint: Checkpoint, stepId: string): Promise<void> {
-    const histDir = path.join(this.baseDir, 'checkpoint');
-    await fs.promises.mkdir(histDir, { recursive: true });
-
-    const filename = `${stepId}.json`;
-    const filePath = path.join(histDir, filename);
-    await fs.promises.writeFile(filePath, JSON.stringify(checkpoint, null, 2));
-  }
+} finally {
+  await client.query('SELECT pg_advisory_unlock($1, $2)', [...]);
+  client.release();
 }
 ```
 
-**When to save checkpoints**:
-- After every agent step (save latest)
-- Every N steps (save historical, e.g., every 10 steps)
-- Before critical operations (backup point)
+When adding new columns to existing tables, use the idempotent `DO $$ BEGIN ... END $$` pattern:
 
----
-
-## Memory Storage (JSON Files)
-
-Memory items are stored as individual JSON files:
-
-```typescript
-// src/backend/store/memory-store.ts
-
-export class MemoryStore {
-  constructor(private memoryDir: string) {}
-
-  async write(item: MemoryItem): Promise<void> {
-    const itemPath = path.join(this.memoryDir, 'items', `${item.id}.json`);
-    await fs.promises.mkdir(path.dirname(itemPath), { recursive: true });
-    await fs.promises.writeFile(itemPath, JSON.stringify(item, null, 2));
-
-    // Update keyword index
-    await this.updateKeywordIndex(item);
-  }
-
-  async get(id: string): Promise<MemoryItem | null> {
-    const itemPath = path.join(this.memoryDir, 'items', `${id}.json`);
-    try {
-      const content = await fs.promises.readFile(itemPath, 'utf-8');
-      return JSON.parse(content);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  private async updateKeywordIndex(item: MemoryItem): Promise<void> {
-    const indexPath = path.join(this.memoryDir, 'index', 'keyword.json');
-
-    // Load existing index
-    let index: Record<string, string[]> = {};
-    try {
-      const content = await fs.promises.readFile(indexPath, 'utf-8');
-      index = JSON.parse(content);
-    } catch (error) {
-      // Index doesn't exist yet
-    }
-
-    // Extract keywords from item
-    const keywords = extractKeywords(item.content);
-    for (const keyword of keywords) {
-      if (!index[keyword]) {
-        index[keyword] = [];
-      }
-      if (!index[keyword].includes(item.id)) {
-        index[keyword].push(item.id);
-      }
-    }
-
-    // Save updated index
-    await fs.promises.mkdir(path.dirname(indexPath), { recursive: true });
-    await fs.promises.writeFile(indexPath, JSON.stringify(index, null, 2));
-  }
-}
+```sql
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'runs' AND column_name = 'group_id'
+  ) THEN
+    ALTER TABLE runs ADD COLUMN group_id TEXT;
+  END IF;
+END $$
 ```
 
 ---
 
-## Anti-patterns
+## Naming Conventions
 
-### ❌ Don't Modify Existing Events
-
-```typescript
-// ❌ Bad: Mutating event log
-async function fixEventTypo(runId: string) {
-  const events = await eventStore.readAll();
-  events[5].type = 'tool.result'; // WRONG: events are immutable
-  await fs.promises.writeFile('events.jsonl', events.map(e => JSON.stringify(e)).join('\n'));
-}
-
-// ✅ Good: Append correction event
-async function fixEventTypo(runId: string) {
-  await eventStore.append({
-    type: 'run.annotation',
-    payload: {
-      corrects_event: events[5].span_id,
-      correction: 'Event type should be tool.result',
-    },
-  });
-}
-```
-
-### ❌ Don't Load Entire File into Memory
-
-```typescript
-// ❌ Bad: Loading 100k events at once
-const events = await fs.promises.readFile('events.jsonl', 'utf-8')
-  .then(content => content.split('\n').map(line => JSON.parse(line)));
-
-// ✅ Good: Stream processing
-for await (const event of eventStore.readStream()) {
-  if (event.type === 'tool.result') {
-    processEvent(event);
-  }
-}
-```
-
-### ❌ Don't Use Sync I/O in Server Code
-
-```typescript
-// ❌ Bad: Blocking file I/O
-const content = fs.readFileSync('events.jsonl', 'utf-8');
-
-// ✅ Good: Async I/O
-const content = await fs.promises.readFile('events.jsonl', 'utf-8');
-```
+- Table names: `snake_case`, plural (e.g., `runs`, `events`, `memories`, `memory_chunks`, `agent_instances`)
+- Column names: `snake_case` (e.g., `session_key`, `run_id`, `created_at`)
+- Index names: `<table>_<columns>_idx` (e.g., `runs_scope_created_idx`, `events_run_id_idx`)
+- Unique indexes: `<table>_<columns>_idx` with `CREATE UNIQUE INDEX`
+- Primary keys: `id` column (TEXT for application-generated IDs, BIGSERIAL for auto-increment)
+- Foreign keys: `<referenced_table_singular>_id` (e.g., `run_id`, `connector_id`, `memory_id`)
+- Timestamps: `TIMESTAMPTZ` type, named `created_at`, `updated_at`, `started_at`, `ended_at`
+- Status columns: `TEXT` with `CHECK` constraints (e.g., `status IN ('pending', 'running', 'completed', 'failed', 'cancelled')`)
+- JSONB columns: used for flexible/nested data (`payload`, `state`, `config`, `metadata`, `llm_config`)
 
 ---
 
-## Performance Considerations
+## Common Mistakes
 
-### When to Shard Files
-
-If a single JSONL file grows beyond **100MB** or **100k events**:
-
-1. **Option 1: Use index** (recommended for read-heavy)
-   - Build `events.idx.jsonl` for fast pagination
-   - See "Pagination with Index" above
-
-2. **Option 2: Shard by time** (for write-heavy)
-   ```
-   data/sessions/s_demo/runs/run_123/
-   ├── events.2026-02-05.jsonl
-   ├── events.2026-02-06.jsonl
-   └── events.2026-02-07.jsonl
-   ```
-
-3. **Option 3: Compact old runs** (archive)
-   - Create `trace.compact.json` projection
-   - Move original `events.jsonl` to archive directory
-
-### Caching Strategy
-
-```typescript
-export class CachedEventStore {
-  private cache = new Map<string, Event[]>();
-
-  async readAll(): Promise<Event[]> {
-    const cacheKey = this.filePath;
-    if (this.cache.has(cacheKey)) {
-      return this.cache.get(cacheKey)!;
-    }
-
-    const events = await super.readAll();
-    this.cache.set(cacheKey, events);
-    return events;
-  }
-
-  invalidateCache(): void {
-    this.cache.clear();
-  }
-}
-```
-
-**Use caching for**:
-- Completed runs (immutable)
-- Index files (rarely change)
-
-**Don't cache**:
-- Active runs (frequently updated)
-
----
-
-## Verification
-
-### Check File Integrity
-
-```bash
-# Check for malformed JSON lines
-while IFS= read -r line; do
-  echo "$line" | jq empty || echo "Invalid JSON: $line"
-done < data/sessions/s_demo/runs/run_123/events.jsonl
-
-# Count events
-wc -l data/sessions/s_demo/runs/run_123/events.jsonl
-
-# Verify all events have required fields
-jq -r 'select(.v == null or .ts == null or .type == null) | "Missing field: " + input_filename' \
-  data/sessions/s_demo/runs/run_123/events.jsonl
-```
-
-### Test Event Store
-
-```typescript
-// src/backend/store/event-store.test.ts
-describe('EventStore', () => {
-  it('should handle concurrent appends', async () => {
-    const store = new EventStore('/tmp/test.jsonl');
-    const events = Array.from({ length: 100 }, (_, i) => createEvent(i));
-
-    await Promise.all(events.map(e => store.append(e)));
-
-    const saved = await store.readAll();
-    expect(saved).toHaveLength(100);
-  });
-
-  it('should skip corrupted lines gracefully', async () => {
-    await fs.promises.writeFile('/tmp/test.jsonl',
-      '{"valid": true}\n' +
-      'invalid json\n' +
-      '{"valid": true}\n'
-    );
-
-    const events = await store.readAll();
-    expect(events).toHaveLength(2); // Skipped corrupted line
-  });
-});
-```
-
----
-
-## Migration Guide
-
-**If you need to add a database later**:
-
-1. Keep events.jsonl as source of truth
-2. Add DB as read-optimized projection
-3. Build projection by replaying events:
-
-```typescript
-async function rebuildProjection() {
-  await db.truncate('runs');
-
-  for await (const event of eventStore.readStream()) {
-    await updateProjection(event); // Idempotent update
-  }
-}
-```
-
-This way, DB can always be rebuilt from events.
-
----
-
-## Related Specs
-
-- [Directory Structure](./directory-structure.md) - Data directory layout
-- [Error Handling](./error-handling.md) - Error event format
-- [Quality Guidelines](./quality-guidelines.md) - File I/O patterns
+- **String interpolation in SQL**: Never do `` `WHERE id = '${id}'` ``. Always use `$1` placeholders.
+- **Forgetting `IS NOT DISTINCT FROM` for nullable columns**: When filtering by `project_id` (which can be NULL), use `project_id IS NOT DISTINCT FROM $N` instead of `project_id = $N` (the latter won't match NULL values).
+- **Not releasing clients**: Always use `client.release()` in a `finally` block after `pool.connect()`. The `withTransaction` helper in `src/backend/db/postgres.ts` handles this correctly.
+- **Non-idempotent migrations**: Every statement in `POSTGRES_SCHEMA_STATEMENTS` must be safe to run multiple times. Use `IF NOT EXISTS` guards.
+- **Casting JSONB**: Remember to cast with `::jsonb` when inserting JSON strings into JSONB columns.
+- **BigInt cursor parsing**: Event IDs from Postgres are BIGSERIAL. Parse them with `Number.parseInt(value, 10)` and validate before use (see `castBigintCursor` in `run-repository.ts`).

@@ -1,4 +1,4 @@
-# Frontend Quality Guidelines
+# Quality Guidelines
 
 > Code quality standards for frontend development.
 
@@ -6,598 +6,99 @@
 
 ## Overview
 
-This project follows **strict React + TypeScript quality standards** with automated enforcement.
+The frontend enforces quality through TypeScript strict mode, ESLint with `@typescript-eslint` and `react-hooks` plugins, Vitest for unit tests, and Playwright for E2E tests. The ESLint config lives in `web/.eslintrc.json`.
 
-**Key principles**:
-- Components are small and focused
-- All props are typed (no any)
-- Hooks follow Rules of Hooks
-- Accessibility is mandatory
-- Tests cover critical paths
-
-**Reference**: Based on backend/quality-guidelines.md adapted for React.
-
----
-
-## Code Style
-
-### Formatting (Prettier)
-
-```json
-// .prettierrc
-{
-  "semi": true,
-  "singleQuote": true,
-  "jsxSingleQuote": false,
-  "trailingComma": "es5",
-  "tabWidth": 2,
-  "printWidth": 100,
-  "arrowParens": "avoid"
-}
-```
-
-### Linting (ESLint)
-
-```json
-// .eslintrc.json
-{
-  "extends": [
-    "eslint:recommended",
-    "plugin:react/recommended",
-    "plugin:react-hooks/recommended",
-    "plugin:@typescript-eslint/recommended"
-  ],
-  "rules": {
-    "react/react-in-jsx-scope": "off",
-    "react/prop-types": "off",
-    "@typescript-eslint/no-explicit-any": "error",
-    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
-    "react-hooks/rules-of-hooks": "error",
-    "react-hooks/exhaustive-deps": "warn",
-    "react/jsx-key": "error",
-    "react/self-closing-comp": "error"
-  }
-}
-```
+Key commands (run from the `web/` directory):
+- `pnpm lint` -- ESLint on `web/src/`
+- `pnpm typecheck` -- `tsc --noEmit`
+- `pnpm test` -- Vitest (unit tests)
+- `pnpm test:e2e` -- Playwright (E2E tests)
 
 ---
 
 ## Forbidden Patterns
 
-### ❌ Don't Use `any` Without Documentation
-
-```tsx
-// ❌ Bad: Silent type escape
-function Component({ data }: { data: any }) {
-  return <div>{data.value}</div>;
-}
-
-// ✅ Good: Proper types
-interface Data {
-  value: string;
-}
-function Component({ data }: { data: Data }) {
-  return <div>{data.value}</div>;
-}
-
-// ✅ Acceptable: External lib (documented)
-// TODO: Add types for external-lib
-const data = externalLib.getData() as any;
-```
-
-### ❌ Don't Put Logic in Components
-
-```tsx
-// ❌ Bad: Business logic in component
-export function ChatMessages() {
-  const [messages, setMessages] = useState([]);
-
-  useEffect(() => {
-    fetch('/api/messages')
-      .then(res => res.json())
-      .then(data => {
-        const filtered = data.filter(m => !m.deleted);
-        const sorted = filtered.sort((a, b) => a.timestamp - b.timestamp);
-        setMessages(sorted);
-      });
-  }, []);
-
-  return <div>{/* ... */}</div>;
-}
-
-// ✅ Good: Logic in hook
-export function ChatMessages() {
-  const messages = useMessages(); // Hook handles all logic
-  return <MessageList messages={messages} />;
-}
-```
-
-### ❌ Don't Use Index as Key
-
-```tsx
-// ❌ Bad: Index as key
-{items.map((item, i) => (
-  <Item key={i} data={item} />
-))}
-
-// ✅ Good: Unique ID as key
-{items.map(item => (
-  <Item key={item.id} data={item} />
-))}
-```
-
-### ❌ Don't Violate Rules of Hooks
-
-```tsx
-// ❌ Bad: Conditional hook call
-if (condition) {
-  const data = useData(); // WRONG
-}
-
-// ❌ Bad: Hook in loop
-items.forEach(() => {
-  const data = useData(); // WRONG
-});
-
-// ✅ Good: Hooks at top level
-const data = useData();
-if (condition) {
-  // Use data here
-}
-```
-
-### ❌ Don't Nest Components
-
-```tsx
-// ❌ Bad: Component defined inside component
-export function Parent() {
-  function Child() { // WRONG: Creates new component on every render
-    return <div>Child</div>;
-  }
-
-  return <Child />;
-}
-
-// ✅ Good: Components at module level
-function Child() {
-  return <div>Child</div>;
-}
-
-export function Parent() {
-  return <Child />;
-}
-```
+- **`any` type**: Use `unknown` with type narrowing. While the frontend ESLint config does not enforce `no-explicit-any` as strictly as the backend, avoid `any` by convention.
+- **Unused variables**: `@typescript-eslint/no-unused-vars` is `"error"`. Prefix intentionally unused parameters with `_`.
+- **Default exports**: The entire codebase uses named exports. Do not use `export default`.
+- **Class components**: Use function components exclusively. No `React.Component` or `React.PureComponent`.
+- **Direct DOM manipulation**: Use React refs and state instead of `document.querySelector` or `document.getElementById` (except in `main.tsx` for the root element).
+- **Hardcoded English strings in JSX**: All user-facing text must use `t(en, zh)` from `useLocaleText()` for bilingual support.
+- **Inline styles for layout**: Use CSS Modules. Inline styles are only acceptable for truly dynamic values (e.g., computed textarea height in `ChatInput.tsx`).
+- **`console.log` in production code**: Use it only during development. The SSE client uses `console.error` for parse failures (see `web/src/api/sse.ts` line 57), which is acceptable.
 
 ---
 
 ## Required Patterns
 
-### ✅ Always Type Props
-
-```tsx
-// ✅ Good: Explicit interface
-interface ButtonProps {
-  onClick: () => void;
-  children: React.ReactNode;
-  variant?: 'primary' | 'secondary';
-}
-
-export function Button({ onClick, children, variant = 'primary' }: ButtonProps) {
-  // ...
-}
-```
-
-### ✅ Always Handle Loading/Error States
-
-```tsx
-export function Component() {
-  const { data, isLoading, error } = useData();
-
-  if (error) return <ErrorView error={error} />;
-  if (isLoading) return <Spinner />;
-  if (!data) return <EmptyState />;
-
-  return <DataView data={data} />;
-}
-```
-
-### ✅ Always Use Accessibility Attributes
-
-```tsx
-// ✅ Good: ARIA attributes
-<button
-  onClick={handleClick}
-  aria-label="Close dialog"
-  aria-disabled={isDisabled}
->
-  ×
-</button>
-
-<input
-  type="text"
-  aria-label="Search"
-  aria-describedby="search-help"
-/>
-<span id="search-help">Enter keywords to search</span>
-```
-
-### ✅ Always Memoize Context Values
-
-```tsx
-// ✅ Good: Memoized context value
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>('light');
-
-  const value = useMemo(
-    () => ({ theme, setTheme }),
-    [theme]
-  );
-
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
-}
-
-// ❌ Bad: New object every render
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>('light');
-
-  return (
-    <ThemeContext.Provider value={{ theme, setTheme }}>
-      {children}
-    </ThemeContext.Provider>
-  );
-}
-```
-
----
-
-## Component Size Guidelines
-
-### Max Lines Per Component
-
-- **Simple components**: ≤ 100 lines
-- **Complex components**: ≤ 200 lines
-- **Page components**: ≤ 300 lines (composition only)
-
-### Max Props Per Component
-
-- **Limit**: 7 props
-- If more, consider:
-  - Grouping related props into object
-  - Splitting into smaller components
-
-```tsx
-// ❌ Bad: Too many props
-function Component({
-  title,
-  subtitle,
-  description,
-  icon,
-  iconColor,
-  onClick,
-  onHover,
-  isActive,
-  isDisabled,
-}: Props) { /* ... */ }
-
-// ✅ Good: Group related props
-interface ComponentProps {
-  content: {
-    title: string;
-    subtitle?: string;
-    description?: string;
-  };
-  icon?: {
-    name: string;
-    color: string;
-  };
-  state: {
-    isActive: boolean;
-    isDisabled: boolean;
-  };
-  onClick: () => void;
-  onHover?: () => void;
-}
-```
+- **Named exports with barrel files**: Every component directory has an `index.ts` that re-exports public components. Pages are re-exported from `web/src/pages/index.ts`.
+- **Props interfaces**: Every component defines and exports a `<ComponentName>Props` interface.
+- **Error boundaries in hooks**: Every data-fetching hook returns `error: Error | null` and normalizes caught errors with `err instanceof Error ? err : new Error('fallback')`.
+- **Cleanup in effects**: Effects that create subscriptions (SSE, timers) must return a cleanup function.
+- **`void` prefix for async calls**: When calling async functions in effects or event handlers, prefix with `void` to satisfy the linter: `void loadRuns()`, `() => void sendMessage(prompt)`.
+- **`useMemo` for context values**: Context providers must wrap their value object in `useMemo` to prevent unnecessary re-renders (see `AppPreferencesContext.tsx` lines 174-197).
+- **`useCallback` for returned functions**: Functions returned from hooks must be wrapped in `useCallback` with correct dependencies.
+- **Bilingual text**: Use `const { t } = useLocaleText()` and call `t('English text', 'Chinese text')` for all user-facing strings.
 
 ---
 
 ## Testing Requirements
 
-### Unit Tests (Components)
+Tests use Vitest with jsdom environment and `@testing-library/react`.
 
-```tsx
-// src/web/components/chat/ChatInput.test.tsx
+Configuration (see `web/package.json`):
+- Unit tests: `pnpm test` (Vitest)
+- E2E tests: `pnpm test:e2e` (Playwright)
 
-import { render, screen, fireEvent } from '@testing-library/react';
-import { ChatInput } from './ChatInput';
+Test file location: `web/src/test/` directory (not co-located with components).
 
-describe('ChatInput', () => {
-  it('should call onSend when submit button is clicked', () => {
-    const onSend = jest.fn();
-    render(<ChatInput onSend={onSend} />);
+Test conventions (see `web/src/test/ChatWindow.test.tsx`):
 
-    const input = screen.getByRole('textbox');
-    const button = screen.getByRole('button', { name: /send/i });
+```typescript
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { ChatWindow } from '../components/Chat/ChatWindow';
 
-    fireEvent.change(input, { target: { value: 'Hello' } });
-    fireEvent.click(button);
-
-    expect(onSend).toHaveBeenCalledWith('Hello');
+describe('ChatWindow', () => {
+  it('renders empty state when no messages', () => {
+    render(<ChatWindow messages={[]} onSend={vi.fn()} />);
+    expect(screen.getByText(/start a conversation/i)).toBeInTheDocument();
   });
 
-  it('should not call onSend when input is empty', () => {
-    const onSend = jest.fn();
-    render(<ChatInput onSend={onSend} />);
-
-    const button = screen.getByRole('button', { name: /send/i });
-    fireEvent.click(button);
-
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it('should clear input after sending', () => {
-    const onSend = jest.fn();
-    render(<ChatInput onSend={onSend} />);
-
-    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
-    const button = screen.getByRole('button', { name: /send/i });
-
-    fireEvent.change(input, { target: { value: 'Hello' } });
-    fireEvent.click(button);
-
-    expect(input.value).toBe('');
+  it('renders messages', () => {
+    const messages = [
+      { id: 'msg_1', role: 'user' as const, content: 'Hello', timestamp: new Date().toISOString() },
+    ];
+    render(<ChatWindow messages={messages} onSend={vi.fn()} />);
+    expect(screen.getByText('Hello')).toBeInTheDocument();
   });
 });
 ```
 
-### Integration Tests
+What to test:
+- Component rendering with different prop combinations (empty state, with data, loading, error)
+- User interactions (button clicks, form submissions) via `@testing-library/react`
+- API client methods (mock `fetch`, verify request shape)
+- Hook behavior (if complex enough to warrant isolated testing)
 
-```tsx
-// src/web/pages/chat/__tests__/ChatPage.test.tsx
-
-import { render, screen, waitFor } from '@testing-library/react';
-import { ChatPage } from '../ChatPage';
-
-jest.mock('@/web/api/runs', () => ({
-  runsApi: {
-    create: jest.fn().mockResolvedValue({ run_id: 'run_123' }),
-  },
-}));
-
-describe('ChatPage', () => {
-  it('should render chat interface', () => {
-    render(<ChatPage />);
-    expect(screen.getByRole('textbox')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /send/i })).toBeInTheDocument();
-  });
-
-  it('should send message and display it', async () => {
-    render(<ChatPage />);
-
-    const input = screen.getByRole('textbox');
-    const button = screen.getByRole('button', { name: /send/i });
-
-    fireEvent.change(input, { target: { value: 'Hello' } });
-    fireEvent.click(button);
-
-    await waitFor(() => {
-      expect(screen.getByText('Hello')).toBeInTheDocument();
-    });
-  });
-});
-```
-
-### Coverage Target
-
-- **Components**: 80% coverage
-- **Hooks**: 90% coverage
-- **Utils**: 95% coverage
-
----
-
-## Accessibility Requirements
-
-### Required Attributes
-
-```tsx
-// Buttons
-<button aria-label="Close">×</button>
-
-// Inputs
-<input aria-label="Search" aria-describedby="search-hint" />
-<span id="search-hint">Type to search</span>
-
-// Modals
-<div role="dialog" aria-modal="true" aria-labelledby="modal-title">
-  <h2 id="modal-title">Modal Title</h2>
-</div>
-
-// Lists
-<ul role="list">
-  <li role="listitem">Item</li>
-</ul>
-```
-
-### Keyboard Navigation
-
-```tsx
-// All interactive elements must be keyboard accessible
-<button onClick={handleClick} onKeyDown={handleKeyDown}>
-  Click or press Enter
-</button>
-
-// Tab order must be logical
-<form>
-  <input tabIndex={1} />
-  <input tabIndex={2} />
-  <button tabIndex={3}>Submit</button>
-</form>
-```
-
-### Focus Management
-
-```tsx
-export function Modal({ isOpen, onClose }: ModalProps) {
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (isOpen && closeButtonRef.current) {
-      closeButtonRef.current.focus();
-    }
-  }, [isOpen]);
-
-  return (
-    <div role="dialog" aria-modal="true">
-      {/* content */}
-      <button ref={closeButtonRef} onClick={onClose}>
-        Close
-      </button>
-    </div>
-  );
-}
-```
-
----
-
-## Performance Guidelines
-
-### Use React.memo for Expensive Components
-
-```tsx
-// ✅ Good: Memoize expensive component
-export const ExpensiveComponent = React.memo(function ExpensiveComponent({
-  data,
-}: {
-  data: Data;
-}) {
-  // Expensive rendering logic
-  return <div>{/* ... */}</div>;
-});
-```
-
-### Use useMemo for Expensive Calculations
-
-```tsx
-export function Component({ events }: { events: Event[] }) {
-  // ✅ Good: Memoize expensive calculation
-  const filteredEvents = useMemo(
-    () => events.filter(e => e.type === 'tool.called'),
-    [events]
-  );
-
-  return <EventList events={filteredEvents} />;
-}
-```
-
-### Use useCallback for Event Handlers
-
-```tsx
-export function Component({ onSave }: { onSave: (data: Data) => void }) {
-  const [data, setData] = useState<Data>({});
-
-  // ✅ Good: Memoize callback
-  const handleSave = useCallback(() => {
-    onSave(data);
-  }, [data, onSave]);
-
-  return <button onClick={handleSave}>Save</button>;
-}
-```
+What not to test:
+- CSS Module class names (they are hashed and unstable)
+- Implementation details (internal state, private functions)
 
 ---
 
 ## Code Review Checklist
 
-### Before Submitting PR
-
-- [ ] All tests pass (`pnpm test`)
-- [ ] No TypeScript errors (`pnpm tsc --noEmit`)
-- [ ] No linting errors (`pnpm eslint .`)
-- [ ] No console.log statements
-- [ ] Accessibility attributes added
-- [ ] Loading/error states handled
-
-### During Review
-
-**Type Safety**
-- [ ] All props typed (no `any`)
-- [ ] Event handlers typed
-- [ ] State typed
-
-**Component Quality**
-- [ ] Component ≤ 200 lines
-- [ ] Single responsibility
-- [ ] No nested components
-- [ ] Props ≤ 7
-
-**Hooks**
-- [ ] Follow Rules of Hooks
-- [ ] Dependencies correct
-- [ ] Cleanup functions provided
-
-**Accessibility**
-- [ ] ARIA attributes present
-- [ ] Keyboard navigation works
-- [ ] Focus management correct
-
-**Performance**
-- [ ] Context values memoized
-- [ ] Expensive calcs memoized
-- [ ] No unnecessary re-renders
-
-**Testing**
-- [ ] Critical paths tested
-- [ ] Edge cases covered
-- [ ] Error paths tested
-
----
-
-## Verification
-
-### Run All Checks
-
-```bash
-# TypeScript
-pnpm tsc --noEmit        # Type check
-pnpm eslint .            # Lint
-pnpm prettier --check .  # Format check
-pnpm test                # Tests
-pnpm test --coverage     # Coverage
-
-# Accessibility
-pnpm axe                 # A11y audit (if configured)
-```
-
-### Pre-commit Hook
-
-```bash
-# .husky/pre-commit
-#!/bin/sh
-pnpm tsc --noEmit || exit 1
-pnpm eslint src/web/ || exit 1
-pnpm test --passWithNoTests || exit 1
-```
-
----
-
-## Anti-patterns Summary
-
-| Anti-pattern | Why Bad | Solution |
-|--------------|---------|----------|
-| `any` without docs | Loses type safety | Use proper types |
-| Logic in components | Hard to test | Extract to hooks |
-| Index as key | Re-render issues | Use unique ID |
-| Conditional hooks | Violates Rules | Always call hooks |
-| Nested components | Creates new component every render | Define at module level |
-| No loading states | Bad UX | Handle all states |
-| No accessibility | Excludes users | Add ARIA attributes |
-| No memoization | Performance issues | Use memo/useMemo/useCallback |
-
----
-
-## Related Specs
-
-- [Component Guidelines](./component-guidelines.md) - Component patterns
-- [Hook Guidelines](./hook-guidelines.md) - Hook patterns
-- [Type Safety](./type-safety.md) - TypeScript types
-- [State Management](./state-management.md) - State patterns
+- [ ] No `any` types
+- [ ] All user-facing strings use `t(en, zh)` for bilingual support
+- [ ] CSS Modules used for styling (no inline styles for layout)
+- [ ] Props interface exported with `<ComponentName>Props` naming
+- [ ] Named exports only (no `export default`)
+- [ ] Effects have cleanup functions where needed (SSE, timers, subscriptions)
+- [ ] Async calls in effects/handlers prefixed with `void`
+- [ ] Error states handled and displayed to the user
+- [ ] Loading states shown during data fetching
+- [ ] `aria-label` on interactive elements without visible labels
+- [ ] New components added to barrel `index.ts`
+- [ ] New hooks added to `web/src/hooks/index.ts` barrel
+- [ ] localStorage reads wrapped in try/catch with sensible defaults
