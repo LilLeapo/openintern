@@ -13,20 +13,26 @@ export interface ChatWindowProps {
   messages: ChatMessageType[];
   onSend: (message: string) => void;
   isRunning?: boolean;
+  isWaiting?: boolean;
   error?: Error | null;
   onClear?: () => void;
   onOpenRun?: () => void;
   latestRunId?: string | null;
+  escalationChildRunId?: string | null;
+  onViewGroupDiscussion?: () => void;
 }
 
 export function ChatWindow({
   messages,
   onSend,
   isRunning = false,
+  isWaiting = false,
   error,
   onClear,
   onOpenRun,
   latestRunId,
+  escalationChildRunId,
+  onViewGroupDiscussion,
 }: ChatWindowProps) {
   const { t } = useLocaleText();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -78,7 +84,18 @@ export function ChatWindow({
             <ChatMessage key={msg.id} message={msg} />
           ))
         )}
-        {isRunning && (
+        {isWaiting && escalationChildRunId && (
+          <div className={styles.escalationBanner} aria-live="polite">
+            <span className={styles.pulsingDot} />
+            <span>{t('PA is waiting for group discussion to complete...', 'PA 正在等待团队讨论完成...')}</span>
+            {onViewGroupDiscussion && (
+              <button className={styles.secondaryButton} onClick={onViewGroupDiscussion}>
+                {t('View Group Discussion', '查看团队讨论')}
+              </button>
+            )}
+          </div>
+        )}
+        {isRunning && !isWaiting && (
           <div className={styles.typingIndicator} aria-live="polite">
             <span className={styles.pulsingDot} />
             <span>{t('Agent is thinking...', '助手正在思考...')}</span>

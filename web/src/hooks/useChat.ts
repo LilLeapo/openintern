@@ -24,12 +24,20 @@ interface UseChatConfig {
   groupId?: string | null;
 }
 
+export interface EscalationInfo {
+  childRunId: string;
+  groupId?: string;
+  goal?: string;
+}
+
 export interface UseChatResult {
   messages: ChatMessage[];
   isRunning: boolean;
+  isWaiting: boolean;
   currentRunId: string | null;
   latestRunId: string | null;
   error: Error | null;
+  escalation: EscalationInfo | null;
   sendMessage: (input: string) => Promise<void>;
   clearMessages: () => void;
 }
@@ -99,6 +107,8 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
   const [latestRunBySession, setLatestRunBySession] = useState<RunIdMap>(readStoredLatestRuns);
   const [errorBySession, setErrorBySession] = useState<ErrorMap>({});
   const [activeRun, setActiveRun] = useState<ActiveRunState | null>(null);
+  const [escalation, setEscalation] = useState<EscalationInfo | null>(null);
+  const [isWaiting, setIsWaiting] = useState(false);
   const runMode = config?.runMode ?? 'single';
   const selectedGroupId = config?.groupId ?? null;
   const llmConfig = config?.llmConfig;
@@ -176,6 +186,42 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
             ),
           );
         }
+      } else if (event.type === 'tool.called') {
+        // Detect escalation events
+        const payload = event.payload as { toolName: string; args: Record<string, unknown> };
+        if (payload.toolName === 'escalate_to_group') {
+          setIsWaiting(true);
+        }
+      } else if (event.type === 'tool.result') {
+        // Extract child run ID from escalation result
+        const payload = event.payload as {
+          toolName: string;
+          result: unknown;
+          isError: boolean;
+        };
+        if (payload.toolName === 'escalate_to_group' && !payload.isError) {
+          const result = payload.result as { childRunId?: string; success?: boolean } | string | undefined;
+          let childRunId: string | undefined;
+          if (result && typeof result === 'object' && 'childRunId' in result) {
+            childRunId = result.childRunId;
+          } else if (typeof result === 'string') {
+            // Try to parse JSON result
+            try {
+              const parsed = JSON.parse(result) as { childRunId?: string };
+              childRunId = parsed.childRunId;
+            } catch {
+              // not JSON, ignore
+            }
+          }
+          if (childRunId) {
+            setEscalation({
+              childRunId,
+              groupId: undefined,
+              goal: undefined,
+            });
+          }
+          // PA is now waiting for group completion; keep isWaiting true
+        }
       } else if (event.type === 'run.completed') {
         const payload = event.payload as { output: string };
         processedRunIds.current.add(currentActiveRun.runId);
@@ -213,6 +259,8 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
         streamingMsgId.current = null;
         lastProcessedIdx.current = 0;
         setActiveRun(null);
+        setIsWaiting(false);
+        setEscalation(null);
         clearEvents();
         return;
       } else if (event.type === 'run.failed') {
@@ -249,6 +297,8 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
         streamingMsgId.current = null;
         lastProcessedIdx.current = 0;
         setActiveRun(null);
+        setIsWaiting(false);
+        setEscalation(null);
         clearEvents();
         return;
       }
@@ -317,14 +367,18 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
       setActiveRun(null);
       clearEvents();
     }
+    setEscalation(null);
+    setIsWaiting(false);
   }, [sessionKey, clearEvents]);
 
   return {
     messages,
     isRunning,
+    isWaiting,
     currentRunId,
     latestRunId,
     error,
+    escalation,
     sendMessage,
     clearMessages,
   };

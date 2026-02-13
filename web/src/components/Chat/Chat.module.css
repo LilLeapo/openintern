@@ -194,6 +194,24 @@
   animation: pulse 1s ease-in-out infinite;
 }
 
+.escalationBanner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-self: flex-start;
+  padding: 0.56rem 0.8rem;
+  border: 1px dashed #c4b5fd;
+  border-radius: 12px;
+  color: #6d28d9;
+  background: rgba(237, 233, 254, 0.8);
+  font-size: 0.85rem;
+}
+
+.escalationBanner .pulsingDot {
+  background: #7c3aed;
+}
+
 .errorMessage {
   padding: 0.68rem 0.8rem;
   background: var(--danger-soft);

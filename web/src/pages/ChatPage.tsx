@@ -165,7 +165,7 @@ export function ChatPage() {
     [provider, model]
   );
 
-  const { messages, isRunning, error, sendMessage, clearMessages, latestRunId } =
+  const { messages, isRunning, isWaiting, error, sendMessage, clearMessages, latestRunId, escalation } =
     useChat(sessionKey, {
       llmConfig,
       runMode,
@@ -237,9 +237,16 @@ export function ChatPage() {
             messages={messages}
             onSend={sendMessage}
             isRunning={isRunning}
+            isWaiting={isWaiting}
             error={error}
             onClear={clearMessages}
             latestRunId={latestRunId}
+            escalationChildRunId={escalation?.childRunId ?? null}
+            onViewGroupDiscussion={
+              escalation?.childRunId
+                ? () => navigate(`/group-run/${escalation.childRunId}`)
+                : undefined
+            }
             onOpenRun={() => {
               if (latestRunId) {
                 navigate(`/trace/${latestRunId}`);

@@ -3,7 +3,7 @@
  */
 
 // Run status
-export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type RunStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
 // Run metadata
 export interface RunMeta {
@@ -15,6 +15,7 @@ export interface RunMeta {
   duration_ms: number | null;
   event_count: number;
   tool_call_count: number;
+  parent_run_id?: string | null;
 }
 
 // Event types

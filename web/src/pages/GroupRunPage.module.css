@@ -1,0 +1,25 @@
+.layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.errorBanner {
+  padding: 0.68rem 0.8rem;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 10px;
+  border: 1px solid #fecaca;
+  font-size: 0.84rem;
+}
+
+.pageAction {
+  border: none;
+  border-radius: 11px;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  font-weight: 600;
+  font-size: 0.82rem;
+  padding: 0.55rem 0.78rem;
+  cursor: pointer;
+}

@@ -13,6 +13,7 @@ const STATUS_FILTERS: Array<'all' | RunStatus> = [
   'all',
   'pending',
   'running',
+  'waiting',
   'completed',
   'failed',
   'cancelled',
@@ -37,6 +38,8 @@ export function RunsPage() {
         return t('pending', '等待中');
       case 'running':
         return t('running', '运行中');
+      case 'waiting':
+        return t('waiting', '等待组完成');
       case 'completed':
         return t('completed', '已完成');
       case 'failed':

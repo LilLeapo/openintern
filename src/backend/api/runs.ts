@@ -7,6 +7,8 @@
  * - GET /api/sessions/:session_key/runs
  * - GET /api/runs/:run_id/events?cursor&limit
  * - GET /api/runs/:run_id/stream
+ * - GET /api/runs/:run_id/children
+ * - POST /api/runs/:run_id/inject
  * - POST /api/runs/:run_id/cancel
  */
 
@@ -70,6 +72,7 @@ function mapRunToMeta(
     duration_ms: durationMs,
     event_count: counters.eventCount,
     tool_call_count: counters.toolCalls,
+    parent_run_id: run.parentRunId ?? null,
   };
 }
 
@@ -249,6 +252,81 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           req.on('close', () => {
             sseManager.removeClient(clientId);
           });
+        } catch (error) {
+          next(error);
+        }
+      })();
+    }
+  );
+
+  router.get(
+    '/runs/:run_id/children',
+    (req: Request, res: Response, next: NextFunction) => {
+      void (async () => {
+        try {
+          const { run_id: runId } = req.params;
+          if (!runId) {
+            throw new ValidationError('run_id is required', 'run_id');
+          }
+          const scope = resolveRequestScope(req);
+          await runRepository.requireRun(runId, scope);
+          const children = await runRepository.getChildRuns(runId);
+          res.json({ children });
+        } catch (error) {
+          next(error);
+        }
+      })();
+    }
+  );
+
+  router.post(
+    '/runs/:run_id/inject',
+    (req: Request, res: Response, next: NextFunction) => {
+      void (async () => {
+        try {
+          const { run_id: runId } = req.params;
+          if (!runId) {
+            throw new ValidationError('run_id is required', 'run_id');
+          }
+          const body = req.body as { message?: string; role?: string };
+          if (!body.message || typeof body.message !== 'string' || !body.message.trim()) {
+            throw new ValidationError('message is required', 'message');
+          }
+
+          const scope = resolveRequestScope(req);
+          const run = await runRepository.requireRun(runId, scope);
+
+          if (run.status !== 'running' && run.status !== 'waiting') {
+            throw new AgentError(
+              'Can only inject messages into running or waiting runs',
+              'RUN_NOT_INJECTABLE',
+              400
+            );
+          }
+
+          const event = {
+            v: 1 as const,
+            ts: new Date().toISOString(),
+            session_key: run.sessionKey,
+            run_id: run.id,
+            agent_id: 'user',
+            step_id: `step_inject_${Date.now()}`,
+            span_id: `span_inject_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+            parent_span_id: null,
+            type: 'user.injected' as const,
+            payload: {
+              message: body.message.trim(),
+              role: body.role ?? 'user',
+            },
+            redaction: { contains_secrets: false },
+          };
+
+          // Write event and broadcast via SSE
+          await eventService.write(event as unknown as import('../../types/events.js').Event);
+          sseManager.broadcastToRun(runId, event as unknown as import('../../types/events.js').Event);
+
+          logger.info('User message injected into run', { runId, role: body.role ?? 'user' });
+          res.json({ success: true, run_id: runId });
         } catch (error) {
           next(error);
         }

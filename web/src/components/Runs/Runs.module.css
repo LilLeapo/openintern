@@ -81,6 +81,11 @@
   color: var(--success);
 }
 
+.status.waiting {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
 .status.failed,
 .status.cancelled {
   background: var(--danger-soft);

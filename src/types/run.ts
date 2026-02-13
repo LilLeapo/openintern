@@ -34,6 +34,8 @@ export const RunMetaSchema = z.object({
   event_count: z.number().nonnegative(),
   /** Tool call count */
   tool_call_count: z.number().nonnegative(),
+  /** Parent run ID (null if top-level run) */
+  parent_run_id: z.string().nullable().optional(),
 });
 
 export type RunMeta = z.infer<typeof RunMetaSchema>;

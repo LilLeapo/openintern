@@ -497,6 +497,46 @@ export class APIClient {
   }
 
   /**
+   * Get child runs for a parent run
+   */
+  async getChildRuns(runId: string): Promise<RunMeta[]> {
+    const response = await fetch(`${this.baseURL}/api/runs/${runId}/children`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get child runs'),
+        response.status
+      );
+    }
+
+    const data = (await response.json()) as { children: RunMeta[] };
+    return data.children;
+  }
+
+  /**
+   * Inject a user message into an active run
+   */
+  async injectMessage(runId: string, message: string, role?: string): Promise<void> {
+    const response = await fetch(`${this.baseURL}/api/runs/${runId}/inject`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({ message, ...(role ? { role } : {}) }),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to inject message'),
+        response.status
+      );
+    }
+  }
+
+  /**
    * Create group run
    */
   async createGroupRun(

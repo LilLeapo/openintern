@@ -1,0 +1,281 @@
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.8rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+}
+
+.headerInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.headerTitle {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.headerMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.statusBadge {
+  padding: 0.12rem 0.48rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.statusBadge.running {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.statusBadge.waiting {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.statusBadge.completed {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.statusBadge.failed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.statusBadge.pending {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.statusBadge.cancelled {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.headerActions {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.backButton {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.4rem 0.62rem;
+  cursor: pointer;
+}
+
+.backButton:hover {
+  border-color: #2dd4bf;
+}
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.95rem;
+  min-height: 300px;
+  max-height: 600px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.76));
+  box-shadow: var(--shadow-md);
+}
+
+.threadMessage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-width: 88%;
+  animation: fadeIn 180ms ease-out;
+}
+
+.threadMessage.fromUser {
+  align-self: flex-end;
+}
+
+.threadMessage.fromSystem {
+  align-self: center;
+  max-width: 100%;
+}
+
+.messageLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+}
+
+.roleBadge {
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
+.messageTime {
+  color: var(--text-muted);
+}
+
+.messageBubble {
+  padding: 0.6rem 0.8rem;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.04);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  font-size: 0.88rem;
+}
+
+.threadMessage.fromUser .messageBubble {
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  border: none;
+}
+
+.threadMessage.fromSystem .messageBubble {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.toolMessage .messageBubble {
+  background: #fffbeb;
+  border-color: #fde68a;
+  font-size: 0.82rem;
+  color: #92400e;
+}
+
+.emptyThread {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.interventionBar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+}
+
+.interventionInput {
+  width: 100%;
+  min-height: 40px;
+  max-height: 100px;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  resize: none;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  background: #f8fafc;
+}
+
+.interventionInput:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.12);
+  background: #ffffff;
+}
+
+.interventionInput:disabled {
+  background: #e2e8f0;
+  cursor: not-allowed;
+}
+
+.interventionSend {
+  align-self: stretch;
+  min-width: 80px;
+  padding: 0.6rem 0.8rem;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.interventionSend:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.interventionSend:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.interventionHint {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.disabledNotice {
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #f1f5f9;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  text-align: center;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .threadMessage {
+    max-width: 96%;
+  }
+
+  .interventionBar {
+    grid-template-columns: 1fr;
+  }
+
+  .interventionSend {
+    width: 100%;
+    min-width: 0;
+  }
+}

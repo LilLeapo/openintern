@@ -278,7 +278,29 @@ export class RunRepository {
       duration_ms: durationMs,
       event_count: Number.parseInt(row.event_count ?? '0', 10),
       tool_call_count: Number.parseInt(row.tool_count ?? '0', 10),
+      parent_run_id: row.parent_run_id ?? null,
     };
+  }
+
+  async getChildRuns(parentRunId: string): Promise<RunMeta[]> {
+    const result = await this.pool.query<RunRow>(
+      `SELECT
+        r.*,
+        COALESCE(stats.event_count, 0)::text AS event_count,
+        COALESCE(stats.tool_count, 0)::text AS tool_count
+      FROM runs AS r
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS event_count,
+          COUNT(*) FILTER (WHERE type = 'tool.called') AS tool_count
+        FROM events e
+        WHERE e.run_id = r.id
+      ) AS stats ON TRUE
+      WHERE r.parent_run_id = $1
+      ORDER BY r.created_at ASC`,
+      [parentRunId]
+    );
+    return result.rows.map((row) => this.toRunMeta(row));
   }
 
   async appendEvent(event: Event): Promise<number> {
