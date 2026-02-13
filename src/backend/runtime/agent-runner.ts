@@ -14,6 +14,7 @@ import { TokenBudgetManager } from './token-budget-manager.js';
 import { ToolCallScheduler } from './tool-scheduler.js';
 import type { ToolResult } from '../../types/agent.js';
 import type { AgentContext } from './tool-policy.js';
+import type { GroupWithRoles } from './group-repository.js';
 
 export interface RunnerContext {
   runId: string;
@@ -56,6 +57,8 @@ export interface SingleAgentRunnerConfig {
   compactionService?: CompactionService;
   /** Skill content injections (loaded SKILL.md content) */
   skillInjections?: SkillInjection[];
+  /** Available groups for escalation (injected into system prompt) */
+  availableGroups?: GroupWithRoles[];
   /** Working directory for environment context */
   workDir?: string;
 }
@@ -157,6 +160,7 @@ export class SingleAgentRunner implements AgentRunner {
           skills,
           skillInjections: this.config.skillInjections,
           agentContext: this.config.agentContext,
+          availableGroups: this.config.availableGroups,
           environment: this.config.workDir ? {
             cwd: this.config.workDir,
             date: new Date().toISOString().split('T')[0],

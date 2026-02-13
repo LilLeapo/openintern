@@ -47,6 +47,7 @@ const BUILTIN_TOOL_RISK_LEVELS: Record<string, 'low' | 'medium' | 'high'> = {
   skills_list: 'low',
   skills_get: 'low',
   escalate_to_group: 'medium',
+  list_available_groups: 'low',
 };
 
 export interface RuntimeExecutorConfig {
@@ -210,6 +211,7 @@ export function createRuntimeExecutor(
           workDir: config.workDir,
           ...(config.mcp ? { mcp: config.mcp } : {}),
           escalationService,
+          groupRepository: config.groupRepository,
         });
         await router.start();
         sharedToolRouter = router;
@@ -351,6 +353,19 @@ async function executeSingleRun(
 
   const compactionService = budgetManager ? new CompactionService() : undefined;
 
+  // Query available groups for PA system prompt injection
+  let availableGroups;
+  try {
+    availableGroups = await config.groupRepository.listGroupsWithRoles(
+      scope.projectId ?? undefined
+    );
+  } catch (error) {
+    logger.warn('Failed to query available groups for prompt injection', {
+      runId: run.run_id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   const promptComposer = new PromptComposer({
     provider: modelConfig.provider === 'mock' ? undefined : modelConfig.provider,
   });
@@ -366,6 +381,7 @@ async function executeSingleRun(
     budgetManager,
     compactionService,
     skillInjections: skillInjections.length > 0 ? skillInjections : undefined,
+    availableGroups: availableGroups && availableGroups.length > 0 ? availableGroups : undefined,
     workDir: config.workDir,
   });
 

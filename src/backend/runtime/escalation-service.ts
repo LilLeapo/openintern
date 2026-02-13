@@ -19,7 +19,7 @@ export interface EscalateInput {
   parentRunId: string;
   scope: ScopeContext;
   sessionKey: string;
-  groupId: string;
+  groupId?: string;
   goal: string;
   context?: string;
 }
@@ -50,9 +50,14 @@ export class EscalationService {
   /**
    * Escalate a task to a group: create a child group run, set parent to waiting,
    * wait for child completion, then resume parent and return the result.
+   *
+   * When groupId is omitted, auto-selects a suitable group via selectGroup().
    */
   async escalate(input: EscalateInput): Promise<EscalationResult> {
-    const { parentRunId, scope, sessionKey, groupId, goal, context } = input;
+    const { parentRunId, scope, sessionKey, goal, context } = input;
+
+    // Resolve groupId: use provided value or auto-select
+    const groupId = input.groupId ?? await this.selectGroup(goal, scope.projectId ?? undefined);
 
     // Validate group exists and has members
     const group = await this.groupRepository.getGroup(groupId);
@@ -115,6 +120,32 @@ export class EscalationService {
       });
       throw error;
     }
+  }
+
+  /**
+   * Auto-select a group based on the goal.
+   * Phase B simplified strategy: pick the first available group.
+   */
+  private async selectGroup(goal: string, projectId?: string): Promise<string> {
+    const groups = await this.groupRepository.listGroups(projectId);
+    if (groups.length === 0) {
+      throw new ToolError(
+        'No available groups to escalate to' +
+          (projectId ? ` in project ${projectId}` : ''),
+        'escalate_to_group'
+      );
+    }
+
+    // Phase B: simple first-match selection.
+    // Future Phase B+ will use LLM to match goal against group descriptions.
+    const selected = groups[0]!;
+    logger.info('Auto-selected group for escalation', {
+      groupId: selected.id,
+      groupName: selected.name,
+      goal,
+      candidateCount: groups.length,
+    });
+    return selected.id;
   }
 
   /**

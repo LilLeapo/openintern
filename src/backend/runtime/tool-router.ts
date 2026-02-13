@@ -17,6 +17,7 @@ import type { AgentContext } from './tool-policy.js';
 import { ToolPolicy } from './tool-policy.js';
 import type { SkillRegistry } from './skill-registry.js';
 import type { EscalationService } from './escalation-service.js';
+import type { GroupRepository } from './group-repository.js';
 
 type ToolHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -184,6 +185,8 @@ export interface RuntimeToolRouterConfig {
   skillRegistry?: SkillRegistry;
   /** Escalation service for PA -> Group delegation */
   escalationService?: EscalationService;
+  /** Group repository for listing available groups */
+  groupRepository?: GroupRepository;
   /** Current run ID (needed for escalation tool) */
   currentRunId?: string;
   /** Current session key (needed for escalation tool) */
@@ -772,7 +775,7 @@ export class RuntimeToolRouter {
           group_id: {
             type: 'string',
             description:
-              'The ID of the group to escalate to (e.g., grp_abc123).',
+              'Optional. The ID of the group to escalate to. If not provided, a suitable group will be selected automatically based on the goal.',
           },
           goal: {
             type: 'string',
@@ -785,7 +788,7 @@ export class RuntimeToolRouter {
               'Relevant context from the current conversation that the group needs to know',
           },
         },
-        required: ['goal', 'group_id'],
+        required: ['goal'],
       },
       source: 'builtin',
       metadata: {
@@ -812,9 +815,6 @@ export class RuntimeToolRouter {
         const goal = extractString(params['goal']);
         const context = extractString(params['context']);
 
-        if (!groupId) {
-          throw new ToolError('group_id is required', 'escalate_to_group');
-        }
         if (!goal) {
           throw new ToolError('goal is required', 'escalate_to_group');
         }
@@ -823,12 +823,64 @@ export class RuntimeToolRouter {
           parentRunId: this.currentRunId,
           scope: this.scope,
           sessionKey: this.currentSessionKey,
-          groupId,
           goal,
+          ...(groupId ? { groupId } : {}),
           ...(context ? { context } : {}),
         });
 
         return result;
+      },
+    });
+
+    // ─── List available groups tool ──────────────────────────
+
+    this.tools.set('list_available_groups', {
+      name: 'list_available_groups',
+      description:
+        'List all available groups that can be escalated to, along with their capabilities.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project_id: {
+            type: 'string',
+            description:
+              "Optional. Filter groups by project. If not provided, uses the current run's project.",
+          },
+        },
+      },
+      source: 'builtin',
+      metadata: {
+        risk_level: 'low',
+        mutating: false,
+        supports_parallel: true,
+      },
+      handler: async (params) => {
+        const groupRepository = this.config.groupRepository;
+        if (!groupRepository) {
+          throw new ToolError(
+            'Group repository is not configured',
+            'list_available_groups'
+          );
+        }
+
+        const projectId =
+          extractString(params['project_id']) ??
+          this.scope.projectId ??
+          undefined;
+
+        const groups = await groupRepository.listGroupsWithRoles(projectId);
+
+        return {
+          groups: groups.map((g) => ({
+            id: g.id,
+            name: g.name,
+            description: g.description,
+            members: g.members.map((m) => ({
+              role: m.role_name,
+              description: m.role_description,
+            })),
+          })),
+        };
       },
     });
 

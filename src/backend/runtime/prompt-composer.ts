@@ -1,6 +1,7 @@
 import type { Message } from '../../types/agent.js';
 import type { Skill } from '../../types/skill.js';
 import type { AgentContext } from './tool-policy.js';
+import type { GroupWithRoles } from './group-repository.js';
 
 /**
  * Environment context injected into prompts.
@@ -46,6 +47,8 @@ export interface ComposeInput {
   agentContext?: AgentContext;
   environment?: EnvironmentContext;
   budget?: BudgetContext;
+  /** Available groups for escalation (injected into system prompt) */
+  availableGroups?: GroupWithRoles[];
   /** Max recent messages to keep in context */
   maxHistoryMessages?: number;
 }
@@ -78,6 +81,7 @@ const OPENAI_PATCH = `\nWhen using tools, use function calling format with prope
  * 2. Provider-specific patches (OpenAI/Anthropic differences)
  * 3. Role & tool strategy (allowed/denied/risk)
  * 4. Environment context (cwd, date, repo, available tools)
+ * 4.5. Available Groups catalog (for PA escalation)
  * 5. Skill injection fragments
  * 6. Memory summary & recent conversation
  * 7. Max-step / budget warning
@@ -116,6 +120,11 @@ export class PromptComposer {
     // Layer 4: Environment context
     if (input.environment) {
       sections.push(this.buildEnvironmentContext(input.environment));
+    }
+
+    // Layer 4.5: Available Groups catalog
+    if (input.availableGroups && input.availableGroups.length > 0) {
+      sections.push(this.buildGroupCatalog(input.availableGroups));
     }
 
     // Layer 5: Skill injection
@@ -161,6 +170,37 @@ export class PromptComposer {
     if (env.availableToolNames.length > 0) {
       lines.push(`Available tools: ${env.availableToolNames.join(', ')}`);
     }
+    return lines.join('\n');
+  }
+
+  private buildGroupCatalog(groups: GroupWithRoles[]): string {
+    // Limit to first 5 groups in system prompt to avoid bloat
+    const displayed = groups.slice(0, 5);
+    const lines: string[] = ['Available Groups:'];
+    lines.push('You have access to the following specialized groups for complex tasks:');
+    lines.push('');
+
+    for (let i = 0; i < displayed.length; i++) {
+      const group = displayed[i]!;
+      const memberNames = group.members.map((m) => m.role_name).join(', ') || '(none)';
+      lines.push(`${i + 1}. ${group.name} (${group.id})`);
+      if (group.description) {
+        lines.push(`   Description: ${group.description}`);
+      }
+      lines.push(`   Members: ${memberNames}`);
+    }
+
+    if (groups.length > 5) {
+      lines.push('');
+      lines.push(`(${groups.length - 5} more groups available. Use list_available_groups to see all.)`);
+    }
+
+    lines.push('');
+    lines.push('To escalate a task to a group, use the escalate_to_group tool. You can either:');
+    lines.push('- Specify a group_id explicitly if you know which group to use');
+    lines.push('- Let the system auto-select by only providing the goal');
+    lines.push('- Use list_available_groups to see all available groups first');
+
     return lines.join('\n');
   }
 

@@ -21,6 +21,22 @@ interface MemberRow {
   created_at: string | Date;
 }
 
+interface GroupWithRoleRow extends GroupRow {
+  role_id: string | null;
+  role_name: string | null;
+  role_description: string | null;
+}
+
+export interface GroupRoleMember {
+  role_id: string;
+  role_name: string;
+  role_description: string;
+}
+
+export interface GroupWithRoles extends Group {
+  members: GroupRoleMember[];
+}
+
 function toIso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -92,6 +108,45 @@ export class GroupRepository {
       `SELECT * FROM groups ORDER BY created_at DESC`
     );
     return result.rows.map(mapGroupRow);
+  }
+
+  // ─── Group + Roles query ────────────────────────────────
+
+  async listGroupsWithRoles(projectId?: string): Promise<GroupWithRoles[]> {
+    const params: unknown[] = [];
+    let where = '';
+    if (projectId) {
+      params.push(projectId);
+      where = 'WHERE g.project_id = $1';
+    }
+
+    const result = await this.pool.query<GroupWithRoleRow>(
+      `SELECT g.*, r.id AS role_id, r.name AS role_name, r.description AS role_description
+       FROM groups g
+       LEFT JOIN group_members gm ON gm.group_id = g.id
+       LEFT JOIN roles r ON r.id = gm.role_id
+       ${where}
+       ORDER BY g.created_at DESC, gm.ordinal ASC`,
+      params
+    );
+
+    const groupMap = new Map<string, GroupWithRoles>();
+    for (const row of result.rows) {
+      let group = groupMap.get(row.id);
+      if (!group) {
+        group = { ...mapGroupRow(row), members: [] };
+        groupMap.set(row.id, group);
+      }
+      if (row.role_id && row.role_name) {
+        group.members.push({
+          role_id: row.role_id,
+          role_name: row.role_name,
+          role_description: row.role_description ?? '',
+        });
+      }
+    }
+
+    return [...groupMap.values()];
   }
 
   // ─── Member Management ───────────────────────────────────

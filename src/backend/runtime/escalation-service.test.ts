@@ -37,6 +37,7 @@ describe('EscalationService', () => {
   let groupRepository: {
     getGroup: ReturnType<typeof vi.fn>;
     listMembers: ReturnType<typeof vi.fn>;
+    listGroups: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
@@ -68,6 +69,17 @@ describe('EscalationService', () => {
           agent_instance_id: 'ai_inst1',
           ordinal: 0,
           created_at: new Date().toISOString(),
+        },
+      ]),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      listGroups: vi.fn().mockResolvedValue([
+        {
+          id: 'grp_test123456',
+          name: 'Test Group',
+          description: 'A test group',
+          project_id: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         },
       ]),
     };
@@ -218,6 +230,58 @@ describe('EscalationService', () => {
       ).rejects.toThrow(/did not complete/i);
 
       expect(runRepository.setRunResumed).toHaveBeenCalledWith('run_parent12345');
+    });
+
+    it('should auto-select a group when groupId is omitted', async () => {
+      runRepository.getRunById.mockResolvedValue(
+        createMockRunRecord({
+          status: 'completed',
+          result: { output: 'auto-selected result' },
+        })
+      );
+
+      const result = await service.escalate({
+        parentRunId: 'run_parent12345',
+        scope: { orgId: 'org_test', userId: 'user_test', projectId: null },
+        sessionKey: 's_test',
+        goal: 'Analyze the data',
+      });
+
+      expect(groupRepository.listGroups).toHaveBeenCalledWith(undefined);
+      expect(groupRepository.getGroup).toHaveBeenCalledWith('grp_test123456');
+      expect(result.success).toBe(true);
+      expect(result.result).toBe('auto-selected result');
+    });
+
+    it('should throw ToolError when no groups available for auto-selection', async () => {
+      groupRepository.listGroups.mockResolvedValue([]);
+
+      await expect(
+        service.escalate({
+          parentRunId: 'run_parent12345',
+          scope: { orgId: 'org_test', userId: 'user_test', projectId: null },
+          sessionKey: 's_test',
+          goal: 'test',
+        })
+      ).rejects.toThrow(/no available groups/i);
+    });
+
+    it('should pass projectId to listGroups when scope has projectId', async () => {
+      runRepository.getRunById.mockResolvedValue(
+        createMockRunRecord({
+          status: 'completed',
+          result: { output: 'done' },
+        })
+      );
+
+      await service.escalate({
+        parentRunId: 'run_parent12345',
+        scope: { orgId: 'org_test', userId: 'user_test', projectId: 'proj_abc' },
+        sessionKey: 's_test',
+        goal: 'test',
+      });
+
+      expect(groupRepository.listGroups).toHaveBeenCalledWith('proj_abc');
     });
   });
 
