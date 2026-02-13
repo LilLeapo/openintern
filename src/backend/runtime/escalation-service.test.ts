@@ -18,6 +18,7 @@ function createMockRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
     result: null,
     error: null,
     parentRunId: null,
+    delegatedPermissions: null,
     createdAt: new Date().toISOString(),
     startedAt: null,
     endedAt: null,
@@ -282,6 +283,65 @@ describe('EscalationService', () => {
       });
 
       expect(groupRepository.listGroups).toHaveBeenCalledWith('proj_abc');
+    });
+
+    it('should pass explicit delegatedPermissions to child run', async () => {
+      runRepository.getRunById.mockResolvedValue(
+        createMockRunRecord({
+          status: 'completed',
+          result: { output: 'done' },
+        })
+      );
+
+      const dp = { allowed_tools: ['read_file'], denied_tools: ['exec_command'] };
+
+      await service.escalate({
+        parentRunId: 'run_parent12345',
+        scope: { orgId: 'org_test', userId: 'user_test', projectId: null },
+        sessionKey: 's_test',
+        groupId: 'grp_test123456',
+        goal: 'test',
+        delegatedPermissions: dp,
+      });
+
+      expect(runRepository.createRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          delegatedPermissions: dp,
+        })
+      );
+    });
+
+    it('should inherit delegatedPermissions from parent run when not explicitly provided', async () => {
+      const parentDp = { allowed_tools: ['memory_search'], denied_tools: [] };
+      // First call: getRunById for parent run (to read delegated permissions)
+      // Subsequent calls: getRunById for child run (polling)
+      runRepository.getRunById
+        .mockResolvedValueOnce(
+          createMockRunRecord({
+            id: 'run_parent12345',
+            delegatedPermissions: parentDp,
+          })
+        )
+        .mockResolvedValue(
+          createMockRunRecord({
+            status: 'completed',
+            result: { output: 'done' },
+          })
+        );
+
+      await service.escalate({
+        parentRunId: 'run_parent12345',
+        scope: { orgId: 'org_test', userId: 'user_test', projectId: null },
+        sessionKey: 's_test',
+        groupId: 'grp_test123456',
+        goal: 'test',
+      });
+
+      expect(runRepository.createRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          delegatedPermissions: parentDp,
+        })
+      );
     });
   });
 

@@ -1,6 +1,6 @@
 import type { RunRepository } from './run-repository.js';
 import type { GroupRepository } from './group-repository.js';
-import type { RunRecord } from './models.js';
+import type { DelegatedPermissions, RunRecord } from './models.js';
 import type { ScopeContext } from './scope.js';
 import { generateRunId } from '../../utils/ids.js';
 import { ToolError, NotFoundError } from '../../utils/errors.js';
@@ -22,6 +22,8 @@ export interface EscalateInput {
   groupId?: string;
   goal: string;
   context?: string;
+  /** Permissions to delegate to the child group run (Phase C). */
+  delegatedPermissions?: DelegatedPermissions;
 }
 
 export interface EscalationResult {
@@ -79,7 +81,13 @@ export class EscalationService {
 
     const childRunId = generateRunId();
 
-    // Create child group run with parent_run_id
+    // Resolve delegated permissions: explicit > inherited from parent > null
+    const parentRun = await this.runRepository.getRunById(parentRunId);
+    const delegatedPermissions = input.delegatedPermissions
+      ?? parentRun?.delegatedPermissions
+      ?? null;
+
+    // Create child group run with parent_run_id and delegated permissions
     await this.runRepository.createRun({
       id: childRunId,
       scope,
@@ -88,6 +96,7 @@ export class EscalationService {
       agentId: 'orchestrator',
       llmConfig: null,
       parentRunId,
+      ...(delegatedPermissions ? { delegatedPermissions } : {}),
     });
 
     logger.info('Escalation child run created', {

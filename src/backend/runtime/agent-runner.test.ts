@@ -97,6 +97,11 @@ describe('SingleAgentRunner', () => {
         timeline.push('memory_search');
         return [];
       }),
+      memory_search_pa: vi.fn(async () => {
+        timeline.push('memory_search');
+        return [];
+      }),
+      memory_search_tiered: vi.fn(async () => []),
     };
     const checkpointService = {
       save: vi.fn(async () => {
@@ -175,6 +180,11 @@ describe('SingleAgentRunner', () => {
         timeline.push('memory_search');
         return [];
       }),
+      memory_search_pa: vi.fn(async () => {
+        timeline.push('memory_search');
+        return [];
+      }),
+      memory_search_tiered: vi.fn(async () => []),
     };
     const checkpointService = {
       save: vi.fn(async () => {
@@ -248,8 +258,10 @@ describe('SingleAgentRunner', () => {
       'run.started',
       'step.started',
       'llm.called',
+      'tool.batch.started',
       'tool.called',
       'tool.result',
+      'tool.batch.completed',
       'step.completed',
       'step.started',
       'llm.called',
@@ -307,6 +319,11 @@ describe('SingleAgentRunner', () => {
         timeline.push('memory_search');
         return [];
       }),
+      memory_search_pa: vi.fn(async () => {
+        timeline.push('memory_search');
+        return [];
+      }),
+      memory_search_tiered: vi.fn(async () => []),
     };
     const checkpointService = {
       save: vi.fn(async () => {
@@ -372,6 +389,8 @@ describe('SingleAgentRunner', () => {
   it('injects skill catalog into system message for model context', async () => {
     const memoryService = {
       memory_search: vi.fn(async () => []),
+      memory_search_pa: vi.fn(async () => []),
+      memory_search_tiered: vi.fn(async () => []),
     };
     const checkpointService = {
       save: vi.fn(async () => undefined),
@@ -429,6 +448,11 @@ describe('SingleAgentRunner', () => {
         timeline.push('memory_search');
         return [];
       }),
+      memory_search_pa: vi.fn(async () => {
+        timeline.push('memory_search');
+        return [];
+      }),
+      memory_search_tiered: vi.fn(async () => []),
     };
     const checkpointService = {
       save: vi.fn(async () => {
@@ -478,6 +502,8 @@ describe('SingleAgentRunner', () => {
   it('streams llm.token events before llm.called when streaming is available', async () => {
     const memoryService = {
       memory_search: vi.fn(async () => []),
+      memory_search_pa: vi.fn(async () => []),
+      memory_search_tiered: vi.fn(async () => []),
     };
     const checkpointService = {
       save: vi.fn(async () => undefined),
@@ -527,6 +553,8 @@ describe('SingleAgentRunner', () => {
   it('emits RUN_CANCELLED when abort signal is already cancelled', async () => {
     const memoryService = {
       memory_search: vi.fn(async () => []),
+      memory_search_pa: vi.fn(async () => []),
+      memory_search_tiered: vi.fn(async () => []),
     };
     const checkpointService = {
       save: vi.fn(async () => undefined),

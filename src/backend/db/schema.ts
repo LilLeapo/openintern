@@ -313,4 +313,15 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
         CHECK (status IN ('pending', 'running', 'waiting', 'completed', 'failed', 'cancelled'));
     END IF;
   END $$`,
+
+  // ─── Phase C: Permission Passthrough ─────────────────────────
+  // Add delegated_permissions JSONB column to runs table (idempotent)
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'runs' AND column_name = 'delegated_permissions'
+    ) THEN
+      ALTER TABLE runs ADD COLUMN delegated_permissions JSONB;
+    END IF;
+  END $$`,
 ];

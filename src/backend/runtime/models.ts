@@ -3,6 +3,15 @@ import type { ScopeContext } from './scope.js';
 
 export type RunStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
+/**
+ * Permissions delegated from a parent PA run to a child group run.
+ * Used to enforce permission intersection: Group Agent permissions = PA permissions ∩ Role permissions.
+ */
+export interface DelegatedPermissions {
+  allowed_tools?: string[];
+  denied_tools?: string[];
+}
+
 export interface RunRecord {
   id: string;
   orgId: string;
@@ -16,6 +25,7 @@ export interface RunRecord {
   result: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
   parentRunId: string | null;
+  delegatedPermissions: DelegatedPermissions | null;
   createdAt: string;
   startedAt: string | null;
   endedAt: string | null;
@@ -30,6 +40,7 @@ export interface RunCreateInput {
   agentId: string;
   llmConfig: LLMConfigRequest | null;
   parentRunId?: string;
+  delegatedPermissions?: DelegatedPermissions;
 }
 
 export interface EventCursorPage<T> {

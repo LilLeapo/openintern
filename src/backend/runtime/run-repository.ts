@@ -3,7 +3,7 @@ import type { LLMConfigRequest } from '../../types/api.js';
 import type { RunMeta } from '../../types/run.js';
 import { NotFoundError } from '../../utils/errors.js';
 import type { Event } from '../../types/events.js';
-import type { EventCursorPage, RunCreateInput, RunRecord, RunStatus } from './models.js';
+import type { DelegatedPermissions, EventCursorPage, RunCreateInput, RunRecord, RunStatus } from './models.js';
 import { appendScopePredicate, type ScopeContext } from './scope.js';
 
 interface RunRow {
@@ -19,6 +19,7 @@ interface RunRow {
   result: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
   parent_run_id: string | null;
+  delegated_permissions: DelegatedPermissions | null;
   created_at: string | Date;
   started_at: string | Date | null;
   ended_at: string | Date | null;
@@ -61,6 +62,7 @@ function mapRunRow(row: RunRow): RunRecord {
     result: row.result,
     error: row.error,
     parentRunId: row.parent_run_id ?? null,
+    delegatedPermissions: row.delegated_permissions ?? null,
     createdAt: toIso(row.created_at) ?? new Date().toISOString(),
     startedAt: toIso(row.started_at),
     endedAt: toIso(row.ended_at),
@@ -91,8 +93,9 @@ export class RunRepository {
         status,
         agent_id,
         llm_config,
-        parent_run_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9)
+        parent_run_id,
+        delegated_permissions
+      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10::jsonb)
       RETURNING *`,
       [
         input.id,
@@ -104,6 +107,7 @@ export class RunRepository {
         input.agentId,
         input.llmConfig,
         input.parentRunId ?? null,
+        input.delegatedPermissions ? JSON.stringify(input.delegatedPermissions) : null,
       ]
     );
     const row = result.rows[0];

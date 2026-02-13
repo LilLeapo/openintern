@@ -9,6 +9,7 @@ import { CompactionService } from './compaction-service.js';
 import { EpisodicGenerator } from './episodic-generator.js';
 import { EventService } from './event-service.js';
 import { GroupRepository } from './group-repository.js';
+import { KnowledgeDepositor } from './knowledge-depositor.js';
 import { McpConnectionManager, type McpServerConfig } from './mcp-connection-manager.js';
 import { MemoryService } from './memory-service.js';
 import { SerialOrchestrator, type OrchestratorMember } from './orchestrator.js';
@@ -422,6 +423,10 @@ async function executeGroupRun(
     throw new Error(`Group ${groupId} has no members`);
   }
 
+  // Read delegated permissions from the run record (Phase C)
+  const runRecord = await config.runRepository.getRunById(run.run_id);
+  const delegatedPermissions = runRecord?.delegatedPermissions ?? undefined;
+
   // Resolve roles for each member
   const orchMembers: OrchestratorMember[] = [];
   for (const member of members) {
@@ -457,6 +462,7 @@ async function executeGroupRun(
     skillInjections: skillInjections.length > 0 ? skillInjections : undefined,
     workDir: config.workDir,
     budget: config.budget,
+    ...(delegatedPermissions ? { delegatedPermissions } : {}),
   });
 
   const orchestrator = new SerialOrchestrator({
@@ -550,6 +556,21 @@ async function processEvent(
         await generator.generateFromRun(runId, groupId, scope);
       } catch (err) {
         logger.error('Failed to generate episodic memories', {
+          runId,
+          groupId,
+          error: String(err),
+        });
+      }
+
+      // Deposit group results back into parent PA's memory (Phase C)
+      try {
+        const depositor = new KnowledgeDepositor({
+          memoryService: config.memoryService,
+          runRepository: config.runRepository,
+        });
+        await depositor.depositGroupResults(runId, scope, event.payload.output ?? '');
+      } catch (err) {
+        logger.error('Failed to deposit group run knowledge', {
           runId,
           groupId,
           error: String(err),

@@ -145,10 +145,11 @@ export class SingleAgentRunner implements AgentRunner {
               group_id: ctx.groupId,
               agent_instance_id: ctx.agentInstanceId,
             })
-          : await this.config.memoryService.memory_search({
+          : await this.config.memoryService.memory_search_pa({
               query: memoryQuery,
               scope: memoryScope,
               top_k: 6,
+              ...(ctx.agentInstanceId ? { agent_instance_id: ctx.agentInstanceId } : {}),
             });
 
         // ── Compose prompt via PromptComposer ──

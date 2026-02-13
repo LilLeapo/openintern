@@ -472,6 +472,82 @@ export class MemoryService {
   }
 
   /**
+   * PA-specific memory search with 3-tier retrieval priority:
+   *   Tier 1: User preferences (core memories with pa_preference metadata)
+   *   Tier 2: Enterprise knowledge (org-level archival memories)
+   *   Tier 3: Historical task memory (user+project episodic memories)
+   */
+  async memory_search_pa(input: {
+    query: string;
+    scope: MemoryScope;
+    top_k?: number;
+    agent_instance_id?: string;
+  }): Promise<MemorySearchResult[]> {
+    const topK = Math.max(1, Math.min(input.top_k ?? 10, 50));
+    const baseScope = input.scope;
+
+    // Budget allocation per tier
+    const tier1K = Math.ceil(topK * 0.3);  // user preferences
+    const tier2K = Math.ceil(topK * 0.4);  // enterprise knowledge
+    const tier3K = topK - tier1K - tier2K;  // historical task memory
+
+    const merged = new Map<string, MemorySearchResult>();
+
+    const addResults = (results: MemorySearchResult[]): void => {
+      for (const r of results) {
+        const existing = merged.get(r.id);
+        if (!existing || r.score > existing.score) {
+          merged.set(r.id, r);
+        }
+      }
+    };
+
+    // Tier 1: User preferences (core type, scoped to user + agentInstance)
+    const t1 = await this.memory_search({
+      query: input.query,
+      scope: {
+        org_id: baseScope.org_id,
+        user_id: baseScope.user_id,
+        ...(input.agent_instance_id ? { agent_instance_id: input.agent_instance_id } : {}),
+      },
+      top_k: tier1K,
+      filters: { type: 'core' },
+    });
+    addResults(t1);
+
+    // Tier 2: Enterprise knowledge (org-level archival, no user/project/group)
+    const t2 = await this.memory_search({
+      query: input.query,
+      scope: {
+        org_id: baseScope.org_id,
+        user_id: baseScope.user_id,
+      },
+      top_k: tier2K,
+      filters: { type: 'archival' },
+    });
+    addResults(t2);
+
+    // Tier 3: Historical task memory (user+project episodic, no group)
+    if (baseScope.project_id) {
+      const t3 = await this.memory_search({
+        query: input.query,
+        scope: {
+          org_id: baseScope.org_id,
+          user_id: baseScope.user_id,
+          project_id: baseScope.project_id,
+        },
+        top_k: tier3K,
+        filters: { type: 'episodic' },
+      });
+      addResults(t3);
+    }
+
+    return [...merged.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
+  /**
    * Write to group blackboard with role-based access control.
    * Only leads can write core/decision-tagged memories.
    */

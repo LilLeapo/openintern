@@ -1,0 +1,17 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/shared/index.md", "reason": "Shared coding standards"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/backend/api-module.md", "reason": "API module conventions"}
+{"file": ".trellis/spec/backend/quality.md", "reason": "Code quality requirements"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Module organization pattern for new services"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Idempotent migration pattern for delegated_permissions column"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Error class hierarchy for permission-denied errors"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer design for permission passthrough"}
+{"file": "src/backend/runtime/tool-policy.ts", "reason": "Current permission checking logic to extend"}
+{"file": "src/backend/runtime/escalation-service.ts", "reason": "Phase A/B escalation baseline"}
+{"file": "src/backend/runtime/memory-service.ts", "reason": "Current memory scoping and tiered search"}
+{"file": "src/backend/runtime/models.ts", "reason": "RunRecord and RunCreateInput types"}
+{"file": "src/backend/db/schema.ts", "reason": "Database schema for migration pattern"}
+{"file": "docs/architecture/pa-router-architecture.md", "reason": "Phase C requirements (sections 6.2 and 6.3)"}
+{"file": ".trellis/tasks/02-13-pa-escalation-tool/prd.md", "reason": "Phase A PRD baseline"}
+{"file": ".trellis/tasks/02-13-pa-intelligent-routing/prd.md", "reason": "Phase B PRD baseline"}

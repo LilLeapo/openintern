@@ -3,6 +3,7 @@ export { EventService } from './event-service.js';
 export { CheckpointService } from './checkpoint-service.js';
 export { MemoryService } from './memory-service.js';
 export { EscalationService, type EscalationServiceConfig } from './escalation-service.js';
+export { KnowledgeDepositor, type KnowledgeDepositorConfig } from './knowledge-depositor.js';
 export { FeishuRepository, type FeishuSourceState } from './feishu-repository.js';
 export { FeishuClient, type FeishuClientConfig } from './feishu-client.js';
 export { FeishuSyncService, type FeishuSyncServiceConfig } from './feishu-sync-service.js';
@@ -11,3 +12,4 @@ export { MineruIngestService, type MineruIngestServiceConfig } from './mineru-in
 export { createRuntimeExecutor, type RuntimeExecutorConfig } from './executor.js';
 export { resolveRequestScope } from './request-scope.js';
 export { type ScopeContext, toScopeContext } from './scope.js';
+export { type DelegatedPermissions } from './models.js';

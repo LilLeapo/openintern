@@ -204,6 +204,8 @@ export class RuntimeToolRouter {
   private scope: ScopeContext;
   private currentRunId: string | null;
   private currentSessionKey: string | null;
+  /** Current agent context, used by escalation handler to pass delegated permissions */
+  private currentAgentContext: AgentContext | null;
 
   constructor(private readonly config: RuntimeToolRouterConfig) {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -212,6 +214,7 @@ export class RuntimeToolRouter {
     this.skillRegistry = config.skillRegistry ?? null;
     this.currentRunId = config.currentRunId ?? null;
     this.currentSessionKey = config.currentSessionKey ?? null;
+    this.currentAgentContext = null;
     this.mcpClient = config.mcp?.enabled
       ? new MCPClient({
           ...(config.mcp.pythonPath ? { pythonPath: config.mcp.pythonPath } : {}),
@@ -230,6 +233,10 @@ export class RuntimeToolRouter {
   setRunContext(runId: string, sessionKey: string): void {
     this.currentRunId = runId;
     this.currentSessionKey = sessionKey;
+  }
+
+  setAgentContext(agentContext: AgentContext | null): void {
+    this.currentAgentContext = agentContext;
   }
 
   setSkillRegistry(skillRegistry: SkillRegistry | null): void {
@@ -344,6 +351,10 @@ export class RuntimeToolRouter {
       riskLevel: 'low' as const,
       source: tool.source,
     };
+    // Use delegated-aware check when agent has delegated permissions
+    if (agent.delegatedPermissions) {
+      return this.toolPolicy.checkWithDelegated(agent, toolMeta);
+    }
     return this.toolPolicy.check(agent, toolMeta);
   }
 
@@ -826,6 +837,10 @@ export class RuntimeToolRouter {
           goal,
           ...(groupId ? { groupId } : {}),
           ...(context ? { context } : {}),
+          // Pass delegated permissions from current agent context (Phase C)
+          ...(this.currentAgentContext?.delegatedPermissions
+            ? { delegatedPermissions: this.currentAgentContext.delegatedPermissions }
+            : {}),
         });
 
         return result;

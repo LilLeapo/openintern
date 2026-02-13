@@ -4,6 +4,7 @@ import { SingleAgentRunner, type AgentRunner, type SingleAgentRunnerConfig } fro
 import { CheckpointService } from './checkpoint-service.js';
 import { CompactionService } from './compaction-service.js';
 import { MemoryService } from './memory-service.js';
+import type { DelegatedPermissions } from './models.js';
 import { PromptComposer, type SkillInjection } from './prompt-composer.js';
 import { RuntimeToolRouter } from './tool-router.js';
 import { TokenBudgetManager } from './token-budget-manager.js';
@@ -25,6 +26,8 @@ export interface RoleRunnerFactoryConfig {
     warningThreshold?: number;
     reserveTokens?: number;
   };
+  /** Delegated permissions from parent PA run (Phase C). */
+  delegatedPermissions?: DelegatedPermissions;
 }
 
 /**
@@ -38,7 +41,8 @@ export class RoleRunnerFactory {
     const systemPrompt = this.buildRolePrompt(role);
     const agentContext = ToolPolicy.contextFromRole(
       role,
-      agentId ?? role.id
+      agentId ?? role.id,
+      this.config.delegatedPermissions
     );
 
     const promptComposer = new PromptComposer({

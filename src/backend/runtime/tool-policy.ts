@@ -1,5 +1,6 @@
 import type { Role } from '../../types/orchestrator.js';
 import type { RiskLevel } from '../../types/skill.js';
+import type { DelegatedPermissions } from './models.js';
 
 /**
  * Agent context passed to ToolRouter for policy checks.
@@ -9,6 +10,8 @@ export interface AgentContext {
   roleId: string;
   allowedTools: string[];
   deniedTools: string[];
+  /** Permissions delegated from a parent PA run (Phase C). */
+  delegatedPermissions?: DelegatedPermissions;
 }
 
 /**
@@ -118,6 +121,64 @@ export class ToolPolicy {
   }
 
   /**
+   * Check tool access considering delegated permissions from a parent PA run.
+   *
+   * Implements intersection logic:
+   *   Effective permissions = Role permissions ∩ Delegated permissions
+   *   - denied_tools = Role.denied ∪ Delegated.denied (union: either deny blocks)
+   *   - allowed_tools = Role.allowed ∩ Delegated.allowed (intersection: both must allow)
+   *
+   * Priority (highest to lowest):
+   *   1. Delegated denied_tools -> deny
+   *   2. Delegated allowed_tools (if set) and tool not in list -> deny
+   *   3. Role denied_tools -> deny
+   *   4. Role allowed_tools (if set) and tool in list -> allow
+   *   5. Risk-level default
+   */
+  checkWithDelegated(agent: AgentContext, tool: ToolMeta): PolicyCheckResult {
+    // Always-allowed discovery tools bypass all checks
+    if (ToolPolicy.ALWAYS_ALLOWED_TOOLS.has(tool.name)) {
+      return { allowed: true, decision: 'allow', reason: 'Tool is always allowed' };
+    }
+
+    const dp = agent.delegatedPermissions;
+
+    // If no delegated permissions, fall back to standard check
+    if (!dp) {
+      return this.check(agent, tool);
+    }
+
+    // 1. Delegated denied_tools take highest priority
+    if (
+      dp.denied_tools &&
+      dp.denied_tools.length > 0 &&
+      dp.denied_tools.some((entry) => this.matchesPolicyEntry(entry, tool))
+    ) {
+      return {
+        allowed: false,
+        decision: 'deny',
+        reason: `Tool "${tool.name}" is denied by delegated permissions from parent run`,
+      };
+    }
+
+    // 2. Delegated allowed_tools: if set, tool must be in the list
+    if (
+      dp.allowed_tools &&
+      dp.allowed_tools.length > 0 &&
+      !dp.allowed_tools.some((entry) => this.matchesPolicyEntry(entry, tool))
+    ) {
+      return {
+        allowed: false,
+        decision: 'deny',
+        reason: `Tool "${tool.name}" is not in the delegated allowed list from parent run`,
+      };
+    }
+
+    // 3-5. Standard role-based check
+    return this.check(agent, tool);
+  }
+
+  /**
    * Check whether a tool requires explicit human approval.
    */
   needsApproval(agent: AgentContext, tool: ToolMeta): boolean {
@@ -138,12 +199,13 @@ export class ToolPolicy {
   /**
    * Build AgentContext from a Role definition.
    */
-  static contextFromRole(role: Role, agentId: string): AgentContext {
+  static contextFromRole(role: Role, agentId: string, delegatedPermissions?: DelegatedPermissions): AgentContext {
     return {
       agentId,
       roleId: role.id,
       allowedTools: role.allowed_tools,
       deniedTools: role.denied_tools,
+      ...(delegatedPermissions ? { delegatedPermissions } : {}),
     };
   }
 }
