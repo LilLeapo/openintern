@@ -282,6 +282,42 @@ export class RunRepository {
     };
   }
 
+  /**
+   * Fetch completed prior runs in a session for conversation history reconstruction.
+   * Returns only the fields needed (id, input, result) ordered oldest-first.
+   */
+  async listSessionHistory(
+    scope: ScopeContext,
+    sessionKey: string,
+    limit: number
+  ): Promise<Array<{ id: string; input: string; result: string | null }>> {
+    const result = await this.pool.query<{
+      id: string;
+      input: string;
+      result: Record<string, unknown> | null;
+    }>(
+      `SELECT id, input, result
+      FROM runs
+      WHERE session_key = $1
+        AND org_id = $2
+        AND user_id = $3
+        AND project_id IS NOT DISTINCT FROM $4
+        AND status = 'completed'
+        AND parent_run_id IS NULL
+      ORDER BY created_at DESC
+      LIMIT $5`,
+      [sessionKey, scope.orgId, scope.userId, scope.projectId, limit]
+    );
+
+    return result.rows.reverse().map((row) => ({
+      id: row.id,
+      input: row.input,
+      result: row.result && typeof row.result === 'object' && 'output' in row.result
+        ? String(row.result.output)
+        : null,
+    }));
+  }
+
   async getChildRuns(parentRunId: string): Promise<RunMeta[]> {
     const result = await this.pool.query<RunRow>(
       `SELECT

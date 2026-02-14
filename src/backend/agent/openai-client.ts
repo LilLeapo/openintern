@@ -70,7 +70,7 @@ export class OpenAIClient implements ILLMClient {
       model: this.model,
       messages: messages.map((m) => this.mapMessage(m)),
       temperature: this.temperature,
-      max_tokens: this.maxTokens,
+      max_completion_tokens: this.maxTokens,
     };
 
     if (tools && tools.length > 0) {

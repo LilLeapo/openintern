@@ -14,13 +14,13 @@ export interface ToolPermission {
 }
 
 const DEFAULT_PERMISSIONS: Record<string, ToolPermission> = {
-  'file.read': { read: true, write: false, execute: false },
-  'file.write': { read: false, write: true, execute: false },
-  'file.list': { read: true, write: false, execute: false },
-  'file.exists': { read: true, write: false, execute: false },
-  'memory.write': { read: false, write: true, execute: false },
-  'memory.search': { read: true, write: false, execute: false },
-  'memory.get': { read: true, write: false, execute: false },
+  'file_read': { read: true, write: false, execute: false },
+  'file_write': { read: false, write: true, execute: false },
+  'file_list': { read: true, write: false, execute: false },
+  'file_exists': { read: true, write: false, execute: false },
+  'memory_write': { read: false, write: true, execute: false },
+  'memory_search': { read: true, write: false, execute: false },
+  'memory_get': { read: true, write: false, execute: false },
 };
 
 export class PermissionMatrix {

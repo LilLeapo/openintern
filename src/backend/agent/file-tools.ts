@@ -2,10 +2,10 @@
  * File Tools - Built-in file operation tools for the Agent
  *
  * Tools:
- * - file.read: Read file content
- * - file.write: Write content to file
- * - file.list: List directory contents
- * - file.exists: Check if file/directory exists
+ * - file_read: Read file content
+ * - file_write: Write content to file
+ * - file_list: List directory contents
+ * - file_exists: Check if file/directory exists
  */
 
 import fs from 'node:fs';
@@ -34,11 +34,11 @@ export function createFileTools(baseDir: string, customWorkDir?: string): Tool[]
 }
 
 /**
- * file.read - Read file content
+ * file_read - Read file content
  */
 function createFileReadTool(workDir: string, pathGuard: PathGuard): Tool {
   return {
-    name: 'file.read',
+    name: 'file_read',
     description: 'Read the content of a file. Returns the text content of the specified file.',
     parameters: {
       type: 'object',
@@ -53,7 +53,7 @@ function createFileReadTool(workDir: string, pathGuard: PathGuard): Tool {
     execute: async (params) => {
       const filePath = params['path'] as string;
       if (!filePath || typeof filePath !== 'string') {
-        throw new ToolError('path is required and must be a string', 'file.read');
+        throw new ToolError('path is required and must be a string', 'file_read');
       }
 
       const resolved = await pathGuard.validate(filePath, workDir);
@@ -63,12 +63,12 @@ function createFileReadTool(workDir: string, pathGuard: PathGuard): Tool {
 
       const stat = await fs.promises.stat(resolved);
       if (!stat.isFile()) {
-        throw new ToolError(`"${filePath}" is not a file`, 'file.read');
+        throw new ToolError(`"${filePath}" is not a file`, 'file_read');
       }
       if (stat.size > MAX_READ_SIZE) {
         throw new ToolError(
           `File too large (${stat.size} bytes, max ${MAX_READ_SIZE})`,
-          'file.read'
+          'file_read'
         );
       }
 
@@ -80,11 +80,11 @@ function createFileReadTool(workDir: string, pathGuard: PathGuard): Tool {
 }
 
 /**
- * file.write - Write content to file
+ * file_write - Write content to file
  */
 function createFileWriteTool(workDir: string, pathGuard: PathGuard): Tool {
   return {
-    name: 'file.write',
+    name: 'file_write',
     description: 'Write content to a file. Creates parent directories if needed. Overwrites existing file.',
     parameters: {
       type: 'object',
@@ -105,10 +105,10 @@ function createFileWriteTool(workDir: string, pathGuard: PathGuard): Tool {
       const content = params['content'] as string;
 
       if (!filePath || typeof filePath !== 'string') {
-        throw new ToolError('path is required and must be a string', 'file.write');
+        throw new ToolError('path is required and must be a string', 'file_write');
       }
       if (typeof content !== 'string') {
-        throw new ToolError('content must be a string', 'file.write');
+        throw new ToolError('content must be a string', 'file_write');
       }
 
       // Write size limit
@@ -134,11 +134,11 @@ function createFileWriteTool(workDir: string, pathGuard: PathGuard): Tool {
 }
 
 /**
- * file.list - List directory contents
+ * file_list - List directory contents
  */
 function createFileListTool(workDir: string, pathGuard: PathGuard): Tool {
   return {
-    name: 'file.list',
+    name: 'file_list',
     description: 'List files and directories in a given path. Returns names and types.',
     parameters: {
       type: 'object',
@@ -170,11 +170,11 @@ function createFileListTool(workDir: string, pathGuard: PathGuard): Tool {
 }
 
 /**
- * file.exists - Check if file/directory exists
+ * file_exists - Check if file/directory exists
  */
 function createFileExistsTool(workDir: string, pathGuard: PathGuard): Tool {
   return {
-    name: 'file.exists',
+    name: 'file_exists',
     description: 'Check if a file or directory exists at the given path.',
     parameters: {
       type: 'object',
@@ -189,7 +189,7 @@ function createFileExistsTool(workDir: string, pathGuard: PathGuard): Tool {
     execute: async (params) => {
       const filePath = params['path'] as string;
       if (!filePath || typeof filePath !== 'string') {
-        throw new ToolError('path is required and must be a string', 'file.exists');
+        throw new ToolError('path is required and must be a string', 'file_exists');
       }
 
       const resolved = await pathGuard.validate(filePath, workDir);

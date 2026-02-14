@@ -1171,9 +1171,11 @@ export class RuntimeToolRouter {
     const tools = (await this.mcpClient.listTools()) as MCPToolDefinition[];
     const seen = new Set<string>();
     for (const tool of tools) {
-      seen.add(tool.name);
-      this.tools.set(tool.name, {
-        name: tool.name,
+      // Sanitize tool name: replace dots and other special chars with underscores
+      const sanitizedName = tool.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+      seen.add(sanitizedName);
+      this.tools.set(sanitizedName, {
+        name: sanitizedName,
         description: tool.description,
         parameters: tool.inputSchema,
         source: 'mcp',

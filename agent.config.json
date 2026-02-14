@@ -1,8 +1,9 @@
 {
   "llm": {
-    "provider": "anthropic",
-    "model": "MiniMax-M2.1",
-    "baseUrl": "https://api.minimaxi.com/anthropic",
+    "provider": "openai",
+    "model": "gemini-3-pro-preview",
+    "baseUrl": "https://apic1.ohmycdn.com/v1",
+    "apiKey": "sk-BkNJCPZG974e10cE793bT3BLBkFJF8B4d984b5Db4e4f8Eac",
     "temperature": 0.7,
     "maxTokens": 2000
   },
@@ -27,5 +28,24 @@
       "maxCalls": 60,
       "windowMs": 60000
     }
+  },
+    "feishu": {
+    "enabled": true,
+    "appId": "cli_a9fbc8376a399cd2",
+    "appSecret": "tBRv3snpiOV2AJ1tmlO1Oe0vsc0CBr67",
+    "baseUrl": "https://open.feishu.cn",
+    "pollIntervalMs": 120000
+  },
+    "mineru": {
+    "enabled": true,
+    "mode": "v4",
+    "apiKey": "eyJ0eXBlIjoiSldUIiwiYWxnIjoiSFM1MTIifQ.eyJqdGkiOiI0MzIwNzA0MCIsInJvbCI6IlJPTEVfUkVHSVNURVIiLCJpc3MiOiJPcGVuWExhYiIsImlhdCI6MTc3MDg4NzUzMywiY2xpZW50SWQiOiJsa3pkeDU3bnZ5MjJqa3BxOXgydyIsInBob25lIjoiIiwib3BlbklkIjpudWxsLCJ1dWlkIjoiYjZlY2ZlMzMtOTQxYS00M2FkLTlhYTgtYmMzM2JkNTQ4NmRiIiwiZW1haWwiOiIiLCJleHAiOjE3Nzg2NjM1MzN9.QFo5WfJYMs4MIMNBjpIZy9RdULF3DmG6XuaDZhN9PCHSMG6k2NG5725nEyk3DRE8kveQuYIFs2ncpHmZGJvuaw",
+    "baseUrl": "https://mineru.net/api/v4",
+    "uidToken": "",
+    "timeoutMs": 20000,
+    "maxRetries": 3,
+    "pollIntervalMs": 3000,
+    "maxPollAttempts": 120,
+    "defaultModelVersion": "pipeline"
   }
 }

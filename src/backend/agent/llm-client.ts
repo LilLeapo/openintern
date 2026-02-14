@@ -18,6 +18,7 @@ import type {
 import { logger } from '../../utils/logger.js';
 import { OpenAIClient } from './openai-client.js';
 import { AnthropicClient } from './anthropic-client.js';
+import { GeminiClient } from './gemini-client.js';
 
 export interface LLMCallOptions {
   signal?: AbortSignal;
@@ -207,11 +208,11 @@ export class MockLLMClient implements ILLMClient {
     const lowerInput = userInput.toLowerCase();
 
     if (lowerInput.includes('remember') || lowerInput.includes('save')) {
-      const memoryWriteTool = tools.find((t) => t.name === 'memory.write');
+      const memoryWriteTool = tools.find((t) => t.name === 'memory_write');
       if (memoryWriteTool) {
         const toolCall: ToolCall = {
           id: `tc_${Date.now()}`,
-          name: 'memory.write',
+          name: 'memory_write',
           parameters: {
             content: userInput,
             tags: ['user-request'],
@@ -231,11 +232,11 @@ export class MockLLMClient implements ILLMClient {
     }
 
     if (lowerInput.includes('search') || lowerInput.includes('find')) {
-      const memorySearchTool = tools.find((t) => t.name === 'memory.search');
+      const memorySearchTool = tools.find((t) => t.name === 'memory_search');
       if (memorySearchTool) {
         const toolCall: ToolCall = {
           id: `tc_${Date.now()}`,
-          name: 'memory.search',
+          name: 'memory_search',
           parameters: {
             query: userInput,
             topK: 5,
@@ -281,6 +282,8 @@ export function createLLMClient(config: LLMConfig): ILLMClient {
       return new OpenAIClient(config);
     case 'anthropic':
       return new AnthropicClient(config);
+    case 'gemini':
+      return new GeminiClient(config);
     default: {
       const exhaustiveCheck: never = config.provider;
       throw new Error(`Unknown LLM provider: ${String(exhaustiveCheck)}`);

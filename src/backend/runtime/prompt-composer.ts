@@ -36,7 +36,7 @@ export interface PromptComposerConfig {
   /** Base system prompt override */
   basePrompt?: string;
   /** LLM provider for provider-specific patches */
-  provider?: 'openai' | 'anthropic' | 'mock';
+  provider?: 'openai' | 'anthropic' | 'gemini' | 'mock';
 }
 
 export interface ComposeInput {
@@ -73,6 +73,7 @@ Keep answers concise and actionable.`;
 
 const ANTHROPIC_PATCH = `\nWhen using tools, prefer structured JSON arguments. Use tool_use blocks for tool calls.`;
 const OPENAI_PATCH = `\nWhen using tools, use function calling format with proper JSON arguments.`;
+const GEMINI_PATCH = `\nWhen using tools, use function calling format with proper JSON arguments.`;
 
 /**
  * PromptComposer builds layered system prompts following the P0 design:
@@ -144,6 +145,7 @@ export class PromptComposer {
   private buildProviderPatch(): string {
     if (this.provider === 'anthropic') return ANTHROPIC_PATCH.trim();
     if (this.provider === 'openai') return OPENAI_PATCH.trim();
+    if (this.provider === 'gemini') return GEMINI_PATCH.trim();
     return '';
   }
 

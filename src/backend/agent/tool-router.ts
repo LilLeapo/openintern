@@ -127,9 +127,9 @@ export class ToolRouter {
    * Register built-in memory tools
    */
   private registerBuiltinTools(): void {
-    // memory.write tool
+    // memory_write tool
     this.registerTool({
-      name: 'memory.write',
+      name: 'memory_write',
       description: 'Write content to memory for later retrieval',
       parameters: {
         type: 'object',
@@ -151,9 +151,9 @@ export class ToolRouter {
       },
     });
 
-    // memory.search tool
+    // memory_search tool
     this.registerTool({
-      name: 'memory.search',
+      name: 'memory_search',
       description: 'Search memory for relevant content',
       parameters: {
         type: 'object',
@@ -174,9 +174,9 @@ export class ToolRouter {
       },
     });
 
-    // memory.get tool
+    // memory_get tool
     this.registerTool({
-      name: 'memory.get',
+      name: 'memory_get',
       description: 'Get a specific memory item by ID',
       parameters: {
         type: 'object',
@@ -194,7 +194,7 @@ export class ToolRouter {
     });
 
     logger.info('Built-in tools registered', {
-      tools: ['memory.write', 'memory.search', 'memory.get'],
+      tools: ['memory_write', 'memory_search', 'memory_get'],
     });
   }
 
@@ -208,7 +208,7 @@ export class ToolRouter {
     const tags = (params['tags'] as string[]) ?? [];
 
     if (!content || typeof content !== 'string') {
-      throw new ToolError('content is required and must be a string', 'memory.write');
+      throw new ToolError('content is required and must be a string', 'memory_write');
     }
 
     const now = new Date().toISOString();
@@ -237,7 +237,7 @@ export class ToolRouter {
     const topK = (params['topK'] as number) ?? 5;
 
     if (!query || typeof query !== 'string') {
-      throw new ToolError('query is required and must be a string', 'memory.search');
+      throw new ToolError('query is required and must be a string', 'memory_search');
     }
 
     // Use hybrid search (vector + keyword) when available
@@ -263,7 +263,7 @@ export class ToolRouter {
     const id = params['id'] as string;
 
     if (!id || typeof id !== 'string') {
-      throw new ToolError('id is required and must be a string', 'memory.get');
+      throw new ToolError('id is required and must be a string', 'memory_get');
     }
 
     const item = await this.memoryStore.get(id);

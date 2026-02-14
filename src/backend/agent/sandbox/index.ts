@@ -30,8 +30,8 @@ export interface ToolSandboxConfig {
 }
 
 /** Tools that operate on file paths */
-const FILE_TOOLS = new Set(['file.read', 'file.write', 'file.list', 'file.exists']);
-const WRITE_TOOLS = new Set(['file.write']);
+const FILE_TOOLS = new Set(['file_read', 'file_write', 'file_list', 'file_exists']);
+const WRITE_TOOLS = new Set(['file_write']);
 
 export class ToolSandbox {
   private enabled: boolean;

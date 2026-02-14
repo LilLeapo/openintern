@@ -24,6 +24,8 @@ export interface RunnerContext {
   groupId?: string;
   agentInstanceId?: string;
   abortSignal?: AbortSignal;
+  /** Prior conversation history from earlier runs in the same session */
+  history?: Message[];
 }
 
 export interface RunnerResult {
@@ -86,8 +88,8 @@ export class SingleAgentRunner implements AgentRunner {
     this.maxSteps = config.maxSteps;
     this.toolScheduler = config.toolScheduler ?? new ToolCallScheduler();
     this.promptComposer = config.promptComposer ?? new PromptComposer({
-      basePrompt: config.systemPrompt,
-      provider: config.modelConfig.provider === 'mock' ? undefined : config.modelConfig.provider,
+      ...(config.systemPrompt != null && { basePrompt: config.systemPrompt }),
+      ...(config.modelConfig.provider !== 'mock' && { provider: config.modelConfig.provider }),
     });
     this.budgetManager = config.budgetManager ?? null;
     this.compactionService = config.compactionService ?? null;
@@ -100,7 +102,10 @@ export class SingleAgentRunner implements AgentRunner {
   }
 
   async *run(input: string, ctx: RunnerContext): AsyncGenerator<Event, RunnerResult, void> {
-    let messages: Message[] = [{ role: 'user', content: input }];
+    let messages: Message[] = [
+      ...(ctx.history ?? []),
+      { role: 'user', content: input },
+    ];
     const llmClient = createLLMClient(this.config.modelConfig);
     const rootSpan = generateSpanId();
     const startedAt = Date.now();

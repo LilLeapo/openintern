@@ -47,9 +47,8 @@ export class RoleRunnerFactory {
 
     const promptComposer = new PromptComposer({
       basePrompt: systemPrompt,
-      provider: this.config.modelConfig.provider === 'mock'
-        ? undefined
-        : this.config.modelConfig.provider,
+      ...(this.config.modelConfig.provider !== 'mock'
+        && { provider: this.config.modelConfig.provider }),
     });
 
     const budgetManager = this.config.budget

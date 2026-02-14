@@ -1,5 +1,5 @@
 import type { QueuedRun } from '../../types/api.js';
-import type { LLMConfig } from '../../types/agent.js';
+import type { LLMConfig, Message } from '../../types/agent.js';
 import type { Event } from '../../types/events.js';
 import { SSEManager } from '../api/sse.js';
 import { logger } from '../../utils/logger.js';
@@ -368,7 +368,7 @@ async function executeSingleRun(
   }
 
   const promptComposer = new PromptComposer({
-    provider: modelConfig.provider === 'mock' ? undefined : modelConfig.provider,
+    ...(modelConfig.provider !== 'mock' && { provider: modelConfig.provider }),
   });
 
   const runner = new SingleAgentRunner({
@@ -386,6 +386,25 @@ async function executeSingleRun(
     workDir: config.workDir,
   });
 
+  // Reconstruct conversation history from prior completed runs in the same session
+  const history: Message[] = [];
+  try {
+    const priorRuns = await config.runRepository.listSessionHistory(scope, run.session_key, 20);
+    for (const priorRun of priorRuns) {
+      if (priorRun.id === run.run_id) continue;
+      history.push({ role: 'user', content: priorRun.input });
+      if (priorRun.result) {
+        history.push({ role: 'assistant', content: priorRun.result });
+      }
+    }
+  } catch (error) {
+    logger.warn('Failed to reconstruct session history', {
+      runId: run.run_id,
+      sessionKey: run.session_key,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   const status = await consumeEventStream(
     config,
     run.run_id,
@@ -395,6 +414,7 @@ async function executeSingleRun(
       scope,
       agentId: run.agent_id,
       abortSignal: signal,
+      ...(history.length > 0 ? { history } : {}),
     }),
     signal
   );

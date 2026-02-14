@@ -197,7 +197,7 @@ export interface ContextConfig {
  * LLM client configuration
  */
 export interface LLMConfig {
-  provider: 'openai' | 'anthropic' | 'mock';
+  provider: 'openai' | 'anthropic' | 'gemini' | 'mock';
   model: string;
   apiKey?: string;
   baseUrl?: string;
@@ -210,7 +210,7 @@ export interface LLMConfig {
  */
 export interface AgentConfig {
   llm?: {
-    provider?: 'openai' | 'anthropic' | 'mock';
+    provider?: 'openai' | 'anthropic' | 'gemini' | 'mock';
     model?: string;
     apiKey?: string;
     baseUrl?: string;
