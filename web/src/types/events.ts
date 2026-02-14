@@ -93,16 +93,6 @@ export interface GetRunEventsResponse {
   next_cursor?: string | null;
 }
 
-export interface ChatAttachment {
-  uploadId: string;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  kind: 'image' | 'text' | 'binary';
-  downloadUrl: string;
-  textExcerpt?: string;
-}
-
 // Chat message type for UI
 export interface ChatMessage {
   id: string;
@@ -110,5 +100,4 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   runId?: string;
-  attachments?: ChatAttachment[];
 }

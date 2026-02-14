@@ -9,7 +9,6 @@ export { FeishuClient, type FeishuClientConfig } from './feishu-client.js';
 export { FeishuSyncService, type FeishuSyncServiceConfig } from './feishu-sync-service.js';
 export { MineruClient, type MineruClientConfig } from './mineru-client.js';
 export { MineruIngestService, type MineruIngestServiceConfig } from './mineru-ingest-service.js';
-export { UploadService, buildAttachmentPromptSuffix, type UploadRecord, type UploadReference } from './upload-service.js';
 export { createRuntimeExecutor, type RuntimeExecutorConfig } from './executor.js';
 export { resolveRequestScope } from './request-scope.js';
 export { type ScopeContext, toScopeContext } from './scope.js';

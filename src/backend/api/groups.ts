@@ -13,7 +13,7 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { QueuedRun } from '../../types/api.js';
-import { AttachmentReferenceSchema, LLMConfigRequestSchema } from '../../types/api.js';
+import { LLMConfigRequestSchema } from '../../types/api.js';
 import { CreateGroupSchema, AddMemberSchema } from '../../types/orchestrator.js';
 import { AgentError, ValidationError } from '../../utils/errors.js';
 import { generateRunId } from '../../utils/ids.js';
@@ -23,26 +23,23 @@ import { resolveRequestScope } from '../runtime/request-scope.js';
 import { RoleRepository } from '../runtime/role-repository.js';
 import { RunRepository } from '../runtime/run-repository.js';
 import { RunQueue } from '../queue/run-queue.js';
-import { UploadService, buildAttachmentPromptSuffix } from '../runtime/upload-service.js';
 
 export interface GroupsRouterConfig {
   groupRepository: GroupRepository;
   roleRepository: RoleRepository;
   runRepository: RunRepository;
   runQueue: RunQueue;
-  uploadService: UploadService;
 }
 
 const GroupRunRequestSchema = z.object({
   input: z.string().min(1),
   session_key: z.string().regex(/^s_[a-zA-Z0-9_]+$/).optional(),
   llm_config: LLMConfigRequestSchema,
-  attachments: z.array(AttachmentReferenceSchema).max(10).optional(),
 });
 
 export function createGroupsRouter(config: GroupsRouterConfig): Router {
   const router = Router();
-  const { groupRepository, roleRepository, runRepository, runQueue, uploadService } = config;
+  const { groupRepository, roleRepository, runRepository, runQueue } = config;
 
   // POST /api/groups
   router.post('/groups', (req: Request, res: Response) => {
@@ -151,15 +148,9 @@ export function createGroupsRouter(config: GroupsRouterConfig): Router {
             firstError?.path.join('.') ?? 'body'
           );
         }
-        const { input, session_key, llm_config, attachments: attachmentRefs } = parseResult.data;
+        const { input, session_key, llm_config } = parseResult.data;
 
         const scope = resolveRequestScope(req);
-        const attachments = attachmentRefs && attachmentRefs.length > 0
-          ? await uploadService.resolveMany(scope, attachmentRefs)
-          : [];
-        const enrichedInput = attachments.length > 0
-          ? `${input}${buildAttachmentPromptSuffix(attachments)}`
-          : input;
         const runId = generateRunId();
         const sessionKey = session_key ?? 's_default';
         const agentId = `group:${groupId}`;
@@ -168,7 +159,7 @@ export function createGroupsRouter(config: GroupsRouterConfig): Router {
           id: runId,
           scope,
           sessionKey,
-          input: enrichedInput,
+          input,
           agentId,
           llmConfig: llm_config ?? null,
         });

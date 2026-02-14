@@ -17,12 +17,6 @@ export interface ChatMessageProps {
 
 const remarkPlugins = [remarkGfm];
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
 export function ChatMessage({ message }: ChatMessageProps) {
   const { t } = useLocaleText();
   const isUser = message.role === 'user';
@@ -87,41 +81,6 @@ export function ChatMessage({ message }: ChatMessageProps) {
             {message.content}
           </ReactMarkdown>
         </div>
-        {message.attachments && message.attachments.length > 0 && (
-          <div className={styles.messageAttachments}>
-            {message.attachments.map((attachment) => (
-              <div key={attachment.uploadId} className={styles.attachmentItem}>
-                {attachment.kind === 'image' && (
-                  <a
-                    href={attachment.downloadUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className={styles.attachmentLink}
-                  >
-                    <img
-                      src={attachment.downloadUrl}
-                      alt={attachment.fileName}
-                      className={styles.attachmentThumb}
-                    />
-                  </a>
-                )}
-                <div className={styles.attachmentMeta}>
-                  <a
-                    href={attachment.downloadUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className={styles.attachmentLink}
-                  >
-                    {attachment.fileName}
-                  </a>
-                  <span className={styles.attachmentKind}>
-                    {attachment.kind} · {formatBytes(attachment.sizeBytes)}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );

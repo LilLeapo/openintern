@@ -6,11 +6,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { apiClient } from '../api/client';
 import { useSSE } from './useSSE';
 import type { ChatMessage } from '../types/events';
-import type {
-  AttachmentReference,
-  RunLLMConfig,
-  UploadedAttachment,
-} from '../api/client';
+import type { RunLLMConfig } from '../api/client';
 
 interface ActiveRunState {
   runId: string;
@@ -42,7 +38,7 @@ export interface UseChatResult {
   latestRunId: string | null;
   error: Error | null;
   escalation: EscalationInfo | null;
-  sendMessage: (input: string, files?: File[]) => Promise<void>;
+  sendMessage: (input: string) => Promise<void>;
   clearMessages: () => void;
 }
 
@@ -106,29 +102,6 @@ function updateSessionMessages(
   };
 }
 
-function toAttachmentReferences(attachments: UploadedAttachment[]): AttachmentReference[] {
-  return attachments.map((attachment) => ({ upload_id: attachment.uploadId }));
-}
-
-function toChatAttachments(attachments: UploadedAttachment[]): ChatMessage['attachments'] {
-  return attachments.map((attachment) => ({
-    uploadId: attachment.uploadId,
-    fileName: attachment.fileName,
-    mimeType: attachment.mimeType,
-    sizeBytes: attachment.sizeBytes,
-    kind: attachment.kind,
-    downloadUrl: attachment.downloadUrl,
-    ...(attachment.textExcerpt ? { textExcerpt: attachment.textExcerpt } : {}),
-  }));
-}
-
-function fallbackMessageForAttachments(attachments: UploadedAttachment[]): string {
-  if (attachments.length === 1) {
-    return `[Attachment] ${attachments[0]!.fileName}`;
-  }
-  return `[Attachments] ${attachments.length} files`;
-}
-
 export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResult {
   const [messagesBySession, setMessagesBySession] = useState<MessageMap>(readStoredMessages);
   const [latestRunBySession, setLatestRunBySession] = useState<RunIdMap>(readStoredLatestRuns);
@@ -153,7 +126,6 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
   const streamingMsgId = useRef<string | null>(null);
   const lastProcessedIdx = useRef<number>(0);
   const activeRunRef = useRef<ActiveRunState | null>(null);
-  const sendingRef = useRef(false);
 
   useEffect(() => {
     activeRunRef.current = activeRun;
@@ -335,9 +307,8 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
   }, [events, clearEvents]);
 
   const sendMessage = useCallback(
-    async (input: string, files: File[] = []) => {
-      const trimmedInput = input.trim();
-      if ((!trimmedInput && files.length === 0) || activeRunRef.current || sendingRef.current) return;
+    async (input: string) => {
+      if (!input.trim() || activeRunRef.current) return;
       if (runMode === 'group' && !selectedGroupId) {
         setErrorBySession(prev => ({
           ...prev,
@@ -346,41 +317,26 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
         return;
       }
 
-      sendingRef.current = true;
-      try {
-        const uploadedAttachments: UploadedAttachment[] = [];
-        for (const file of files) {
-          uploadedAttachments.push(await apiClient.uploadAttachment(file));
-        }
-        const attachmentRefs = toAttachmentReferences(uploadedAttachments);
-        const userMessage: ChatMessage = {
-          id: generateId(),
-          role: 'user',
-          content: trimmedInput || fallbackMessageForAttachments(uploadedAttachments),
-          timestamp: new Date().toISOString(),
-          ...(uploadedAttachments.length > 0
-            ? { attachments: toChatAttachments(uploadedAttachments) }
-            : {}),
-        };
-        setMessagesBySession(prev =>
-          updateSessionMessages(prev, sessionKey, messages => [...messages, userMessage]),
-        );
-        setErrorBySession(prev => ({ ...prev, [sessionKey]: null }));
+      // Add user message
+      const userMessage: ChatMessage = {
+        id: generateId(),
+        role: 'user',
+        content: input,
+        timestamp: new Date().toISOString(),
+      };
+      setMessagesBySession(prev =>
+        updateSessionMessages(prev, sessionKey, messages => [...messages, userMessage]),
+      );
+      setErrorBySession(prev => ({ ...prev, [sessionKey]: null }));
 
-        const runInput = trimmedInput || 'Please analyze the attached files and summarize key points.';
+      try {
         const response = runMode === 'group' && selectedGroupId
           ? await apiClient.createGroupRun(selectedGroupId, {
-              input: runInput,
+              input,
               session_key: sessionKey,
               ...(llmConfig ? { llm_config: llmConfig } : {}),
-              ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
             })
-          : await apiClient.createRun(
-              sessionKey,
-              runInput,
-              llmConfig,
-              attachmentRefs.length > 0 ? attachmentRefs : undefined,
-            );
+          : await apiClient.createRun(sessionKey, input, llmConfig);
         const nextRun = { runId: response.run_id, sessionKey };
         setActiveRun(nextRun);
         setLatestRunBySession(prev => ({ ...prev, [sessionKey]: response.run_id }));
@@ -389,8 +345,6 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
           ...prev,
           [sessionKey]: err instanceof Error ? err : new Error('Failed to send'),
         }));
-      } finally {
-        sendingRef.current = false;
       }
     },
     [sessionKey, llmConfig, runMode, selectedGroupId],

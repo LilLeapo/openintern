@@ -15,12 +15,6 @@ export const LLMConfigRequestSchema = z.object({
 
 export type LLMConfigRequest = z.infer<typeof LLMConfigRequestSchema>;
 
-export const AttachmentReferenceSchema = z.object({
-  upload_id: z.string().regex(/^upl_[a-zA-Z0-9]+$/),
-});
-
-export type AttachmentReference = z.infer<typeof AttachmentReferenceSchema>;
-
 /**
  * Create run request schema
  */
@@ -32,7 +26,6 @@ export const CreateRunRequestSchema = z.object({
   input: z.string().min(1),
   agent_id: z.string().min(1).optional(),
   llm_config: LLMConfigRequestSchema,
-  attachments: z.array(AttachmentReferenceSchema).max(10).optional(),
 });
 
 export type CreateRunRequest = z.infer<typeof CreateRunRequestSchema>;
