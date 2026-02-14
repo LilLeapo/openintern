@@ -39,7 +39,7 @@ export function TracePage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiClient.getEvents(runId);
+      const data = await apiClient.getEvents(runId, undefined, { includeTokens: false });
       setEvents(data);
     } catch (err) {
       setError(err instanceof Error ? err : new Error(t('Failed to load', '加载失败')));

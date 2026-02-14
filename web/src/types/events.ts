@@ -90,6 +90,7 @@ export interface ListRunsResponse {
 export interface GetRunEventsResponse {
   events: Event[];
   total: number;
+  next_cursor?: string | null;
 }
 
 // Chat message type for UI

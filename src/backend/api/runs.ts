@@ -55,6 +55,20 @@ function parsePositiveInt(
   return parsed;
 }
 
+function parseBoolean(raw: string | undefined, fallback: boolean, field: string): boolean {
+  if (raw === undefined) {
+    return fallback;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0') {
+    return false;
+  }
+  throw new ValidationError(`${field} must be a boolean`, field);
+}
+
 function mapRunToMeta(
   run: Awaited<ReturnType<RunRepository['requireRun']>>,
   counters: { eventCount: number; toolCalls: number }
@@ -207,8 +221,15 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
             1000
           );
           const typeFilter = req.query['type'] as string | undefined;
+          const includeTokens = parseBoolean(
+            req.query['include_tokens'] as string | undefined,
+            false,
+            'include_tokens'
+          );
 
-          const page = await eventService.list(runId, scope, cursor, limit);
+          const page = await eventService.list(runId, scope, cursor, limit, {
+            includeTokens,
+          });
           const events = typeFilter
             ? page.events.filter((event) => event.type === typeFilter)
             : page.events;

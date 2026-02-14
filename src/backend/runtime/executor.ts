@@ -85,6 +85,8 @@ export interface RuntimeExecutorConfig {
     warningThreshold?: number;
     reserveTokens?: number;
   };
+  /** Persist llm.token events in events table (default: false). */
+  persistLlmTokens?: boolean;
 }
 
 function isCancellationError(error: unknown): boolean {
@@ -526,6 +528,7 @@ async function consumeEventStream(
 ): Promise<RunTerminalStatus | null> {
   let tokenBuffer: Event[] = [];
   let terminalStatus: RunTerminalStatus | null = null;
+  const persistLlmTokens = config.persistLlmTokens === true;
 
   const flushTokens = async (): Promise<void> => {
     if (tokenBuffer.length === 0) {
@@ -538,9 +541,11 @@ async function consumeEventStream(
   for await (const event of stream) {
     if (event.type === 'llm.token') {
       config.sseManager.broadcastToRun(runId, event);
-      tokenBuffer.push(event);
-      if (tokenBuffer.length >= TOKEN_EVENT_BATCH_SIZE) {
-        await flushTokens();
+      if (persistLlmTokens) {
+        tokenBuffer.push(event);
+        if (tokenBuffer.length >= TOKEN_EVENT_BATCH_SIZE) {
+          await flushTokens();
+        }
       }
       continue;
     }

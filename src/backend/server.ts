@@ -48,6 +48,7 @@ export interface ServerConfig {
   corsOrigins: string | string[];
   defaultModelConfig?: LLMConfig;
   maxSteps?: number;
+  persistLlmTokens?: boolean;
   workDir?: string;
   embedding?: EmbeddingConfig;
   databaseUrl?: string;
@@ -209,6 +210,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
       temperature: 0.7,
       maxTokens: 2000,
     },
+    persistLlmTokens: finalConfig.persistLlmTokens ?? false,
     workDir: finalConfig.workDir ?? `${finalConfig.baseDir}/workspace`,
     ...(finalConfig.mcp ? { mcp: finalConfig.mcp } : {}),
   });

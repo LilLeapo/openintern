@@ -420,10 +420,12 @@ export class RunRepository {
     runId: string,
     scope: ScopeContext,
     cursor: string | undefined,
-    limit: number
+    limit: number,
+    includeTokens: boolean = true
   ): Promise<EventCursorPage<Event>> {
     const run = await this.requireRun(runId, scope);
     const cursorValue = cursor ? castBigintCursor(cursor) : 0;
+    const tokenPredicate = includeTokens ? '' : `AND type <> 'llm.token'`;
     const result = await this.pool.query<EventRow>(
       `SELECT
         id,
@@ -439,6 +441,7 @@ export class RunRepository {
       FROM events
       WHERE run_id = $1
         AND id > $2
+        ${tokenPredicate}
       ORDER BY id ASC
       LIMIT $3`,
       [run.id, cursorValue, limit]

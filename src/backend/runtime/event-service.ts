@@ -7,6 +7,10 @@ export interface EventPage {
   next_cursor: string | null;
 }
 
+export interface EventListOptions {
+  includeTokens?: boolean;
+}
+
 export class EventService {
   constructor(private readonly runs: RunRepository) {}
 
@@ -22,9 +26,11 @@ export class EventService {
     runId: string,
     scope: ScopeContext,
     cursor: string | undefined,
-    limit: number
+    limit: number,
+    options: EventListOptions = {}
   ): Promise<EventPage> {
-    const page = await this.runs.getRunEvents(runId, scope, cursor, limit);
+    const includeTokens = options.includeTokens ?? true;
+    const page = await this.runs.getRunEvents(runId, scope, cursor, limit, includeTokens);
     return {
       events: page.items,
       next_cursor: page.nextCursor,

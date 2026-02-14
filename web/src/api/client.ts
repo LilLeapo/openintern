@@ -32,6 +32,11 @@ export interface RunLLMConfig {
   max_tokens?: number;
 }
 
+export interface GetEventsOptions {
+  includeTokens?: boolean;
+  pageLimit?: number;
+}
+
 export class APIClient {
   private baseURL: string;
   private scope: ScopeConfig;
@@ -148,25 +153,54 @@ export class APIClient {
   /**
    * Get events for a run
    */
-  async getEvents(runId: string, type?: string): Promise<Event[]> {
-    let url = `${this.baseURL}/api/runs/${runId}/events`;
-    if (type) {
-      url += `?type=${encodeURIComponent(type)}`;
-    }
+  async getEvents(
+    runId: string,
+    type?: string,
+    options: GetEventsOptions = {}
+  ): Promise<Event[]> {
+    const includeTokens = options.includeTokens ?? false;
+    const pageLimit = options.pageLimit ?? 500;
+    const events: Event[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
 
-    const response = await fetch(url, {
-      headers: this.buildScopeHeaders(),
-    });
+    while (true) {
+      const params = new URLSearchParams();
+      params.set('limit', String(pageLimit));
+      params.set('include_tokens', includeTokens ? 'true' : 'false');
+      if (type) {
+        params.set('type', type);
+      }
+      if (cursor) {
+        params.set('cursor', cursor);
+      }
 
-    if (!response.ok) {
-      throw new APIError(
-        await this.parseErrorMessage(response, 'Failed to get events'),
-        response.status
+      const response = await fetch(
+        `${this.baseURL}/api/runs/${runId}/events?${params.toString()}`,
+        {
+          headers: this.buildScopeHeaders(),
+        }
       );
+
+      if (!response.ok) {
+        throw new APIError(
+          await this.parseErrorMessage(response, 'Failed to get events'),
+          response.status
+        );
+      }
+
+      const data: GetRunEventsResponse = await response.json();
+      events.push(...data.events);
+      const nextCursor = data.next_cursor ?? null;
+
+      if (!nextCursor || seenCursors.has(nextCursor)) {
+        break;
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
 
-    const data: GetRunEventsResponse = await response.json();
-    return data.events;
+    return events;
   }
 
   /**

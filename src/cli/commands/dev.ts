@@ -133,6 +133,9 @@ export async function devCommand(options: DevOptions): Promise<void> {
     if (agentConfig.agent?.maxSteps) {
       serverConfig.maxSteps = agentConfig.agent.maxSteps;
     }
+    if (agentConfig.agent?.persistLlmTokens !== undefined) {
+      serverConfig.persistLlmTokens = agentConfig.agent.persistLlmTokens;
+    }
     if (agentConfig.agent?.workDir) {
       serverConfig.workDir = agentConfig.agent.workDir;
     }

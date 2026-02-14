@@ -224,7 +224,6 @@ describeIfDatabase('Runs runtime integration (Postgres)', () => {
       expect.arrayContaining([
         'run.started',
         'step.started',
-        'llm.token',
         'llm.called',
         'step.completed',
         'run.completed',
@@ -320,5 +319,51 @@ describeIfDatabase('Runs runtime integration (Postgres)', () => {
         (event) => event.type === 'run.completed'
       )
     ).toBe(true);
+  });
+
+  it('does not persist llm.token events by default', async () => {
+    const server = await startTestServer();
+    cleanup.push(() => stopTestServer(server.appServer, server.sseManager, server.testDir));
+
+    const run = await createRun(server.baseUrl, 'token persistence off', sessionKey('token_off'));
+    await waitForRunStatus(server.baseUrl, run.run_id, ['completed']);
+
+    const eventsResponse = await jsonRequest<GetRunEventsResponse>(
+      server.baseUrl,
+      `/api/runs/${run.run_id}/events?limit=1000&include_tokens=true`,
+      {
+        headers: TEST_SCOPE_HEADERS,
+      }
+    );
+    expect(eventsResponse.status).toBe(200);
+    expect(eventsResponse.body.events.some((event) => event.type === 'llm.token')).toBe(false);
+  });
+
+  it('persists llm.token events when persistLlmTokens is enabled', async () => {
+    const server = await startTestServer({ persistLlmTokens: true });
+    cleanup.push(() => stopTestServer(server.appServer, server.sseManager, server.testDir));
+
+    const run = await createRun(server.baseUrl, 'token persistence on', sessionKey('token_on'));
+    await waitForRunStatus(server.baseUrl, run.run_id, ['completed']);
+
+    const withTokens = await jsonRequest<GetRunEventsResponse>(
+      server.baseUrl,
+      `/api/runs/${run.run_id}/events?limit=1000&include_tokens=true`,
+      {
+        headers: TEST_SCOPE_HEADERS,
+      }
+    );
+    expect(withTokens.status).toBe(200);
+    expect(withTokens.body.events.some((event) => event.type === 'llm.token')).toBe(true);
+
+    const withoutTokens = await jsonRequest<GetRunEventsResponse>(
+      server.baseUrl,
+      `/api/runs/${run.run_id}/events?limit=1000&include_tokens=false`,
+      {
+        headers: TEST_SCOPE_HEADERS,
+      }
+    );
+    expect(withoutTokens.status).toBe(200);
+    expect(withoutTokens.body.events.some((event) => event.type === 'llm.token')).toBe(false);
   });
 });

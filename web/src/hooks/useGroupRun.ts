@@ -126,7 +126,7 @@ export function useGroupRun(runId: string | null): UseGroupRunResult {
     try {
       const [runMeta, events] = await Promise.all([
         apiClient.getRun(runId),
-        apiClient.getEvents(runId),
+        apiClient.getEvents(runId, undefined, { includeTokens: false }),
       ]);
       setRun(runMeta);
       setHistoricalMessages(extractMessagesFromEvents(events));

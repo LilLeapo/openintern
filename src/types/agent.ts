@@ -226,6 +226,7 @@ export interface AgentConfig {
   agent?: {
     maxSteps?: number;
     timeout?: number;
+    persistLlmTokens?: boolean;
     /** Working directory for file tools (absolute path) */
     workDir?: string;
   };
