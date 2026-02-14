@@ -3,3 +3,6 @@
 {"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
 {"file": ".trellis/spec/backend/api-module.md", "reason": "API module conventions"}
 {"file": ".trellis/spec/backend/quality.md", "reason": "Code quality requirements"}
+{"file": "src/backend/runtime/executor.ts", "reason": "Main file to modify - add history reconstruction logic before calling runner.run()"}
+{"file": "src/backend/runtime/agent-runner.ts", "reason": "Add history parameter to RunnerContext and prepend to messages array"}
+{"file": "src/types/agent.ts", "reason": "Message type definition reference"}

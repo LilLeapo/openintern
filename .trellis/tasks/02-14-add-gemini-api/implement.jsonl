@@ -3,3 +3,6 @@
 {"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
 {"file": ".trellis/spec/backend/api-module.md", "reason": "API module conventions"}
 {"file": ".trellis/spec/backend/quality.md", "reason": "Code quality requirements"}
+{"file": "src/backend/agent/llm-client.ts", "reason": "Factory function and interface definition"}
+{"file": "src/backend/agent/openai-client.ts", "reason": "Reference implementation for message/tool mapping"}
+{"file": "src/types/agent.ts", "reason": "Type definitions for Message, ToolDefinition, LLMConfig"}

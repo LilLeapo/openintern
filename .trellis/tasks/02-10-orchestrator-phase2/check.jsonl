@@ -1,7 +1,0 @@
-{"file": ".claude/commands/trellis/finish-work.md", "reason": "Finish work checklist"}
-{"file": ".trellis/spec/shared/index.md", "reason": "Shared coding standards"}
-{"file": ".claude/commands/trellis/check-backend.md", "reason": "Backend check spec"}
-{"file": "src/backend/runtime/tool-router.ts", "reason": "权限检查核心逻辑审查"}
-{"file": "src/types/events.ts", "reason": "事件类型完整性检查"}
-{"file": "src/types/orchestrator.ts", "reason": "类型定义一致性检查"}
-{"file": "docs/Orchestrator_PRD.md", "reason": "对照 PRD 验收标准"}

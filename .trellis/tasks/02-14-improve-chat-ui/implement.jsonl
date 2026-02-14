@@ -1,0 +1,7 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/shared/index.md", "reason": "Shared coding standards"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Component conventions"}
+{"file": "web/src/components/Chat/ChatWindow.tsx", "reason": "Fix auto-scroll behavior"}
+{"file": "web/src/components/Chat/ChatMessage.tsx", "reason": "Add markdown rendering"}
+{"file": "web/src/components/Chat/Chat.module.css", "reason": "Fix scrolling layout"}

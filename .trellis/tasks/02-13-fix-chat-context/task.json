@@ -1,7 +1,7 @@
 {
-  "id": "pa-permission-memory-phase-c",
-  "name": "pa-permission-memory-phase-c",
-  "title": "PA Permission & Memory - Phase C",
+  "id": "fix-chat-context",
+  "name": "fix-chat-context",
+  "title": "Fix web chat context bug - maintain conversation history",
   "description": "",
   "status": "planning",
   "dev_type": null,
