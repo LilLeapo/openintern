@@ -1,5 +1,5 @@
 import type { QueuedRun } from '../../types/api.js';
-import type { LLMConfig, Message } from '../../types/agent.js';
+import type { LLMConfig, Message, ContentPart } from '../../types/agent.js';
 import type { Event } from '../../types/events.js';
 import { SSEManager } from '../api/sse.js';
 import { logger } from '../../utils/logger.js';
@@ -24,6 +24,7 @@ import { TokenBudgetManager } from './token-budget-manager.js';
 import { ToolCallScheduler } from './tool-scheduler.js';
 import { RuntimeToolRouter } from './tool-router.js';
 import { EscalationService } from './escalation-service.js';
+import { UploadService } from './upload-service.js';
 import type { FeishuSyncService } from './feishu-sync-service.js';
 import type { MineruIngestService } from './mineru-ingest-service.js';
 
@@ -413,6 +414,29 @@ async function executeSingleRun(
     });
   }
 
+  // Resolve attachments into content parts
+  let inputContent: string | ContentPart[] = run.input;
+  if (run.attachments && run.attachments.length > 0) {
+    try {
+      const uploadService = new UploadService(config.workDir.replace(/\/workspace$/, ''));
+      const attachmentParts = await uploadService.resolveAttachments(
+        run.attachments.map((a) => a.upload_id),
+        scope,
+      );
+      if (attachmentParts.length > 0) {
+        inputContent = [
+          { type: 'text' as const, text: run.input },
+          ...attachmentParts,
+        ];
+      }
+    } catch (error) {
+      logger.warn('Failed to resolve attachments, proceeding with text only', {
+        runId: run.run_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   const status = await consumeEventStream(
     config,
     run.run_id,
@@ -423,6 +447,7 @@ async function executeSingleRun(
       agentId: run.agent_id,
       abortSignal: signal,
       ...(history.length > 0 ? { history } : {}),
+      ...(typeof inputContent !== 'string' ? { inputContent } : {}),
     }),
     signal
   );

@@ -9,6 +9,7 @@ import type {
   ToolDefinition,
   ToolCall,
 } from '../../types/agent.js';
+import { getMessageText } from '../../types/agent.js';
 import { LLMError } from '../../utils/errors.js';
 import type { ILLMClient, LLMCallOptions, LLMStreamChunk } from './llm-client.js';
 
@@ -137,7 +138,7 @@ export class GeminiClient implements ILLMClient {
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        systemParts.push(msg.content);
+        systemParts.push(getMessageText(msg.content));
         continue;
       }
 
@@ -145,7 +146,7 @@ export class GeminiClient implements ILLMClient {
         const part = {
           functionResponse: {
             name: msg.name ?? msg.toolCallId ?? 'unknown',
-            response: { result: msg.content },
+            response: { result: getMessageText(msg.content) },
           },
         };
 
@@ -166,8 +167,9 @@ export class GeminiClient implements ILLMClient {
       if (msg.role === 'assistant') {
         if (msg.toolCalls && msg.toolCalls.length > 0) {
           const parts: Array<Record<string, unknown>> = [];
-          if (msg.content) {
-            parts.push({ text: msg.content });
+          const text = getMessageText(msg.content);
+          if (text) {
+            parts.push({ text });
           }
           for (const tc of msg.toolCalls) {
             parts.push({
@@ -181,17 +183,34 @@ export class GeminiClient implements ILLMClient {
         } else {
           contents.push({
             role: 'model',
-            parts: [{ text: msg.content }],
+            parts: [{ text: getMessageText(msg.content) }],
           });
         }
         continue;
       }
 
-      // user messages
-      contents.push({
-        role: 'user',
-        parts: [{ text: msg.content }],
-      });
+      // user messages - handle multipart content
+      if (Array.isArray(msg.content)) {
+        const parts: Array<Record<string, unknown>> = [];
+        for (const part of msg.content) {
+          if (part.type === 'text') {
+            parts.push({ text: part.text });
+          } else if (part.type === 'image') {
+            parts.push({
+              inlineData: {
+                mimeType: part.image.mimeType,
+                data: part.image.data,
+              },
+            });
+          }
+        }
+        contents.push({ role: 'user', parts });
+      } else {
+        contents.push({
+          role: 'user',
+          parts: [{ text: msg.content }],
+        });
+      }
     }
 
     return {

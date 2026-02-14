@@ -45,17 +45,54 @@ export const MessageRoleSchema = z.enum(['system', 'user', 'assistant', 'tool'])
 export type MessageRole = z.infer<typeof MessageRoleSchema>;
 
 /**
+ * Content part types for multimodal messages
+ */
+export const TextContentPartSchema = z.object({
+  type: z.literal('text'),
+  text: z.string(),
+});
+
+export const ImageContentPartSchema = z.object({
+  type: z.literal('image'),
+  image: z.object({
+    data: z.string(),
+    mimeType: z.string(),
+  }),
+});
+
+export const ContentPartSchema = z.discriminatedUnion('type', [
+  TextContentPartSchema,
+  ImageContentPartSchema,
+]);
+
+export type TextContentPart = z.infer<typeof TextContentPartSchema>;
+export type ImageContentPart = z.infer<typeof ImageContentPartSchema>;
+export type ContentPart = z.infer<typeof ContentPartSchema>;
+
+/**
  * Message schema for LLM context
  */
 export const MessageSchema = z.object({
   role: MessageRoleSchema,
-  content: z.string(),
+  content: z.union([z.string(), z.array(ContentPartSchema)]),
   toolCallId: z.string().optional(),
   name: z.string().optional(),
   toolCalls: z.array(ToolCallSchema).optional(),
 });
 
 export type Message = z.infer<typeof MessageSchema>;
+
+/**
+ * Extract text content from a message's content field.
+ * Works for both string content and ContentPart[] content.
+ */
+export function getMessageText(content: string | ContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter((p): p is TextContentPart => p.type === 'text')
+    .map((p) => p.text)
+    .join('');
+}
 
 /**
  * Tool definition schema

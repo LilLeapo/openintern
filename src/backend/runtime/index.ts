@@ -13,3 +13,4 @@ export { createRuntimeExecutor, type RuntimeExecutorConfig } from './executor.js
 export { resolveRequestScope } from './request-scope.js';
 export { type ScopeContext, toScopeContext } from './scope.js';
 export { type DelegatedPermissions } from './models.js';
+export { UploadService } from './upload-service.js';

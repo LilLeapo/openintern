@@ -20,6 +20,7 @@ import { createGroupsRouter } from './api/groups.js';
 import { createBlackboardRouter } from './api/blackboard.js';
 import { createSkillsRouter } from './api/skills.js';
 import { createFeishuConnectorsRouter } from './api/feishu-connectors.js';
+import { createUploadsRouter } from './api/uploads.js';
 import { RunQueue } from './queue/run-queue.js';
 import { SSEManager } from './api/sse.js';
 import { AgentError } from '../utils/errors.js';
@@ -37,6 +38,7 @@ import { FeishuClient } from './runtime/feishu-client.js';
 import { FeishuSyncService } from './runtime/feishu-sync-service.js';
 import { MineruClient } from './runtime/mineru-client.js';
 import { MineruIngestService } from './runtime/mineru-ingest-service.js';
+import { UploadService } from './runtime/upload-service.js';
 import { closeSharedPostgresPool, getPostgresPool, runPostgresMigrations } from './db/index.js';
 
 /**
@@ -281,6 +283,11 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     syncService: feishuSyncService,
   });
   app.use('/api', feishuRouter);
+
+  // Uploads API routes
+  const uploadService = new UploadService(finalConfig.baseDir);
+  const uploadsRouter = createUploadsRouter({ uploadService });
+  app.use('/api', uploadsRouter);
 
   // Error handling middleware
   app.use(errorHandler);

@@ -1,4 +1,5 @@
-import type { LLMConfig, Message, ToolCall } from '../../types/agent.js';
+import type { LLMConfig, Message, ToolCall, ContentPart } from '../../types/agent.js';
+import { getMessageText } from '../../types/agent.js';
 import type { Event, EventType } from '../../types/events.js';
 import type { Skill } from '../../types/skill.js';
 import type { ScopeContext } from './scope.js';
@@ -26,6 +27,8 @@ export interface RunnerContext {
   abortSignal?: AbortSignal;
   /** Prior conversation history from earlier runs in the same session */
   history?: Message[];
+  /** Multipart input content (text + images/files) when attachments are present */
+  inputContent?: ContentPart[];
 }
 
 export interface RunnerResult {
@@ -102,9 +105,10 @@ export class SingleAgentRunner implements AgentRunner {
   }
 
   async *run(input: string, ctx: RunnerContext): AsyncGenerator<Event, RunnerResult, void> {
+    const userContent: string | ContentPart[] = ctx.inputContent ?? input;
     let messages: Message[] = [
       ...(ctx.history ?? []),
-      { role: 'user', content: input },
+      { role: 'user', content: userContent },
     ];
     const llmClient = createLLMClient(this.config.modelConfig);
     const rootSpan = generateSpanId();
@@ -357,7 +361,7 @@ export class SingleAgentRunner implements AgentRunner {
   }
 
   private buildMemoryQuery(messages: Message[]): string {
-    const recent = messages.slice(-4).map((msg) => `${msg.role}: ${msg.content}`).join('\n');
+    const recent = messages.slice(-4).map((msg) => `${msg.role}: ${getMessageText(msg.content)}`).join('\n');
     return recent || 'recent context';
   }
 

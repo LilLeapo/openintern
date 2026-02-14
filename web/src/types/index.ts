@@ -175,3 +175,6 @@ export interface GroupRunSummary {
   status: RunStatus;
   created_at: string;
 }
+
+// Re-export attachment type from events
+export type { ChatMessageAttachment } from './events';

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { RunMetaSchema, RunStatusSchema } from './run.js';
 import { EventSchema } from './events.js';
+import { AttachmentReferenceSchema } from './upload.js';
 
 /**
  * LLM config schema for API requests
@@ -26,6 +27,7 @@ export const CreateRunRequestSchema = z.object({
   input: z.string().min(1),
   agent_id: z.string().min(1).optional(),
   llm_config: LLMConfigRequestSchema,
+  attachments: z.array(AttachmentReferenceSchema).max(5).optional(),
 });
 
 export type CreateRunRequest = z.infer<typeof CreateRunRequestSchema>;
@@ -93,6 +95,7 @@ export const QueuedRunSchema = z.object({
   llm_config: LLMConfigRequestSchema,
   group_id: z.string().min(1).optional(),
   parent_run_id: z.string().min(1).optional(),
+  attachments: z.array(AttachmentReferenceSchema).optional(),
 });
 
 export type QueuedRun = z.infer<typeof QueuedRunSchema>;

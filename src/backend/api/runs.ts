@@ -135,6 +135,9 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           created_at: created.createdAt,
           status: 'pending',
           llm_config: created.llmConfig ?? undefined,
+          ...(parseResult.data.attachments && parseResult.data.attachments.length > 0
+            ? { attachments: parseResult.data.attachments }
+            : {}),
         };
         runQueue.enqueue(queuedRun);
 

@@ -12,7 +12,9 @@ import type {
   ContextConfig,
   LLMContext,
   Message,
+  ContentPart,
 } from '../../types/agent.js';
+import { getMessageText } from '../../types/agent.js';
 import type { MemoryItem } from '../../types/memory.js';
 import type { Checkpoint } from '../../types/checkpoint.js';
 import { CheckpointStore } from '../store/checkpoint-store.js';
@@ -100,7 +102,7 @@ export class ContextManager {
   /**
    * Add a message to the context
    */
-  addMessage(role: Message['role'], content: string, toolCallId?: string, toolCalls?: Message['toolCalls']): void {
+  addMessage(role: Message['role'], content: string | ContentPart[], toolCallId?: string, toolCalls?: Message['toolCalls']): void {
     const message: Message = { role, content };
     if (toolCallId) {
       message.toolCallId = toolCallId;
@@ -109,7 +111,8 @@ export class ContextManager {
       message.toolCalls = toolCalls;
     }
     this.messages.push(message);
-    logger.debug('Message added to context', { role, contentLength: content.length });
+    const textLen = typeof content === 'string' ? content.length : getMessageText(content).length;
+    logger.debug('Message added to context', { role, contentLength: textLen });
   }
 
   /**
@@ -195,7 +198,7 @@ export class ContextManager {
     if (this.config.includeMemory) {
       const lastUserMsg = [...this.messages].reverse().find((m) => m.role === 'user');
       if (lastUserMsg) {
-        const memories = await this.retrieveMemory(lastUserMsg.content);
+        const memories = await this.retrieveMemory(getMessageText(lastUserMsg.content));
         if (memories.length > 0) {
           const memoryLines = memories.map((m) => `- ${m.content}`).join('\n');
           memoryContext = `\n\nRelevant memories:\n${memoryLines}`;

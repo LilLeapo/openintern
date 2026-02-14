@@ -15,6 +15,7 @@ import type {
   ToolDefinition,
   ToolCall,
 } from '../../types/agent.js';
+import { getMessageText } from '../../types/agent.js';
 import { logger } from '../../utils/logger.js';
 import { OpenAIClient } from './openai-client.js';
 import { AnthropicClient } from './anthropic-client.js';
@@ -155,7 +156,7 @@ export class MockLLMClient implements ILLMClient {
       .filter((m) => m.role === 'user')
       .pop();
 
-    const userInput = lastUserMessage?.content ?? '';
+    const userInput = lastUserMessage ? getMessageText(lastUserMessage.content) : '';
 
     logger.debug('MockLLMClient.chat called', {
       messageCount: messages.length,

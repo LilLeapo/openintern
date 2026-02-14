@@ -10,6 +10,7 @@ import type {
   Skill,
   GroupMember,
   GroupRunSummary,
+  ChatMessageAttachment,
 } from '../types';
 import type {
   CreateRunResponse,
@@ -81,7 +82,8 @@ export class APIClient {
   async createRun(
     sessionKey: string,
     input: string,
-    llmConfig?: RunLLMConfig
+    llmConfig?: RunLLMConfig,
+    attachments?: Array<{ upload_id: string }>
   ): Promise<CreateRunResponse> {
     const response = await fetch(`${this.baseURL}/api/runs`, {
       method: 'POST',
@@ -96,6 +98,7 @@ export class APIClient {
         session_key: sessionKey,
         input,
         ...(llmConfig ? { llm_config: llmConfig } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
       }),
     });
 
@@ -107,6 +110,44 @@ export class APIClient {
     }
 
     return response.json();
+  }
+
+  /**
+   * Upload a file
+   */
+  async uploadFile(file: File): Promise<ChatMessageAttachment> {
+    const buffer = await file.arrayBuffer();
+
+    const response = await fetch(`${this.baseURL}/api/uploads`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-Filename': file.name,
+        ...this.buildScopeHeaders(),
+      },
+      body: buffer,
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to upload file'),
+        response.status
+      );
+    }
+
+    const data = (await response.json()) as {
+      upload_id: string;
+      original_name: string;
+      mime_type: string;
+      size: number;
+    };
+
+    return {
+      upload_id: data.upload_id,
+      original_name: data.original_name,
+      mime_type: data.mime_type,
+      size: data.size,
+    };
   }
 
   /**

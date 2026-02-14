@@ -9,6 +9,7 @@ import type {
   ToolDefinition,
   ToolCall,
 } from '../../types/agent.js';
+import { getMessageText } from '../../types/agent.js';
 import { LLMError } from '../../utils/errors.js';
 import type { ILLMClient, LLMCallOptions, LLMStreamChunk } from './llm-client.js';
 
@@ -98,7 +99,7 @@ export class AnthropicClient implements ILLMClient {
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        systemMessages.push(msg.content);
+        systemMessages.push(getMessageText(msg.content));
       } else {
         conversationMessages.push(msg);
       }
@@ -119,7 +120,7 @@ export class AnthropicClient implements ILLMClient {
         const toolResultBlock = {
           type: 'tool_result',
           tool_use_id: msg.toolCallId,
-          content: msg.content,
+          content: getMessageText(msg.content),
         };
 
         // Merge consecutive tool results into one user message
@@ -131,10 +132,11 @@ export class AnthropicClient implements ILLMClient {
         }
       } else if (msg.role === 'assistant') {
         if (msg.toolCalls && msg.toolCalls.length > 0) {
-          // Assistant message with tool calls → content blocks
+          // Assistant message with tool calls -> content blocks
           const contentBlocks: Array<Record<string, unknown>> = [];
-          if (msg.content) {
-            contentBlocks.push({ type: 'text', text: msg.content });
+          const text = getMessageText(msg.content);
+          if (text) {
+            contentBlocks.push({ type: 'text', text });
           }
           for (const tc of msg.toolCalls) {
             contentBlocks.push({
@@ -146,11 +148,30 @@ export class AnthropicClient implements ILLMClient {
           }
           result.push({ role: 'assistant', content: contentBlocks });
         } else {
-          result.push({ role: 'assistant', content: msg.content });
+          result.push({ role: 'assistant', content: getMessageText(msg.content) });
         }
       } else {
-        // user messages
-        result.push({ role: 'user', content: msg.content });
+        // user messages - handle multipart content
+        if (Array.isArray(msg.content)) {
+          const blocks: Array<Record<string, unknown>> = [];
+          for (const part of msg.content) {
+            if (part.type === 'text') {
+              blocks.push({ type: 'text', text: part.text });
+            } else if (part.type === 'image') {
+              blocks.push({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: part.image.mimeType,
+                  data: part.image.data,
+                },
+              });
+            }
+          }
+          result.push({ role: 'user', content: blocks });
+        } else {
+          result.push({ role: 'user', content: msg.content });
+        }
       }
     }
 

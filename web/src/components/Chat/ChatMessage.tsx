@@ -1,5 +1,5 @@
 /**
- * ChatMessage - displays a single chat message with markdown rendering
+ * ChatMessage - displays a single chat message with markdown rendering and attachments
  */
 
 import { useCallback, useState, useMemo } from 'react';
@@ -16,6 +16,12 @@ export interface ChatMessageProps {
 }
 
 const remarkPlugins = [remarkGfm];
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export function ChatMessage({ message }: ChatMessageProps) {
   const { t } = useLocaleText();
@@ -57,6 +63,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
     [],
   );
 
+  const attachments = message.attachments;
+
   return (
     <div className={`${styles.message} ${isUser ? styles.user : styles.assistant}`}>
       <div className={styles.messageContent}>
@@ -73,6 +81,21 @@ export function ChatMessage({ message }: ChatMessageProps) {
             </button>
           </div>
         </div>
+        {attachments && attachments.length > 0 && (
+          <div className={styles.messageAttachments} role="list" aria-label={t('Attachments', '附件')}>
+            {attachments.map((att) => (
+              <div key={att.upload_id} className={styles.messageAttachmentChip} role="listitem">
+                <span className={styles.attachmentIcon}>
+                  {att.mime_type.startsWith('image/') ? '\u{1F5BC}' : '\u{1F4C4}'}
+                </span>
+                <span className={styles.attachmentInfo}>
+                  {att.original_name}
+                  <span className={styles.attachmentSize}>{formatFileSize(att.size)}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         <div className={styles.messageText}>
           <ReactMarkdown
             remarkPlugins={remarkPlugins}

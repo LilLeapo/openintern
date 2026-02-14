@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ContentPartSchema } from './agent.js';
 
 /**
  * Tool call schema for checkpoint messages
@@ -26,7 +27,7 @@ export const CheckpointSchema = z.object({
     /** Conversation messages */
     messages: z.array(z.object({
       role: z.enum(['user', 'assistant', 'system', 'tool']),
-      content: z.string(),
+      content: z.union([z.string(), z.array(ContentPartSchema)]),
       /** Tool call ID for tool result messages */
       toolCallId: z.string().optional(),
       /** Tool calls for assistant messages */

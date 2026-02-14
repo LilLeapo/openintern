@@ -1,4 +1,5 @@
 import type { Message } from '../../types/agent.js';
+import { getMessageText } from '../../types/agent.js';
 import { logger } from '../../utils/logger.js';
 
 export interface CompactionResult {
@@ -51,8 +52,8 @@ export class CompactionService {
       ...compactedPreserved,
     ];
 
-    const charsBefore = messages.reduce((s, m) => s + m.content.length, 0);
-    const charsAfter = result.reduce((s, m) => s + m.content.length, 0);
+    const charsBefore = messages.reduce((s, m) => s + getMessageText(m.content).length, 0);
+    const charsAfter = result.reduce((s, m) => s + getMessageText(m.content).length, 0);
     const tokensSaved = Math.max(0, Math.floor((charsBefore - charsAfter) / 4));
 
     logger.info('Context compacted', {
@@ -73,11 +74,12 @@ export class CompactionService {
    * Compact large tool outputs within a single message.
    */
   compactToolOutput(message: Message): Message {
-    if (message.role !== 'tool' || message.content.length <= this.maxToolOutputChars) {
+    const text = getMessageText(message.content);
+    if (message.role !== 'tool' || text.length <= this.maxToolOutputChars) {
       return message;
     }
-    const truncated = message.content.slice(0, this.maxToolOutputChars)
-      + `\n... [truncated, ${message.content.length - this.maxToolOutputChars} chars omitted]`;
+    const truncated = text.slice(0, this.maxToolOutputChars)
+      + `\n... [truncated, ${text.length - this.maxToolOutputChars} chars omitted]`;
     return { ...message, content: truncated };
   }
 
@@ -87,7 +89,8 @@ export class CompactionService {
     for (const msg of messages) {
       if (msg.role === 'system') continue;
 
-      const preview = msg.content.slice(0, 200);
+      const text = getMessageText(msg.content);
+      const preview = text.slice(0, 200);
       if (msg.role === 'user') {
         lines.push(`User: ${preview}`);
       } else if (msg.role === 'assistant') {
@@ -99,7 +102,7 @@ export class CompactionService {
         }
       } else if (msg.role === 'tool') {
         const toolId = msg.toolCallId ?? 'unknown';
-        const resultPreview = msg.content.slice(0, 120);
+        const resultPreview = text.slice(0, 120);
         lines.push(`Tool result (${toolId}): ${resultPreview}`);
       }
     }

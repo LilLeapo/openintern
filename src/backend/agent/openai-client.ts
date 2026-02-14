@@ -9,6 +9,7 @@ import type {
   ToolDefinition,
   ToolCall,
 } from '../../types/agent.js';
+import { getMessageText } from '../../types/agent.js';
 import { LLMError } from '../../utils/errors.js';
 import type { ILLMClient, LLMCallOptions, LLMStreamChunk } from './llm-client.js';
 
@@ -83,14 +84,35 @@ export class OpenAIClient implements ILLMClient {
   private mapMessage(msg: Message): Record<string, unknown> {
     const mapped: Record<string, unknown> = {
       role: msg.role,
-      content: msg.content,
     };
+
+    // Handle multipart content for user messages
+    if (Array.isArray(msg.content)) {
+      const parts: Array<Record<string, unknown>> = [];
+      for (const part of msg.content) {
+        if (part.type === 'text') {
+          parts.push({ type: 'text', text: part.text });
+        } else if (part.type === 'image') {
+          parts.push({
+            type: 'image_url',
+            image_url: {
+              url: `data:${part.image.mimeType};base64,${part.image.data}`,
+            },
+          });
+        }
+      }
+      mapped.content = parts;
+    } else {
+      mapped.content = msg.content;
+    }
 
     if (msg.role === 'tool' && msg.toolCallId) {
       mapped.tool_call_id = msg.toolCallId;
+      mapped.content = getMessageText(msg.content);
     }
 
     if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+      mapped.content = getMessageText(msg.content);
       mapped.tool_calls = msg.toolCalls.map((tc) => ({
         id: tc.id,
         type: 'function',

@@ -6,6 +6,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import type { ContentPart } from '../../types/agent.js';
 
 /** CJK Unicode ranges */
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\u{20000}-\u{2a6df}\u{2a700}-\u{2b73f}\u{2b740}-\u{2b81f}\u{2b820}-\u{2ceaf}\u{2ceb0}-\u{2ebef}\u{30000}-\u{3134f}\u3000-\u303f\uff00-\uffef]/gu;
@@ -91,11 +92,23 @@ export class TokenCounter {
 
   /**
    * Count tokens for an array of messages.
+   * Handles both string and ContentPart[] content.
+   * Images are estimated at ~85 tokens each (low-res thumbnail estimate).
    */
-  async countMessages(messages: Array<{ content: string }>): Promise<number> {
+  async countMessages(messages: Array<{ content: string | ContentPart[] }>): Promise<number> {
     let total = 0;
     for (const msg of messages) {
-      total += await this.count(msg.content);
+      if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part.type === 'text') {
+            total += await this.count(part.text);
+          } else if (part.type === 'image') {
+            total += 85; // approximate token cost for an image
+          }
+        }
+      } else {
+        total += await this.count(msg.content);
+      }
       total += 4; // per-message overhead (role, separators)
     }
     return total;

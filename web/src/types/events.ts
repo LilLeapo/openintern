@@ -94,10 +94,18 @@ export interface GetRunEventsResponse {
 }
 
 // Chat message type for UI
+export interface ChatMessageAttachment {
+  upload_id: string;
+  original_name: string;
+  mime_type: string;
+  size: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
   runId?: string;
+  attachments?: ChatMessageAttachment[];
 }

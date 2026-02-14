@@ -5,7 +5,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { apiClient } from '../api/client';
 import { useSSE } from './useSSE';
-import type { ChatMessage } from '../types/events';
+import type { ChatMessage, ChatMessageAttachment } from '../types/events';
 import type { RunLLMConfig } from '../api/client';
 
 interface ActiveRunState {
@@ -38,7 +38,7 @@ export interface UseChatResult {
   latestRunId: string | null;
   error: Error | null;
   escalation: EscalationInfo | null;
-  sendMessage: (input: string) => Promise<void>;
+  sendMessage: (input: string, files?: File[]) => Promise<void>;
   clearMessages: () => void;
 }
 
@@ -307,7 +307,7 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
   }, [events, clearEvents]);
 
   const sendMessage = useCallback(
-    async (input: string) => {
+    async (input: string, files?: File[]) => {
       if (!input.trim() || activeRunRef.current) return;
       if (runMode === 'group' && !selectedGroupId) {
         setErrorBySession(prev => ({
@@ -317,12 +317,29 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
         return;
       }
 
+      // Upload files first if any
+      let attachments: ChatMessageAttachment[] = [];
+      if (files && files.length > 0) {
+        try {
+          attachments = await Promise.all(
+            files.map((file) => apiClient.uploadFile(file)),
+          );
+        } catch (err) {
+          setErrorBySession(prev => ({
+            ...prev,
+            [sessionKey]: err instanceof Error ? err : new Error('Failed to upload files'),
+          }));
+          return;
+        }
+      }
+
       // Add user message
       const userMessage: ChatMessage = {
         id: generateId(),
         role: 'user',
         content: input,
         timestamp: new Date().toISOString(),
+        ...(attachments.length > 0 ? { attachments } : {}),
       };
       setMessagesBySession(prev =>
         updateSessionMessages(prev, sessionKey, messages => [...messages, userMessage]),
@@ -330,13 +347,16 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
       setErrorBySession(prev => ({ ...prev, [sessionKey]: null }));
 
       try {
+        const attachmentRefs = attachments.length > 0
+          ? attachments.map((a) => ({ upload_id: a.upload_id }))
+          : undefined;
         const response = runMode === 'group' && selectedGroupId
           ? await apiClient.createGroupRun(selectedGroupId, {
               input,
               session_key: sessionKey,
               ...(llmConfig ? { llm_config: llmConfig } : {}),
             })
-          : await apiClient.createRun(sessionKey, input, llmConfig);
+          : await apiClient.createRun(sessionKey, input, llmConfig, attachmentRefs);
         const nextRun = { runId: response.run_id, sessionKey };
         setActiveRun(nextRun);
         setLatestRunBySession(prev => ({ ...prev, [sessionKey]: response.run_id }));

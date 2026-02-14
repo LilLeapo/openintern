@@ -329,12 +329,19 @@
 }
 
 .inputContainer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
   padding: 0.8rem;
   background: #ffffff;
   border-top: 1px solid var(--border);
+}
+
+.inputRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: end;
 }
 
 .input {
@@ -389,6 +396,118 @@
   margin-top: -0.15rem;
   color: var(--text-muted);
   font-size: 0.76rem;
+}
+
+/* Attach button */
+.attachButton {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #f8fafc;
+  color: var(--text-secondary);
+  font-size: 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+
+.attachButton:hover:not(:disabled) {
+  background: #ecfeff;
+  border-color: #99f6e4;
+  color: var(--accent-strong);
+}
+
+.attachButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Attachment list in input area */
+.attachmentList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.attachmentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  background: #ecfeff;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  color: var(--accent-strong);
+}
+
+.attachmentName {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachmentRemove {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  padding: 0 0.15rem;
+  opacity: 0.7;
+  line-height: 1;
+}
+
+.attachmentRemove:hover {
+  opacity: 1;
+}
+
+.fileError {
+  color: var(--danger);
+  font-size: 0.78rem;
+  padding: 0.15rem 0;
+}
+
+/* Attachment display in messages */
+.messageAttachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+}
+
+.messageAttachmentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.45rem;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+  font-size: 0.75rem;
+}
+
+.message.user .messageAttachmentChip {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.attachmentIcon {
+  font-size: 0.85rem;
+}
+
+.attachmentInfo {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.attachmentSize {
+  opacity: 0.65;
+  font-size: 0.68rem;
 }
 
 @keyframes popIn {
