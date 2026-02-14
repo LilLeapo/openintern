@@ -56,4 +56,35 @@ describe('ChatWindow', () => {
 
     expect(screen.getByText(/thinking/i)).toBeInTheDocument();
   });
+
+  it('renders attachment metadata on user messages', () => {
+    const messages = [
+      {
+        id: 'msg_attach_1',
+        role: 'user' as const,
+        content: 'Please check this file',
+        timestamp: new Date().toISOString(),
+        attachments: [
+          {
+            uploadId: 'upl_abc123',
+            fileName: 'notes.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 1200,
+            kind: 'text' as const,
+            downloadUrl: '/api/uploads/upl_abc123?org_id=org_test&user_id=user_test',
+          },
+        ],
+      },
+    ];
+
+    render(
+      <ChatWindow
+        messages={messages}
+        onSend={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('notes.txt')).toBeInTheDocument();
+    expect(screen.getByText(/text · 1.2KB/i)).toBeInTheDocument();
+  });
 });

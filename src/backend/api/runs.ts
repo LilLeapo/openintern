@@ -30,12 +30,14 @@ import { SSEManager } from './sse.js';
 import { EventService } from '../runtime/event-service.js';
 import { resolveRequestScope } from '../runtime/request-scope.js';
 import { RunRepository } from '../runtime/run-repository.js';
+import { UploadService, buildAttachmentPromptSuffix } from '../runtime/upload-service.js';
 
 export interface RunsRouterConfig {
   runQueue: RunQueue;
   sseManager: SSEManager;
   runRepository: RunRepository;
   eventService: EventService;
+  uploadService: UploadService;
 }
 
 function parsePositiveInt(
@@ -96,7 +98,7 @@ function sendError(res: Response, error: ErrorResponse, status: number): void {
 
 export function createRunsRouter(config: RunsRouterConfig): Router {
   const router = Router();
-  const { runQueue, sseManager, runRepository, eventService } = config;
+  const { runQueue, sseManager, runRepository, eventService, uploadService } = config;
 
   router.post('/runs', (req: Request, res: Response, next: NextFunction) => {
     void (async () => {
@@ -111,6 +113,13 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
         }
 
         const scope = resolveRequestScope(req);
+        const attachmentRefs = parseResult.data.attachments ?? [];
+        const attachments = attachmentRefs.length > 0
+          ? await uploadService.resolveMany(scope, attachmentRefs)
+          : [];
+        const enrichedInput = attachments.length > 0
+          ? `${parseResult.data.input}${buildAttachmentPromptSuffix(attachments)}`
+          : parseResult.data.input;
         const runId = generateRunId();
         const sessionKey = parseResult.data.session_key ?? 's_default';
         const agentId = parseResult.data.agent_id ?? 'main';
@@ -119,7 +128,7 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           id: runId,
           scope,
           sessionKey,
-          input: parseResult.data.input,
+          input: enrichedInput,
           agentId,
           llmConfig: parseResult.data.llm_config ?? null,
         });

@@ -92,3 +92,10 @@ export function generateFeishuConnectorId(): string {
 export function generateFeishuSyncJobId(): string {
   return `fsjob_${randomAlphanumeric(12)}`;
 }
+
+/**
+ * Generate an upload ID (format: upl_<alphanumeric>)
+ */
+export function generateUploadId(): string {
+  return `upl_${randomAlphanumeric(12)}`;
+}

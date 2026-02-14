@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import { createRunsRouter } from './api/runs.js';
+import { createUploadsRouter } from './api/uploads.js';
 import { createRolesRouter } from './api/roles.js';
 import { createGroupsRouter } from './api/groups.js';
 import { createBlackboardRouter } from './api/blackboard.js';
@@ -32,6 +33,7 @@ import { CheckpointService, createRuntimeExecutor, EventService, MemoryService, 
 import { RoleRepository } from './runtime/role-repository.js';
 import { GroupRepository } from './runtime/group-repository.js';
 import { SkillRepository } from './runtime/skill-repository.js';
+import { UploadService } from './runtime/upload-service.js';
 import { FeishuRepository } from './runtime/feishu-repository.js';
 import { FeishuClient } from './runtime/feishu-client.js';
 import { FeishuSyncService } from './runtime/feishu-sync-service.js';
@@ -132,6 +134,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     dimension: 256,
   });
   const memoryService = new MemoryService(pool, embeddingProvider);
+  const uploadService = new UploadService(finalConfig.baseDir);
 
   const feishuEnabledByConfig = Boolean(
     finalConfig.feishu?.enabled ??
@@ -225,7 +228,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   );
 
   // Middleware: JSON body parser
-  app.use(express.json());
+  app.use(express.json({ limit: '20mb' }));
 
   // Middleware: Request logging
   app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -258,14 +261,24 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     sseManager,
     runRepository,
     eventService,
+    uploadService,
   });
   app.use('/api', runsRouter);
+
+  const uploadsRouter = createUploadsRouter({ uploadService });
+  app.use('/api', uploadsRouter);
 
   // Orchestrator API routes (Phase 0)
   const rolesRouter = createRolesRouter({ roleRepository });
   app.use('/api', rolesRouter);
 
-  const groupsRouter = createGroupsRouter({ groupRepository, roleRepository, runRepository, runQueue });
+  const groupsRouter = createGroupsRouter({
+    groupRepository,
+    roleRepository,
+    runRepository,
+    runQueue,
+    uploadService,
+  });
   app.use('/api', groupsRouter);
 
   // Blackboard API routes (Phase 3)

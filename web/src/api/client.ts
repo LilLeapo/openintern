@@ -32,9 +32,39 @@ export interface RunLLMConfig {
   max_tokens?: number;
 }
 
+export type UploadedAttachmentKind = 'image' | 'text' | 'binary';
+
+export interface AttachmentReference {
+  upload_id: string;
+}
+
+export interface UploadedAttachment {
+  uploadId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  kind: UploadedAttachmentKind;
+  createdAt: string;
+  downloadUrl: string;
+  sha256: string;
+  textExcerpt?: string;
+}
+
 export interface GetEventsOptions {
   includeTokens?: boolean;
   pageLimit?: number;
+}
+
+interface UploadResponsePayload {
+  upload_id: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  kind: UploadedAttachmentKind;
+  created_at: string;
+  download_url: string;
+  sha256: string;
+  text_excerpt?: string;
 }
 
 export class APIClient {
@@ -75,13 +105,58 @@ export class APIClient {
     }
   }
 
+  private encodeBase64(bytes: Uint8Array): string {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  }
+
+  private withScopeQuery(url: string): string {
+    const params = new URLSearchParams({
+      org_id: this.scope.orgId,
+      user_id: this.scope.userId,
+      ...(this.scope.projectId ? { project_id: this.scope.projectId } : {}),
+    });
+    const joiner = url.includes('?') ? '&' : '?';
+    return `${url}${joiner}${params.toString()}`;
+  }
+
+  private async fileToBytes(file: File): Promise<Uint8Array> {
+    const withArrayBuffer = file as File & { arrayBuffer?: () => Promise<ArrayBuffer> };
+    if (typeof withArrayBuffer.arrayBuffer === 'function') {
+      return new Uint8Array(await withArrayBuffer.arrayBuffer());
+    }
+    if (typeof FileReader !== 'undefined') {
+      return new Promise<Uint8Array>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.onload = () => {
+          const result = reader.result;
+          if (!(result instanceof ArrayBuffer)) {
+            reject(new Error('Unsupported file reader result'));
+            return;
+          }
+          resolve(new Uint8Array(result));
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+    const response = new Response(file);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
   /**
    * Create a new run
    */
   async createRun(
     sessionKey: string,
     input: string,
-    llmConfig?: RunLLMConfig
+    llmConfig?: RunLLMConfig,
+    attachments?: AttachmentReference[]
   ): Promise<CreateRunResponse> {
     const response = await fetch(`${this.baseURL}/api/runs`, {
       method: 'POST',
@@ -96,6 +171,7 @@ export class APIClient {
         session_key: sessionKey,
         input,
         ...(llmConfig ? { llm_config: llmConfig } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
       }),
     });
 
@@ -107,6 +183,42 @@ export class APIClient {
     }
 
     return response.json();
+  }
+
+  async uploadAttachment(file: File): Promise<UploadedAttachment> {
+    const bytes = await this.fileToBytes(file);
+    const response = await fetch(`${this.baseURL}/api/uploads`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({
+        file_name: file.name,
+        mime_type: file.type || 'application/octet-stream',
+        content_base64: this.encodeBase64(bytes),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to upload attachment'),
+        response.status
+      );
+    }
+
+    const payload = (await response.json()) as UploadResponsePayload;
+    return {
+      uploadId: payload.upload_id,
+      fileName: payload.file_name,
+      mimeType: payload.mime_type,
+      sizeBytes: payload.size_bytes,
+      kind: payload.kind,
+      createdAt: payload.created_at,
+      downloadUrl: this.withScopeQuery(payload.download_url),
+      sha256: payload.sha256,
+      ...(payload.text_excerpt ? { textExcerpt: payload.text_excerpt } : {}),
+    };
   }
 
   /**
@@ -586,6 +698,7 @@ export class APIClient {
         temperature?: number;
         max_tokens?: number;
       };
+      attachments?: AttachmentReference[];
     },
   ): Promise<GroupRunSummary> {
     const response = await fetch(`${this.baseURL}/api/groups/${groupId}/runs`, {

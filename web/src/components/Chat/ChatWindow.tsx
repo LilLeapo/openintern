@@ -11,7 +11,7 @@ import styles from './Chat.module.css';
 
 export interface ChatWindowProps {
   messages: ChatMessageType[];
-  onSend: (message: string) => void;
+  onSend: (message: string, files?: File[]) => Promise<void> | void;
   isRunning?: boolean;
   isWaiting?: boolean;
   error?: Error | null;
