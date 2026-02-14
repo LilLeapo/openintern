@@ -97,7 +97,7 @@ function applyEnvOverrides(config: AgentConfig): AgentConfig {
     envAnthropicBaseUrl
   ) {
     if (!result.llm) result.llm = {};
-    if (envProvider) result.llm.provider = envProvider as 'openai' | 'anthropic' | 'mock';
+    if (envProvider) result.llm.provider = envProvider as 'openai' | 'anthropic' | 'gemini' | 'mock';
     if (envModel) result.llm.model = envModel;
     if (envBaseUrl) result.llm.baseUrl = envBaseUrl;
     if (envApiKey) result.llm.apiKey = envApiKey;
@@ -290,7 +290,13 @@ export function toLLMConfig(config: AgentConfig): LLMConfig | undefined {
 
   const result: LLMConfig = {
     provider: llm.provider,
-    model: llm.model ?? (llm.provider === 'openai' ? 'gpt-4o' : 'claude-sonnet-4-20250514'),
+    model: llm.model ?? (
+      llm.provider === 'openai'
+        ? 'gpt-4o'
+        : llm.provider === 'gemini'
+          ? 'gemini-3-pro-preview'
+          : 'claude-sonnet-4-20250514'
+    ),
   };
   if (llm.apiKey) result.apiKey = llm.apiKey;
   if (llm.baseUrl) result.baseUrl = llm.baseUrl;

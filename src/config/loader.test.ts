@@ -230,4 +230,11 @@ describe('toLLMConfig', () => {
     expect(result?.provider).toBe('anthropic');
     expect(result?.model).toBe('claude-sonnet-4-20250514');
   });
+
+  it('should use default model for gemini provider', () => {
+    const result = toLLMConfig({ llm: { provider: 'gemini' } });
+
+    expect(result?.provider).toBe('gemini');
+    expect(result?.model).toBe('gemini-3-pro-preview');
+  });
 });

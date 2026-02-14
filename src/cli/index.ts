@@ -42,7 +42,7 @@ program
   .command('dev')
   .description('Start development server with Backend + MCP Server')
   .option('-p, --port <number>', 'Backend port', '3000')
-  .option('--provider <provider>', 'LLM provider (openai|anthropic|mock)')
+  .option('--provider <provider>', 'LLM provider (openai|anthropic|gemini|mock)')
   .option('--model <model>', 'LLM model name')
   .option('--mcp-stdio', 'Use stdio mode for MCP (default)', true)
   .option('--no-mcp-stdio', 'Disable MCP Server')
@@ -67,12 +67,20 @@ program
   .option('-s, --session <key>', 'Session key', 'default')
   .option('-w, --wait', 'Wait for completion', false)
   .option('--stream', 'Stream events in real-time', false)
-  .option('--provider <provider>', 'LLM provider (openai|anthropic|mock)')
+  .option('--provider <provider>', 'LLM provider (openai|anthropic|gemini|mock)')
   .option('--model <model>', 'LLM model name')
+  .option('--base-url <url>', 'Custom LLM base URL override')
   .action(
     (
       text: string,
-      options: { session: string; wait: boolean; stream: boolean; provider?: string; model?: string }
+      options: {
+        session: string;
+        wait: boolean;
+        stream: boolean;
+        provider?: string;
+        model?: string;
+        baseUrl?: string;
+      }
     ) => {
       const runOpts: Parameters<typeof runCommand>[1] = {
         session: options.session,
@@ -81,6 +89,7 @@ program
       };
       if (options.provider) runOpts.provider = options.provider;
       if (options.model) runOpts.model = options.model;
+      if (options.baseUrl) runOpts.baseUrl = options.baseUrl;
       void runCommand(text, runOpts);
     }
   );

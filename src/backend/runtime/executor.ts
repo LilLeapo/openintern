@@ -249,9 +249,15 @@ export function createRuntimeExecutor(
       if (config.defaultModelConfig.apiKey) {
         modelConfig.apiKey = config.defaultModelConfig.apiKey;
       }
-      if (config.defaultModelConfig.baseUrl) {
-        modelConfig.baseUrl = config.defaultModelConfig.baseUrl;
-      }
+    }
+    // Allow request-level transport override (e.g. custom Gemini proxy endpoint).
+    if (run.llm_config?.base_url) {
+      modelConfig.baseUrl = run.llm_config.base_url;
+    } else if (
+      selectedProvider === config.defaultModelConfig.provider
+      && config.defaultModelConfig.baseUrl
+    ) {
+      modelConfig.baseUrl = config.defaultModelConfig.baseUrl;
     }
     const temperature = run.llm_config?.temperature ?? config.defaultModelConfig.temperature;
     if (temperature !== undefined) {

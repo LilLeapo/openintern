@@ -6,8 +6,9 @@ import { EventSchema } from './events.js';
  * LLM config schema for API requests
  */
 export const LLMConfigRequestSchema = z.object({
-  provider: z.enum(['openai', 'anthropic', 'mock']).optional(),
+  provider: z.enum(['openai', 'anthropic', 'gemini', 'mock']).optional(),
   model: z.string().min(1).optional(),
+  base_url: z.string().min(1).optional(),
   temperature: z.number().min(0).max(2).optional(),
   max_tokens: z.number().positive().optional(),
 }).optional();

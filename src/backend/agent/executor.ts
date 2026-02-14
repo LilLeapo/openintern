@@ -58,6 +58,16 @@ export function createAgentExecutor(config: AgentExecutorConfig): (run: QueuedRu
         provider: run.llm_config.provider ?? defaultModelConfig?.provider ?? 'mock',
         model: run.llm_config.model ?? defaultModelConfig?.model ?? 'mock-model',
       };
+      if (run.llm_config.base_url) {
+        mc.baseUrl = run.llm_config.base_url;
+      } else if (
+        run.llm_config.provider === undefined
+        || run.llm_config.provider === defaultModelConfig?.provider
+      ) {
+        if (defaultModelConfig?.baseUrl) {
+          mc.baseUrl = defaultModelConfig.baseUrl;
+        }
+      }
       const temp = run.llm_config.temperature ?? defaultModelConfig?.temperature;
       if (temp !== undefined) mc.temperature = temp;
       const maxTok = run.llm_config.max_tokens ?? defaultModelConfig?.maxTokens;

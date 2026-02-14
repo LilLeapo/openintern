@@ -14,6 +14,7 @@ export interface RunOptions {
   stream: boolean;
   provider?: string;
   model?: string;
+  baseUrl?: string;
 }
 
 interface ScopePayload {
@@ -70,12 +71,14 @@ export async function runCommand(
       requestBody.llm_config = {
         provider: options.provider,
         model: options.model,
+        ...(options.baseUrl ? { base_url: options.baseUrl } : {}),
       };
     } else if (agentConfig.llm?.provider) {
       const llmReq: Record<string, unknown> = {
         provider: agentConfig.llm.provider,
       };
       if (agentConfig.llm.model) llmReq.model = agentConfig.llm.model;
+      if (agentConfig.llm.baseUrl) llmReq.base_url = agentConfig.llm.baseUrl;
       if (agentConfig.llm.temperature !== undefined) llmReq.temperature = agentConfig.llm.temperature;
       if (agentConfig.llm.maxTokens !== undefined) llmReq.max_tokens = agentConfig.llm.maxTokens;
       requestBody.llm_config = llmReq;

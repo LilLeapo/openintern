@@ -111,10 +111,16 @@ export async function devCommand(options: DevOptions): Promise<void> {
 
     // LLM config: config file as base, CLI options override
     if (options.provider) {
-      const provider = options.provider as 'openai' | 'anthropic' | 'mock';
+      const provider = options.provider as 'openai' | 'anthropic' | 'gemini' | 'mock';
       serverConfig.defaultModelConfig = {
         provider,
-        model: options.model ?? (provider === 'openai' ? 'gpt-4o' : 'claude-sonnet-4-20250514'),
+        model: options.model ?? (
+          provider === 'openai'
+            ? 'gpt-4o'
+            : provider === 'gemini'
+              ? 'gemini-3-pro-preview'
+              : 'claude-sonnet-4-20250514'
+        ),
       };
     } else {
       const llmConfig = toLLMConfig(agentConfig);

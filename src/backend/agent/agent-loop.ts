@@ -32,7 +32,7 @@ import { logger } from '../../utils/logger.js';
  * Resolve default model config from environment variables
  */
 function resolveDefaultModelConfig(): LLMConfig {
-  const provider = process.env['LLM_PROVIDER'] as 'openai' | 'anthropic' | 'mock' | undefined;
+  const provider = process.env['LLM_PROVIDER'] as 'openai' | 'anthropic' | 'gemini' | 'mock' | undefined;
   const model = process.env['LLM_MODEL'];
 
   // If env vars specify a real provider, use it
@@ -46,6 +46,9 @@ function resolveDefaultModelConfig(): LLMConfig {
   }
   if (process.env['ANTHROPIC_API_KEY'] && !provider) {
     return { provider: 'anthropic', model: model ?? 'claude-sonnet-4-20250514', temperature: 0.7, maxTokens: 2000 };
+  }
+  if (process.env['GEMINI_API_KEY'] && !provider) {
+    return { provider: 'gemini', model: model ?? 'gemini-3-pro-preview', temperature: 0.7, maxTokens: 2000 };
   }
 
   return { provider: 'mock', model: 'mock-model', temperature: 0.7, maxTokens: 2000 };

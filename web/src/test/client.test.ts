@@ -64,6 +64,7 @@ describe('APIClient', () => {
       await client.createRun('s_test', 'Hello', {
         provider: 'anthropic',
         model: 'MiniMax-M2.1',
+        base_url: 'https://proxy.example/v1',
       });
 
       const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -71,6 +72,7 @@ describe('APIClient', () => {
       expect(body['llm_config']).toEqual({
         provider: 'anthropic',
         model: 'MiniMax-M2.1',
+        base_url: 'https://proxy.example/v1',
       });
     });
   });

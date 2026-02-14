@@ -25,8 +25,9 @@ interface ScopeConfig {
 }
 
 export interface RunLLMConfig {
-  provider?: 'openai' | 'anthropic' | 'mock';
+  provider?: 'openai' | 'anthropic' | 'gemini' | 'mock';
   model?: string;
+  base_url?: string;
   temperature?: number;
   max_tokens?: number;
 }
@@ -545,8 +546,9 @@ export class APIClient {
       input: string;
       session_key?: string;
       llm_config?: {
-        provider?: 'openai' | 'anthropic' | 'mock';
+        provider?: 'openai' | 'anthropic' | 'gemini' | 'mock';
         model?: string;
+        base_url?: string;
         temperature?: number;
         max_tokens?: number;
       };

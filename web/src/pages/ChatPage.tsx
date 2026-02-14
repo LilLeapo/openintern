@@ -30,24 +30,25 @@ const MODEL_STORAGE_KEY = 'openintern.chat.model';
 const ASSISTANT_TARGET_STORAGE_KEY = 'openintern.chat.assistant_target';
 const SOLO_ASSISTANT_TARGET = '__solo__';
 
-const MODEL_OPTIONS: Record<'openai' | 'anthropic' | 'mock', string[]> = {
-  openai: ['gpt-5.2', 'gpt-4o', 'gpt-4o-mini','gemini-3-pro-preview'],
+const MODEL_OPTIONS: Record<'openai' | 'anthropic' | 'gemini' | 'mock', string[]> = {
+  openai: ['gpt-5.2', 'gpt-4o', 'gpt-4o-mini'],
   anthropic: ['MiniMax-M2.1', 'claude-sonnet-4-20250514'],
+  gemini: ['gemini-3-pro-preview', 'gemini-2.0-flash'],
   mock: ['mock-model'],
 };
 
-function readStoredProvider(): 'openai' | 'anthropic' | 'mock' {
+function readStoredProvider(): 'openai' | 'anthropic' | 'gemini' | 'mock' {
   if (typeof window === 'undefined') {
     return 'openai';
   }
   const value = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
-  if (value === 'openai' || value === 'anthropic' || value === 'mock') {
+  if (value === 'openai' || value === 'anthropic' || value === 'gemini' || value === 'mock') {
     return value;
   }
   return 'openai';
 }
 
-function readStoredModel(provider: 'openai' | 'anthropic' | 'mock'): string {
+function readStoredModel(provider: 'openai' | 'anthropic' | 'gemini' | 'mock'): string {
   if (typeof window === 'undefined') {
     return MODEL_OPTIONS[provider][0]!;
   }
@@ -83,7 +84,7 @@ export function ChatPage() {
     useAppPreferences();
   const { isZh, t } = useLocaleText();
   const navigate = useNavigate();
-  const [provider, setProvider] = useState<'openai' | 'anthropic' | 'mock'>(readStoredProvider);
+  const [provider, setProvider] = useState<'openai' | 'anthropic' | 'gemini' | 'mock'>(readStoredProvider);
   const [model, setModel] = useState<string>(() => readStoredModel(readStoredProvider()));
   const [assistantTarget, setAssistantTarget] = useState<string>(
     () => readStoredAssistantTarget() ?? SOLO_ASSISTANT_TARGET,
@@ -361,10 +362,11 @@ export function ChatPage() {
                 <span>{t('Provider', 'Provider')}</span>
                 <select
                   value={provider}
-                  onChange={event => setProvider(event.target.value as 'openai' | 'anthropic' | 'mock')}
+                  onChange={event => setProvider(event.target.value as 'openai' | 'anthropic' | 'gemini' | 'mock')}
                   disabled={isRunning}
                 >
                   <option value="anthropic">anthropic</option>
+                  <option value="gemini">gemini</option>
                   <option value="openai">openai</option>
                   <option value="mock">mock</option>
                 </select>
