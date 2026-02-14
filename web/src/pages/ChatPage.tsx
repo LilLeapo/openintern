@@ -31,20 +31,20 @@ const ASSISTANT_TARGET_STORAGE_KEY = 'openintern.chat.assistant_target';
 const SOLO_ASSISTANT_TARGET = '__solo__';
 
 const MODEL_OPTIONS: Record<'openai' | 'anthropic' | 'mock', string[]> = {
-  openai: ['gpt-4o', 'gpt-4o-mini'],
+  openai: ['gpt-5.2', 'gpt-4o', 'gpt-4o-mini','gemini-3-pro-preview'],
   anthropic: ['MiniMax-M2.1', 'claude-sonnet-4-20250514'],
   mock: ['mock-model'],
 };
 
 function readStoredProvider(): 'openai' | 'anthropic' | 'mock' {
   if (typeof window === 'undefined') {
-    return 'anthropic';
+    return 'openai';
   }
   const value = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
   if (value === 'openai' || value === 'anthropic' || value === 'mock') {
     return value;
   }
-  return 'anthropic';
+  return 'openai';
 }
 
 function readStoredModel(provider: 'openai' | 'anthropic' | 'mock'): string {

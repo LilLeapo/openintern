@@ -1,8 +1,12 @@
 /**
- * ChatMessage - displays a single chat message
+ * ChatMessage - displays a single chat message with markdown rendering
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useMemo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { ChatMessage as ChatMessageType } from '../../types/events';
 import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Chat.module.css';
@@ -10,6 +14,8 @@ import styles from './Chat.module.css';
 export interface ChatMessageProps {
   message: ChatMessageType;
 }
+
+const remarkPlugins = [remarkGfm];
 
 export function ChatMessage({ message }: ChatMessageProps) {
   const { t } = useLocaleText();
@@ -24,6 +30,32 @@ export function ChatMessage({ message }: ChatMessageProps) {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }, [message.content]);
+
+  const markdownComponents = useMemo(
+    () => ({
+      code(props: React.ComponentProps<'code'>) {
+        const { className, children, ...rest } = props;
+        const match = /language-(\w+)/.exec(className ?? '');
+        if (match) {
+          return (
+            <SyntaxHighlighter
+              style={oneDark}
+              language={match[1]}
+              PreTag="div"
+            >
+              {String(children).replace(/\n$/, '')}
+            </SyntaxHighlighter>
+          );
+        }
+        return (
+          <code className={className} {...rest}>
+            {children}
+          </code>
+        );
+      },
+    }),
+    [],
+  );
 
   return (
     <div className={`${styles.message} ${isUser ? styles.user : styles.assistant}`}>
@@ -41,7 +73,14 @@ export function ChatMessage({ message }: ChatMessageProps) {
             </button>
           </div>
         </div>
-        <div className={styles.messageText}>{message.content}</div>
+        <div className={styles.messageText}>
+          <ReactMarkdown
+            remarkPlugins={remarkPlugins}
+            components={markdownComponents}
+          >
+            {message.content}
+          </ReactMarkdown>
+        </div>
       </div>
     </div>
   );

@@ -35,11 +35,13 @@ export function ChatWindow({
   onViewGroupDiscussion,
 }: ChatWindowProps) {
   const { t } = useLocaleText();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+    }
   }, [messages]);
 
   return (
@@ -68,7 +70,7 @@ export function ChatWindow({
           )}
         </div>
       </div>
-      <div className={styles.messagesContainer}>
+      <div ref={messagesContainerRef} className={styles.messagesContainer}>
         {messages.length === 0 ? (
           <div className={styles.emptyState}>
             <p>{t('Start a conversation with the Agent', '开始与助手对话')}</p>
@@ -106,7 +108,6 @@ export function ChatWindow({
             {t('Error:', '错误：')} {error.message}
           </div>
         )}
-        <div ref={messagesEndRef} />
       </div>
       <ChatInput
         onSend={onSend}
