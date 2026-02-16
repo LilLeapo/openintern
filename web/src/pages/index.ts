@@ -5,3 +5,4 @@ export { BlackboardPage } from './BlackboardPage';
 export { OrchestratorPage } from './OrchestratorPage';
 export { SkillsPage } from './SkillsPage';
 export { GroupRunPage } from './GroupRunPage';
+export { TeamManagementPage } from './TeamManagementPage';

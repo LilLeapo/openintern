@@ -11,7 +11,7 @@
 
 import { Router, type Request, type Response } from 'express';
 import { CreateRoleSchema } from '../../types/orchestrator.js';
-import { AgentError, ValidationError } from '../../utils/errors.js';
+import { AgentError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 import { RoleRepository } from '../runtime/role-repository.js';
 
@@ -63,6 +63,76 @@ export function createRolesRouter(config: RolesRouterConfig): Router {
       try {
         const role = await roleRepository.require(req.params.role_id!);
         res.json(role);
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // PUT /api/roles/:role_id
+  router.put('/roles/:role_id', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const parseResult = CreateRoleSchema.partial().safeParse(req.body);
+        if (!parseResult.success) {
+          const firstError = parseResult.error.errors[0];
+          throw new ValidationError(
+            firstError?.message ?? 'Invalid request',
+            firstError?.path.join('.') ?? 'body'
+          );
+        }
+        const role = await roleRepository.update(req.params.role_id!, parseResult.data);
+        logger.info('Role updated', { roleId: role.id });
+        res.json(role);
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // DELETE /api/roles/:role_id
+  router.delete('/roles/:role_id', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const deleted = await roleRepository.delete(req.params.role_id!);
+        if (!deleted) {
+          throw new NotFoundError('Role', req.params.role_id!);
+        }
+        logger.info('Role deleted', { roleId: req.params.role_id });
+        res.status(204).send();
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // GET /api/roles/:role_id/stats
+  router.get('/roles/:role_id/stats', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const stats = await roleRepository.getStats(req.params.role_id!);
+        res.json(stats);
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // POST /api/roles/batch-delete
+  router.post('/roles/batch-delete', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const { ids } = req.body as { ids?: string[] };
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+          throw new ValidationError('ids array is required', 'ids');
+        }
+        let deletedCount = 0;
+        for (const id of ids) {
+          const deleted = await roleRepository.delete(id);
+          if (deleted) deletedCount++;
+        }
+        logger.info('Roles batch deleted', { count: deletedCount });
+        res.json({ deleted: deletedCount });
       } catch (err) {
         handleError(res, err);
       }

@@ -318,6 +318,35 @@
   background: #7c3aed;
 }
 
+.escalationNote {
+  margin-top: 0.45rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px dashed #c4b5fd;
+  border-radius: 8px;
+  background: rgba(237, 233, 254, 0.6);
+  color: #6d28d9;
+  font-size: 0.78rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.escalationLink {
+  border: 1px solid #c4b5fd;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #6d28d9;
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 0.2rem 0.45rem;
+  cursor: pointer;
+}
+
+.escalationLink:hover {
+  background: #ede9fe;
+}
+
 .errorMessage {
   padding: 0.68rem 0.8rem;
   background: var(--danger-soft);

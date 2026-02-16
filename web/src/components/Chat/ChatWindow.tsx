@@ -2,7 +2,7 @@
  * ChatWindow - main chat container component
  */
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import type { ChatMessage as ChatMessageType } from '../../types/events';
@@ -44,6 +44,15 @@ export function ChatWindow({
     }
   }, [messages]);
 
+  // Find the last assistant message to attach escalation info
+  const lastAssistantId = useMemo(() => {
+    if (!escalationChildRunId) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === 'assistant') return messages[i]!.id;
+    }
+    return null;
+  }, [messages, escalationChildRunId]);
+
   return (
     <div className={styles.chatWindow}>
       <div className={styles.chatToolbar}>
@@ -83,7 +92,12 @@ export function ChatWindow({
           </div>
         ) : (
           messages.map((msg) => (
-            <ChatMessage key={msg.id} message={msg} />
+            <ChatMessage
+              key={msg.id}
+              message={msg}
+              escalationRunId={msg.id === lastAssistantId ? escalationChildRunId : null}
+              onViewGroupDiscussion={msg.id === lastAssistantId ? onViewGroupDiscussion : undefined}
+            />
           ))
         )}
         {isWaiting && escalationChildRunId && (

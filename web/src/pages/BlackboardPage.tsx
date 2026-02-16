@@ -10,10 +10,11 @@ import styles from './BlackboardPage.module.css';
 
 export function BlackboardPage() {
   const { groupId } = useParams<{ groupId: string }>();
-  const { selectedGroupId, setSelectedGroupId, sessionKey } = useAppPreferences();
+  const { sessionKey } = useAppPreferences();
   const { t } = useLocaleText();
   const navigate = useNavigate();
   const [groups, setGroups] = useState<Group[]>([]);
+  const [localGroupId, setLocalGroupId] = useState<string | null>(groupId ?? null);
   const [roles, setRoles] = useState<Role[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -50,14 +51,14 @@ export function BlackboardPage() {
 
   useEffect(() => {
     if (!groupId) return;
-    setSelectedGroupId(groupId);
-  }, [groupId, setSelectedGroupId]);
+    setLocalGroupId(groupId);
+  }, [groupId]);
 
   const activeGroupId = useMemo(() => {
     if (groupId) return groupId;
-    if (selectedGroupId) return selectedGroupId;
+    if (localGroupId) return localGroupId;
     return groups[0]?.id ?? null;
-  }, [groupId, selectedGroupId, groups]);
+  }, [groupId, localGroupId, groups]);
 
   useEffect(() => {
     if (!activeGroupId) return;
@@ -130,7 +131,7 @@ export function BlackboardPage() {
                 value={activeGroupId ?? ''}
                 onChange={e => {
                   const nextId = e.target.value;
-                  setSelectedGroupId(nextId || null);
+                  setLocalGroupId(nextId || null);
                   if (nextId) {
                     navigate(`/blackboard/${nextId}`);
                   }

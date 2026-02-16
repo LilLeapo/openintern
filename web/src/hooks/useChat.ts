@@ -6,7 +6,6 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { apiClient } from '../api/client';
 import { useSSE } from './useSSE';
 import type { ChatMessage, ChatMessageAttachment } from '../types/events';
-import type { RunLLMConfig } from '../api/client';
 
 interface ActiveRunState {
   runId: string;
@@ -16,13 +15,6 @@ interface ActiveRunState {
 type MessageMap = Record<string, ChatMessage[]>;
 type RunIdMap = Record<string, string | null>;
 type ErrorMap = Record<string, Error | null>;
-type RunMode = 'single' | 'group';
-
-interface UseChatConfig {
-  llmConfig?: RunLLMConfig;
-  runMode?: RunMode;
-  groupId?: string | null;
-}
 
 export interface EscalationInfo {
   childRunId: string;
@@ -102,16 +94,13 @@ function updateSessionMessages(
   };
 }
 
-export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResult {
+export function useChat(sessionKey: string): UseChatResult {
   const [messagesBySession, setMessagesBySession] = useState<MessageMap>(readStoredMessages);
   const [latestRunBySession, setLatestRunBySession] = useState<RunIdMap>(readStoredLatestRuns);
   const [errorBySession, setErrorBySession] = useState<ErrorMap>({});
   const [activeRun, setActiveRun] = useState<ActiveRunState | null>(null);
   const [escalation, setEscalation] = useState<EscalationInfo | null>(null);
   const [isWaiting, setIsWaiting] = useState(false);
-  const runMode = config?.runMode ?? 'single';
-  const selectedGroupId = config?.groupId ?? null;
-  const llmConfig = config?.llmConfig;
 
   const streamRunId = activeRun?.runId ?? null;
   const currentRunId = activeRun?.sessionKey === sessionKey ? activeRun.runId : null;
@@ -309,13 +298,6 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
   const sendMessage = useCallback(
     async (input: string, files?: File[]) => {
       if (!input.trim() || activeRunRef.current) return;
-      if (runMode === 'group' && !selectedGroupId) {
-        setErrorBySession(prev => ({
-          ...prev,
-          [sessionKey]: new Error('Group mode requires selecting a group first.'),
-        }));
-        return;
-      }
 
       // Upload files first if any
       let attachments: ChatMessageAttachment[] = [];
@@ -350,13 +332,7 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
         const attachmentRefs = attachments.length > 0
           ? attachments.map((a) => ({ upload_id: a.upload_id }))
           : undefined;
-        const response = runMode === 'group' && selectedGroupId
-          ? await apiClient.createGroupRun(selectedGroupId, {
-              input,
-              session_key: sessionKey,
-              ...(llmConfig ? { llm_config: llmConfig } : {}),
-            })
-          : await apiClient.createRun(sessionKey, input, llmConfig, attachmentRefs);
+        const response = await apiClient.createRun(sessionKey, input, undefined, attachmentRefs);
         const nextRun = { runId: response.run_id, sessionKey };
         setActiveRun(nextRun);
         setLatestRunBySession(prev => ({ ...prev, [sessionKey]: response.run_id }));
@@ -367,7 +343,7 @@ export function useChat(sessionKey: string, config?: UseChatConfig): UseChatResu
         }));
       }
     },
-    [sessionKey, llmConfig, runMode, selectedGroupId],
+    [sessionKey],
   );
 
   // Reset streaming state when runId changes

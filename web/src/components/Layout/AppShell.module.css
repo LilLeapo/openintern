@@ -89,6 +89,9 @@
   text-decoration: none;
   color: inherit;
   transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
 }
 
 .navItem:hover {
@@ -111,57 +114,28 @@
   font-size: 0.76rem;
 }
 
+.adminToggle {
+  border-color: #e2e8f0;
+  background: rgba(241, 245, 249, 0.6);
+}
+
+.adminToggleOpen {
+  border-color: #c7d2fe;
+  background: rgba(224, 231, 255, 0.5);
+}
+
+.adminItem {
+  margin-left: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.9rem;
+}
+
 .sessionCard {
   margin-top: auto;
   border: 1px solid #c7d2fe;
   background: linear-gradient(180deg, #ffffff, #f8fafc);
   border-radius: 16px;
   padding: 0.8rem;
-}
-
-.sessionLabel {
-  margin: 0 0 0.45rem 0;
-  font-size: 0.76rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.sessionInputRow {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.sessionInput {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--border);
-  background: #ffffff;
-  border-radius: 10px;
-  padding: 0.45rem 0.58rem;
-  font-size: 0.82rem;
-}
-
-.sessionInput:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
-}
-
-.applyButton {
-  border: none;
-  border-radius: 10px;
-  padding: 0.45rem 0.72rem;
-  background: var(--accent);
-  color: white;
-  font-size: 0.78rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.applyButton:disabled {
-  background: #94a3b8;
-  cursor: not-allowed;
 }
 
 .sessionHint {
@@ -171,7 +145,6 @@
 }
 
 .localeRow {
-  margin-top: 0.55rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -263,6 +236,10 @@
   .nav {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .adminItem {
+    margin-left: 0;
   }
 }
 

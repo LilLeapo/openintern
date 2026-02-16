@@ -5,9 +5,16 @@
  * - POST /api/groups
  * - GET /api/groups
  * - GET /api/groups/:group_id
+ * - PUT /api/groups/:group_id
+ * - DELETE /api/groups/:group_id
+ * - GET /api/groups/:group_id/stats
+ * - GET /api/groups/:group_id/runs
  * - POST /api/groups/:group_id/members
  * - GET /api/groups/:group_id/members
- * - POST /api/groups/:group_id/runs
+ * - PUT /api/groups/:group_id/members/:member_id
+ * - DELETE /api/groups/:group_id/members/:member_id
+ * - POST /api/groups/:group_id/runs (create run)
+ * - POST /api/groups/batch-delete
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -15,7 +22,7 @@ import { z } from 'zod';
 import type { QueuedRun } from '../../types/api.js';
 import { LLMConfigRequestSchema } from '../../types/api.js';
 import { CreateGroupSchema, AddMemberSchema } from '../../types/orchestrator.js';
-import { AgentError, ValidationError } from '../../utils/errors.js';
+import { AgentError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { generateRunId } from '../../utils/ids.js';
 import { logger } from '../../utils/logger.js';
 import { GroupRepository } from '../runtime/group-repository.js';
@@ -122,6 +129,133 @@ export function createGroupsRouter(config: GroupsRouterConfig): Router {
         await groupRepository.requireGroup(req.params.group_id!);
         const members = await groupRepository.listMembers(req.params.group_id!);
         res.json({ members });
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // PUT /api/groups/:group_id
+  router.put('/groups/:group_id', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const parseResult = CreateGroupSchema.partial().safeParse(req.body);
+        if (!parseResult.success) {
+          const firstError = parseResult.error.errors[0];
+          throw new ValidationError(
+            firstError?.message ?? 'Invalid request',
+            firstError?.path.join('.') ?? 'body'
+          );
+        }
+        const group = await groupRepository.updateGroup(req.params.group_id!, parseResult.data);
+        logger.info('Group updated', { groupId: group.id });
+        res.json(group);
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // DELETE /api/groups/:group_id
+  router.delete('/groups/:group_id', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const deleted = await groupRepository.deleteGroup(req.params.group_id!);
+        if (!deleted) {
+          throw new NotFoundError('Group', req.params.group_id!);
+        }
+        logger.info('Group deleted', { groupId: req.params.group_id });
+        res.status(204).send();
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // GET /api/groups/:group_id/stats
+  router.get('/groups/:group_id/stats', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const stats = await groupRepository.getGroupStats(req.params.group_id!);
+        res.json(stats);
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // GET /api/groups/:group_id/runs (history)
+  router.get('/groups/:group_id/runs', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const limit = Math.min(Number.parseInt(req.query.limit as string || '20', 10), 100);
+        const offset = Number.parseInt(req.query.offset as string || '0', 10);
+        const runs = await groupRepository.getGroupRuns(req.params.group_id!, limit, offset);
+        res.json({ runs });
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // PUT /api/groups/:group_id/members/:member_id
+  router.put('/groups/:group_id/members/:member_id', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const { ordinal } = req.body as { ordinal?: number };
+        const member = await groupRepository.updateMember(
+          req.params.group_id!,
+          req.params.member_id!,
+          { ordinal }
+        );
+        logger.info('Member updated', {
+          groupId: req.params.group_id,
+          memberId: req.params.member_id,
+        });
+        res.json(member);
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // DELETE /api/groups/:group_id/members/:member_id
+  router.delete('/groups/:group_id/members/:member_id', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const deleted = await groupRepository.removeMember(
+          req.params.group_id!,
+          req.params.member_id!
+        );
+        if (!deleted) {
+          throw new NotFoundError('GroupMember', req.params.member_id!);
+        }
+        logger.info('Member removed from group', {
+          groupId: req.params.group_id,
+          memberId: req.params.member_id,
+        });
+        res.status(204).send();
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // POST /api/groups/batch-delete
+  router.post('/groups/batch-delete', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const { ids } = req.body as { ids?: string[] };
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+          throw new ValidationError('ids array is required', 'ids');
+        }
+        let deletedCount = 0;
+        for (const id of ids) {
+          const deleted = await groupRepository.deleteGroup(id);
+          if (deleted) deletedCount++;
+        }
+        logger.info('Groups batch deleted', { count: deletedCount });
+        res.json({ deleted: deletedCount });
       } catch (err) {
         handleError(res, err);
       }

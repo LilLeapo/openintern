@@ -190,4 +190,170 @@ export class GroupRepository {
     );
     return (result.rowCount ?? 0) > 0;
   }
+
+  async updateGroup(
+    id: string,
+    fields: Partial<Pick<Group, 'name' | 'description' | 'project_id'>>
+  ): Promise<Group> {
+    await this.requireGroup(id);
+
+    const sets: string[] = [];
+    const params: unknown[] = [id];
+    let idx = 2;
+
+    if (fields.name !== undefined) {
+      sets.push(`name = $${idx++}`);
+      params.push(fields.name);
+    }
+    if (fields.description !== undefined) {
+      sets.push(`description = $${idx++}`);
+      params.push(fields.description);
+    }
+    if (fields.project_id !== undefined) {
+      sets.push(`project_id = $${idx++}`);
+      params.push(fields.project_id);
+    }
+
+    if (sets.length === 0) {
+      return this.requireGroup(id);
+    }
+
+    sets.push('updated_at = NOW()');
+
+    const result = await this.pool.query<GroupRow>(
+      `UPDATE groups SET ${sets.join(', ')} WHERE id = $1 RETURNING *`,
+      params
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundError('Group', id);
+    return mapGroupRow(row);
+  }
+
+  async deleteGroup(id: string): Promise<boolean> {
+    // Delete members first
+    await this.pool.query(`DELETE FROM group_members WHERE group_id = $1`, [id]);
+    const result = await this.pool.query(
+      `DELETE FROM groups WHERE id = $1`,
+      [id]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async updateMember(
+    groupId: string,
+    memberId: string,
+    fields: { ordinal?: number }
+  ): Promise<GroupMember> {
+    const sets: string[] = [];
+    const params: unknown[] = [memberId, groupId];
+    let idx = 3;
+
+    if (fields.ordinal !== undefined) {
+      sets.push(`ordinal = $${idx++}`);
+      params.push(fields.ordinal);
+    }
+
+    if (sets.length === 0) {
+      const result = await this.pool.query<MemberRow>(
+        `SELECT * FROM group_members WHERE id = $1 AND group_id = $2`,
+        [memberId, groupId]
+      );
+      const row = result.rows[0];
+      if (!row) throw new NotFoundError('GroupMember', memberId);
+      return mapMemberRow(row);
+    }
+
+    const result = await this.pool.query<MemberRow>(
+      `UPDATE group_members SET ${sets.join(', ')} WHERE id = $1 AND group_id = $2 RETURNING *`,
+      params
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundError('GroupMember', memberId);
+    return mapMemberRow(row);
+  }
+
+  async getGroupStats(groupId: string): Promise<{
+    run_count: number;
+    completed_count: number;
+    failed_count: number;
+    success_rate: number;
+    avg_duration_ms: number | null;
+  }> {
+    await this.requireGroup(groupId);
+    const agentId = `group:${groupId}`;
+    const result = await this.pool.query<{
+      run_count: string;
+      completed_count: string;
+      failed_count: string;
+      avg_duration_ms: string | null;
+    }>(
+      `SELECT
+        COUNT(*)::text AS run_count,
+        COUNT(*) FILTER (WHERE status = 'completed')::text AS completed_count,
+        COUNT(*) FILTER (WHERE status = 'failed')::text AS failed_count,
+        AVG(EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000)
+          FILTER (WHERE ended_at IS NOT NULL AND started_at IS NOT NULL)::text AS avg_duration_ms
+      FROM runs
+      WHERE agent_id = $1`,
+      [agentId]
+    );
+    const row = result.rows[0];
+    const runCount = Number.parseInt(row?.run_count ?? '0', 10);
+    const completedCount = Number.parseInt(row?.completed_count ?? '0', 10);
+    const failedCount = Number.parseInt(row?.failed_count ?? '0', 10);
+    const avgDuration = row?.avg_duration_ms ? Math.round(Number.parseFloat(row.avg_duration_ms)) : null;
+    return {
+      run_count: runCount,
+      completed_count: completedCount,
+      failed_count: failedCount,
+      success_rate: runCount > 0 ? completedCount / runCount : 0,
+      avg_duration_ms: avgDuration,
+    };
+  }
+
+  async getGroupRuns(
+    groupId: string,
+    limit: number = 20,
+    offset: number = 0
+  ): Promise<Array<{
+    run_id: string;
+    status: string;
+    input: string;
+    created_at: string;
+    ended_at: string | null;
+    duration_ms: number | null;
+  }>> {
+    await this.requireGroup(groupId);
+    const agentId = `group:${groupId}`;
+    const result = await this.pool.query<{
+      id: string;
+      status: string;
+      input: string;
+      created_at: string | Date;
+      started_at: string | Date | null;
+      ended_at: string | Date | null;
+    }>(
+      `SELECT id, status, input, created_at, started_at, ended_at
+      FROM runs
+      WHERE agent_id = $1
+      ORDER BY created_at DESC
+      LIMIT $2 OFFSET $3`,
+      [agentId, limit, offset]
+    );
+    return result.rows.map(row => {
+      const started = row.started_at ? toIso(row.started_at) : null;
+      const ended = row.ended_at ? toIso(row.ended_at) : null;
+      const durationMs = ended && started
+        ? new Date(ended).getTime() - new Date(started).getTime()
+        : null;
+      return {
+        run_id: row.id,
+        status: row.status,
+        input: row.input,
+        created_at: toIso(row.created_at),
+        ended_at: ended,
+        duration_ms: durationMs,
+      };
+    });
+  }
 }

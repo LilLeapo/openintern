@@ -79,16 +79,12 @@
   margin-top: 0.62rem;
 }
 
-.sessionActionPrimary,
-.sessionActionSecondary {
+.sessionActionPrimary {
   border-radius: 10px;
   padding: 0.44rem 0.52rem;
   font-size: 0.74rem;
   font-weight: 600;
   cursor: pointer;
-}
-
-.sessionActionPrimary {
   border: none;
   background: #0d9488;
   color: white;
@@ -99,98 +95,11 @@
   cursor: not-allowed;
 }
 
-.sessionActionSecondary {
-  border: 1px solid var(--border-strong);
-  background: #ffffff;
-  color: var(--text-secondary);
-}
-
 .sessionList {
   margin-top: 0.62rem;
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-}
-
-.modelControls {
-  margin-top: 0.62rem;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
-}
-
-.modeControls {
-  margin-top: 0.62rem;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
-}
-
-.modeField {
-  display: flex;
-  flex-direction: column;
-  gap: 0.24rem;
-}
-
-.modeField span {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.modeField select {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.42rem 0.48rem;
-  font-size: 0.78rem;
-  background: #ffffff;
-  color: var(--text-secondary);
-}
-
-.modelField {
-  display: flex;
-  flex-direction: column;
-  gap: 0.24rem;
-}
-
-.modelField span {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.modelField select {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.42rem 0.48rem;
-  font-size: 0.78rem;
-  background: #ffffff;
-  color: var(--text-secondary);
-}
-
-.warningText {
-  margin-top: 0.62rem;
-  color: #7f1d1d;
-  font-size: 0.78rem;
-  line-height: 1.35;
-}
-
-.infoText {
-  margin-top: 0.62rem;
-  color: var(--text-secondary);
-  font-size: 0.78rem;
-  line-height: 1.35;
-}
-
-.inlineLink {
-  border: none;
-  background: transparent;
-  color: #0f766e;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 0;
 }
 
 .sessionItem {
@@ -261,85 +170,6 @@
   cursor: not-allowed;
 }
 
-.outputPreview {
-  margin-top: 0.7rem;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 0.84rem;
-  line-height: 1.45;
-  color: var(--text-secondary);
-  background: #ffffff;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 0.56rem;
-  max-height: 210px;
-  overflow: auto;
-}
-
-.runHistoryList {
-  margin-top: 0.62rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.runHistoryItem {
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #ffffff;
-  padding: 0.46rem 0.52rem;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 0.18rem;
-  cursor: pointer;
-}
-
-.runHistoryItem:hover {
-  border-color: #2dd4bf;
-}
-
-.runHistoryId {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.runHistoryMeta {
-  font-size: 0.71rem;
-  color: var(--text-muted);
-}
-
-.emptyText {
-  margin-top: 0.62rem;
-  font-style: italic;
-  color: var(--text-muted);
-}
-
-.tipList {
-  margin: 0.62rem 0 0;
-  padding-left: 1rem;
-  color: var(--text-secondary);
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  font-size: 0.83rem;
-}
-
-.pageAction {
-  border: none;
-  border-radius: 11px;
-  background: linear-gradient(145deg, #0f766e, #0d9488);
-  color: white;
-  font-weight: 600;
-  font-size: 0.82rem;
-  padding: 0.55rem 0.78rem;
-  cursor: pointer;
-}
-
 @media (max-width: 1200px) {
   .layout {
     grid-template-columns: 1fr;
@@ -363,14 +193,6 @@
 
 @media (max-width: 560px) {
   .statsGrid {
-    grid-template-columns: 1fr;
-  }
-
-  .modelControls {
-    grid-template-columns: 1fr;
-  }
-
-  .modeControls {
     grid-template-columns: 1fr;
   }
 }

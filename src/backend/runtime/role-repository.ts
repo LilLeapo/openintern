@@ -146,4 +146,23 @@ export class RoleRepository {
     );
     return (result.rowCount ?? 0) > 0;
   }
+
+  async getStats(id: string): Promise<{
+    group_count: number;
+    groups: Array<{ id: string; name: string }>;
+  }> {
+    await this.require(id);
+    const result = await this.pool.query<{ group_id: string; group_name: string }>(
+      `SELECT DISTINCT g.id AS group_id, g.name AS group_name
+       FROM group_members gm
+       JOIN groups g ON g.id = gm.group_id
+       WHERE gm.role_id = $1
+       ORDER BY g.name ASC`,
+      [id]
+    );
+    return {
+      group_count: result.rows.length,
+      groups: result.rows.map(row => ({ id: row.group_id, name: row.group_name })),
+    };
+  }
 }

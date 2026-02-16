@@ -1,0 +1,61 @@
+.profile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: center;
+  text-align: center;
+  padding: 0.9rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(160deg, #ecfeff, #f0fdfa);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+}
+
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  font-weight: 700;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.04em;
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.name {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.status {
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.statusReady {
+  color: #0d9488;
+}
+
+.statusBusy {
+  color: #d97706;
+}
+
+.statusWaiting {
+  color: #7c3aed;
+}
+
+.bio {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}

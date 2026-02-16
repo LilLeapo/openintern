@@ -10,7 +10,6 @@ import {
 
 const SESSION_STORAGE_KEY = 'openintern.session_key';
 const SESSION_HISTORY_STORAGE_KEY = 'openintern.session_history';
-const GROUP_STORAGE_KEY = 'openintern.group_id';
 const LOCALE_STORAGE_KEY = 'openintern.locale';
 const DEFAULT_SESSION_KEY = 's_default';
 const SESSION_PATTERN = /^s_[a-zA-Z0-9_]+$/;
@@ -24,8 +23,6 @@ interface AppPreferencesContextValue {
   sessionHistory: string[];
   createSession: () => string;
   removeSession: (value: string) => void;
-  selectedGroupId: string | null;
-  setSelectedGroupId: (value: string | null) => void;
   locale: AppLocale;
   setLocale: (value: AppLocale) => void;
 }
@@ -89,9 +86,6 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     return stored ? normalizeSessionKey(stored) : DEFAULT_SESSION_KEY;
   });
   const [sessionHistory, setSessionHistory] = useState<string[]>(readSessionHistory);
-  const [selectedGroupId, setSelectedGroupIdState] = useState<string | null>(() =>
-    readStorage(GROUP_STORAGE_KEY),
-  );
   const [locale, setLocaleState] = useState<AppLocale>(readLocale);
 
   useEffect(() => {
@@ -117,14 +111,6 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       return [sessionKey, ...prev].slice(0, MAX_SESSION_HISTORY);
     });
   }, [sessionKey]);
-
-  useEffect(() => {
-    if (selectedGroupId) {
-      window.localStorage.setItem(GROUP_STORAGE_KEY, selectedGroupId);
-      return;
-    }
-    window.localStorage.removeItem(GROUP_STORAGE_KEY);
-  }, [selectedGroupId]);
 
   useEffect(() => {
     window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
@@ -163,10 +149,6 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     });
   }, [sessionKey]);
 
-  const setSelectedGroupId = useCallback((value: string | null) => {
-    setSelectedGroupIdState(value);
-  }, []);
-
   const setLocale = useCallback((value: AppLocale) => {
     setLocaleState(value);
   }, []);
@@ -178,8 +160,6 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       sessionHistory,
       createSession,
       removeSession,
-      selectedGroupId,
-      setSelectedGroupId,
       locale,
       setLocale,
     }),
@@ -189,8 +169,6 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       sessionHistory,
       createSession,
       removeSession,
-      selectedGroupId,
-      setSelectedGroupId,
       locale,
       setLocale,
     ],

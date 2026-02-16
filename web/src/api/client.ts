@@ -205,6 +205,7 @@ export class APIClient {
     const seenCursors = new Set<string>();
     let cursor: string | null = null;
 
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       const params = new URLSearchParams();
       params.set('limit', String(pageLimit));
@@ -641,6 +642,266 @@ export class APIClient {
     if (!response.ok) {
       throw new APIError(
         await this.parseErrorMessage(response, 'Failed to create group run'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Update a role
+   */
+  async updateRole(roleId: string, data: {
+    name?: string;
+    description?: string;
+    system_prompt?: string;
+    is_lead?: boolean;
+    allowed_tools?: string[];
+    denied_tools?: string[];
+  }): Promise<Role> {
+    const response = await fetch(`${this.baseURL}/api/roles/${roleId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to update role'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Delete a role
+   */
+  async deleteRole(roleId: string): Promise<void> {
+    const response = await fetch(`${this.baseURL}/api/roles/${roleId}`, {
+      method: 'DELETE',
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to delete role'),
+        response.status,
+      );
+    }
+  }
+
+  /**
+   * Get role usage stats
+   */
+  async getRoleStats(roleId: string): Promise<{
+    group_count: number;
+    groups: Array<{ id: string; name: string }>;
+  }> {
+    const response = await fetch(`${this.baseURL}/api/roles/${roleId}/stats`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get role stats'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Batch delete roles
+   */
+  async batchDeleteRoles(ids: string[]): Promise<{ deleted: number }> {
+    const response = await fetch(`${this.baseURL}/api/roles/batch-delete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({ ids }),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to batch delete roles'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Update a group
+   */
+  async updateGroup(groupId: string, data: {
+    name?: string;
+    description?: string;
+  }): Promise<Group> {
+    const response = await fetch(`${this.baseURL}/api/groups/${groupId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to update group'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Delete a group
+   */
+  async deleteGroup(groupId: string): Promise<void> {
+    const response = await fetch(`${this.baseURL}/api/groups/${groupId}`, {
+      method: 'DELETE',
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to delete group'),
+        response.status,
+      );
+    }
+  }
+
+  /**
+   * Get group usage stats
+   */
+  async getGroupStats(groupId: string): Promise<{
+    run_count: number;
+    completed_count: number;
+    failed_count: number;
+    success_rate: number;
+    avg_duration_ms: number | null;
+  }> {
+    const response = await fetch(`${this.baseURL}/api/groups/${groupId}/stats`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get group stats'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Get group run history
+   */
+  async getGroupRuns(groupId: string, limit: number = 20, offset: number = 0): Promise<{
+    runs: Array<{
+      run_id: string;
+      status: string;
+      input: string;
+      created_at: string;
+      ended_at: string | null;
+      duration_ms: number | null;
+    }>;
+  }> {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    const response = await fetch(
+      `${this.baseURL}/api/groups/${groupId}/runs?${params.toString()}`,
+      { headers: this.buildScopeHeaders() }
+    );
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get group runs'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Remove a member from a group
+   */
+  async removeGroupMember(groupId: string, memberId: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseURL}/api/groups/${groupId}/members/${memberId}`,
+      {
+        method: 'DELETE',
+        headers: this.buildScopeHeaders(),
+      }
+    );
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to remove group member'),
+        response.status,
+      );
+    }
+  }
+
+  /**
+   * Update a group member (ordinal)
+   */
+  async updateGroupMember(
+    groupId: string,
+    memberId: string,
+    data: { ordinal?: number }
+  ): Promise<GroupMember> {
+    const response = await fetch(
+      `${this.baseURL}/api/groups/${groupId}/members/${memberId}`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...this.buildScopeHeaders(),
+        },
+        body: JSON.stringify(data),
+      }
+    );
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to update group member'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Batch delete groups
+   */
+  async batchDeleteGroups(ids: string[]): Promise<{ deleted: number }> {
+    const response = await fetch(`${this.baseURL}/api/groups/batch-delete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({ ids }),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to batch delete groups'),
         response.status,
       );
     }

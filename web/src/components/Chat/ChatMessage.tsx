@@ -13,6 +13,8 @@ import styles from './Chat.module.css';
 
 export interface ChatMessageProps {
   message: ChatMessageType;
+  escalationRunId?: string | null;
+  onViewGroupDiscussion?: () => void;
 }
 
 const remarkPlugins = [remarkGfm];
@@ -23,7 +25,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+export function ChatMessage({ message, escalationRunId, onViewGroupDiscussion }: ChatMessageProps) {
   const { t } = useLocaleText();
   const isUser = message.role === 'user';
   const time = new Date(message.timestamp).toLocaleTimeString();
@@ -104,6 +106,22 @@ export function ChatMessage({ message }: ChatMessageProps) {
             {message.content}
           </ReactMarkdown>
         </div>
+        {!isUser && escalationRunId && (
+          <div className={styles.escalationNote}>
+            <span>{t(
+              'Expert team was consulted for this response.',
+              '此回复经过专家团队协助完成。',
+            )}</span>
+            {onViewGroupDiscussion && (
+              <button
+                className={styles.escalationLink}
+                onClick={onViewGroupDiscussion}
+              >
+                {t('View team discussion', '查看团队讨论')}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
