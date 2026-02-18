@@ -29,6 +29,12 @@ export interface RunnerContext {
   history?: Message[];
   /** Multipart input content (text + images/files) when attachments are present */
   inputContent?: ContentPart[];
+  /** Callback to emit events immediately (for approval flow SSE broadcast) */
+  onEvent?: (event: Event) => void;
+  /** Callback to transition run to waiting status */
+  onWaiting?: () => Promise<void>;
+  /** Callback to resume run from waiting status */
+  onResumed?: () => Promise<void>;
 }
 
 export interface RunnerResult {
@@ -242,8 +248,11 @@ export class SingleAgentRunner implements AgentRunner {
               agentId: ctx.agentId,
               stepId,
               rootSpan,
-              agentContext: this.config.agentContext,
-              abortSignal: ctx.abortSignal,
+              ...(this.config.agentContext ? { agentContext: this.config.agentContext } : {}),
+              ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
+              ...(ctx.onEvent ? { onEvent: ctx.onEvent } : {}),
+              ...(ctx.onWaiting ? { onWaiting: ctx.onWaiting } : {}),
+              ...(ctx.onResumed ? { onResumed: ctx.onResumed } : {}),
             }
           );
 

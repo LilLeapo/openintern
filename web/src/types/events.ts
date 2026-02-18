@@ -9,6 +9,9 @@ import type {
   RunFailedPayload,
   ToolCalledPayload,
   ToolResultPayload,
+  ToolRequiresApprovalPayload,
+  ToolApprovedPayload,
+  ToolRejectedPayload,
   StepStartedPayload,
   StepCompletedPayload,
   LLMCalledPayload,
@@ -41,6 +44,21 @@ export interface ToolResultEvent extends BaseEvent {
   payload: ToolResultPayload;
 }
 
+export interface ToolRequiresApprovalEvent extends BaseEvent {
+  type: 'tool.requires_approval';
+  payload: ToolRequiresApprovalPayload;
+}
+
+export interface ToolApprovedEvent extends BaseEvent {
+  type: 'tool.approved';
+  payload: ToolApprovedPayload;
+}
+
+export interface ToolRejectedEvent extends BaseEvent {
+  type: 'tool.rejected';
+  payload: ToolRejectedPayload;
+}
+
 export interface StepStartedEvent extends BaseEvent {
   type: 'step.started';
   payload: StepStartedPayload;
@@ -68,6 +86,9 @@ export type Event =
   | RunFailedEvent
   | ToolCalledEvent
   | ToolResultEvent
+  | ToolRequiresApprovalEvent
+  | ToolApprovedEvent
+  | ToolRejectedEvent
   | StepStartedEvent
   | StepCompletedEvent
   | LLMCalledEvent

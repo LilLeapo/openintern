@@ -83,11 +83,13 @@ describe('ToolPolicy', () => {
       expect(result.reason).toContain('not in the allowed list');
     });
 
-    it('allows high risk tool if explicitly whitelisted', () => {
+    it('requires approval for high risk tool even if whitelisted', () => {
       const agent = makeAgent({ allowedTools: ['dangerous_tool'] });
       const tool = makeTool({ name: 'dangerous_tool', riskLevel: 'high' });
       const result = policy.check(agent, tool);
-      expect(result.allowed).toBe(true);
+      expect(result.allowed).toBe(false);
+      expect(result.decision).toBe('ask');
+      expect(result.reason).toContain('high risk');
     });
 
     it('allows tool when its skill id is in whitelist', () => {

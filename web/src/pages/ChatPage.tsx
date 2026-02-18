@@ -33,8 +33,19 @@ export function ChatPage() {
   const { isZh, t } = useLocaleText();
   const navigate = useNavigate();
 
-  const { messages, isRunning, isWaiting, error, sendMessage, clearMessages, latestRunId, escalation } =
-    useChat(sessionKey);
+  const {
+    messages,
+    isRunning,
+    isWaiting,
+    error,
+    sendMessage,
+    clearMessages,
+    latestRunId,
+    escalation,
+    pendingApproval,
+    approveToolCall,
+    rejectToolCall,
+  } = useChat(sessionKey);
 
   const stats = useMemo(() => {
     const assistantCount = messages.filter(msg => msg.role === 'assistant').length;
@@ -88,6 +99,9 @@ export function ChatPage() {
                 navigate(`/trace/${latestRunId}`);
               }
             }}
+            pendingApproval={pendingApproval}
+            onApprove={approveToolCall}
+            onReject={rejectToolCall}
           />
         </section>
         <aside className={styles.sidePanel}>

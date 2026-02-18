@@ -156,6 +156,9 @@ export const ToolResultSchema = z.object({
   error: z.string().optional(),
   duration: z.number().nonnegative(),
   blocked: z.boolean().optional(),
+  requiresApproval: z.boolean().optional(),
+  policyReason: z.string().optional(),
+  riskLevel: z.string().optional(),
 });
 
 export type ToolResult = z.infer<typeof ToolResultSchema>;

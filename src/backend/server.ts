@@ -216,7 +216,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     workDir: finalConfig.workDir ?? `${finalConfig.baseDir}/workspace`,
     ...(finalConfig.mcp ? { mcp: finalConfig.mcp } : {}),
   });
-  runQueue.setExecutor(runtimeExecutor);
+  runQueue.setExecutor(runtimeExecutor.execute);
 
   // Middleware: CORS
   app.use(
@@ -260,6 +260,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     sseManager,
     runRepository,
     eventService,
+    approvalManager: runtimeExecutor.approvalManager,
   });
   app.use('/api', runsRouter);
 

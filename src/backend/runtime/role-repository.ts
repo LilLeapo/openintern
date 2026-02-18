@@ -78,6 +78,21 @@ export class RoleRepository {
     return role;
   }
 
+  /**
+   * Get role by agent instance ID.
+   * Joins agent_instances table to find the role for a given agent.
+   */
+  async getRoleByAgentId(agentId: string): Promise<Role | null> {
+    const result = await this.pool.query<RoleRow>(
+      `SELECT r.* FROM roles r
+       JOIN agent_instances ai ON ai.role_id = r.id
+       WHERE ai.id = $1`,
+      [agentId]
+    );
+    const row = result.rows[0];
+    return row ? mapRoleRow(row) : null;
+  }
+
   async list(): Promise<Role[]> {
     const result = await this.pool.query<RoleRow>(
       `SELECT * FROM roles ORDER BY created_at DESC`

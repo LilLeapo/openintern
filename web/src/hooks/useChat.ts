@@ -22,6 +22,15 @@ export interface EscalationInfo {
   goal?: string;
 }
 
+export interface PendingApproval {
+  runId: string;
+  toolCallId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  riskLevel: string;
+  reason: string;
+}
+
 export interface UseChatResult {
   messages: ChatMessage[];
   isRunning: boolean;
@@ -30,8 +39,11 @@ export interface UseChatResult {
   latestRunId: string | null;
   error: Error | null;
   escalation: EscalationInfo | null;
+  pendingApproval: PendingApproval | null;
   sendMessage: (input: string, files?: File[]) => Promise<void>;
   clearMessages: () => void;
+  approveToolCall: () => Promise<void>;
+  rejectToolCall: (reason?: string) => Promise<void>;
 }
 
 function generateId(): string {
@@ -101,6 +113,7 @@ export function useChat(sessionKey: string): UseChatResult {
   const [activeRun, setActiveRun] = useState<ActiveRunState | null>(null);
   const [escalation, setEscalation] = useState<EscalationInfo | null>(null);
   const [isWaiting, setIsWaiting] = useState(false);
+  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
 
   const streamRunId = activeRun?.runId ?? null;
   const currentRunId = activeRun?.sessionKey === sessionKey ? activeRun.runId : null;
@@ -181,6 +194,28 @@ export function useChat(sessionKey: string): UseChatResult {
         if (payload.toolName === 'escalate_to_group') {
           setIsWaiting(true);
         }
+      } else if (event.type === 'tool.requires_approval') {
+        // Handle tool approval request
+        const payload = event.payload as {
+          tool_call_id: string;
+          toolName: string;
+          args: Record<string, unknown>;
+          risk_level: string;
+          reason: string;
+        };
+        setPendingApproval({
+          runId: currentActiveRun.runId,
+          toolCallId: payload.tool_call_id,
+          toolName: payload.toolName,
+          args: payload.args,
+          riskLevel: payload.risk_level,
+          reason: payload.reason,
+        });
+        setIsWaiting(true);
+      } else if (event.type === 'tool.approved' || event.type === 'tool.rejected') {
+        // Clear pending approval when decision is made
+        setPendingApproval(null);
+        setIsWaiting(false);
       } else if (event.type === 'tool.result') {
         // Extract child run ID from escalation result
         const payload = event.payload as {
@@ -367,6 +402,42 @@ export function useChat(sessionKey: string): UseChatResult {
     setIsWaiting(false);
   }, [sessionKey, clearEvents]);
 
+  const approveToolCall = useCallback(async () => {
+    if (!pendingApproval) {
+      console.warn('No pending approval to approve');
+      return;
+    }
+
+    try {
+      await apiClient.approveToolCall(pendingApproval.runId, pendingApproval.toolCallId);
+      // Don't clear pendingApproval here - wait for tool.approved event
+    } catch (error) {
+      console.error('Failed to approve tool call:', error);
+      setErrorBySession(prev => ({
+        ...prev,
+        [sessionKey]: error instanceof Error ? error : new Error('Failed to approve tool call'),
+      }));
+    }
+  }, [pendingApproval, sessionKey]);
+
+  const rejectToolCall = useCallback(async (reason?: string) => {
+    if (!pendingApproval) {
+      console.warn('No pending approval to reject');
+      return;
+    }
+
+    try {
+      await apiClient.rejectToolCall(pendingApproval.runId, pendingApproval.toolCallId, reason);
+      // Don't clear pendingApproval here - wait for tool.rejected event
+    } catch (error) {
+      console.error('Failed to reject tool call:', error);
+      setErrorBySession(prev => ({
+        ...prev,
+        [sessionKey]: error instanceof Error ? error : new Error('Failed to reject tool call'),
+      }));
+    }
+  }, [pendingApproval, sessionKey]);
+
   return {
     messages,
     isRunning,
@@ -375,7 +446,10 @@ export function useChat(sessionKey: string): UseChatResult {
     latestRunId,
     error,
     escalation,
+    pendingApproval,
     sendMessage,
     clearMessages,
+    approveToolCall,
+    rejectToolCall,
   };
 }

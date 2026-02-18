@@ -28,7 +28,10 @@ export type EventType =
   | 'llm.called'
   | 'llm.token'
   | 'tool.called'
-  | 'tool.result';
+  | 'tool.result'
+  | 'tool.requires_approval'
+  | 'tool.approved'
+  | 'tool.rejected';
 
 // Base event structure
 export interface BaseEvent {
@@ -77,6 +80,25 @@ export interface ToolResultPayload {
     code: string;
     message: string;
   };
+}
+
+export interface ToolRequiresApprovalPayload {
+  toolName: string;
+  tool_call_id: string;
+  args: Record<string, unknown>;
+  reason: string;
+  risk_level?: string;
+}
+
+export interface ToolApprovedPayload {
+  toolName: string;
+  tool_call_id: string;
+}
+
+export interface ToolRejectedPayload {
+  toolName: string;
+  tool_call_id: string;
+  reason?: string;
 }
 
 export interface StepStartedPayload {

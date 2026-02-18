@@ -30,12 +30,14 @@ import { SSEManager } from './sse.js';
 import { EventService } from '../runtime/event-service.js';
 import { resolveRequestScope } from '../runtime/request-scope.js';
 import { RunRepository } from '../runtime/run-repository.js';
+import type { ToolApprovalManager } from '../runtime/tool-scheduler.js';
 
 export interface RunsRouterConfig {
   runQueue: RunQueue;
   sseManager: SSEManager;
   runRepository: RunRepository;
   eventService: EventService;
+  approvalManager?: ToolApprovalManager;
 }
 
 function parsePositiveInt(
@@ -96,7 +98,7 @@ function sendError(res: Response, error: ErrorResponse, status: number): void {
 
 export function createRunsRouter(config: RunsRouterConfig): Router {
   const router = Router();
-  const { runQueue, sseManager, runRepository, eventService } = config;
+  const { runQueue, sseManager, runRepository, eventService, approvalManager } = config;
 
   router.post('/runs', (req: Request, res: Response, next: NextFunction) => {
     void (async () => {
@@ -383,7 +385,11 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
             return;
           }
 
-          if (run.status === 'running') {
+          if (run.status === 'running' || run.status === 'waiting') {
+            // Cancel pending approvals so the agent loop unblocks
+            if (run.status === 'waiting' && approvalManager) {
+              approvalManager.cancelForRun(runId);
+            }
             const cancelled = runQueue.cancel(runId);
             if (!cancelled) {
               throw new AgentError('Run is no longer cancellable', 'RUN_NOT_CANCELLABLE', 400);
@@ -397,6 +403,117 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           }
 
           throw new NotFoundError('Run', runId);
+        } catch (error) {
+          next(error);
+        }
+      })();
+    }
+  );
+
+  // ── Tool approval endpoints ──────────────────────────────────
+
+  router.post(
+    '/runs/:run_id/approve',
+    (req: Request, res: Response, next: NextFunction) => {
+      void (async () => {
+        try {
+          const { run_id: runId } = req.params;
+          if (!runId) {
+            throw new ValidationError('run_id is required', 'run_id');
+          }
+          const body = req.body as { tool_call_id?: string };
+          if (!body.tool_call_id || typeof body.tool_call_id !== 'string') {
+            throw new ValidationError('tool_call_id is required', 'tool_call_id');
+          }
+
+          const scope = resolveRequestScope(req);
+          const run = await runRepository.requireRun(runId, scope);
+
+          if (run.status !== 'waiting') {
+            throw new AgentError(
+              'Can only approve tools for runs in waiting status',
+              'RUN_NOT_WAITING',
+              400
+            );
+          }
+
+          if (!approvalManager) {
+            throw new AgentError(
+              'Approval manager not available',
+              'APPROVAL_UNAVAILABLE',
+              500
+            );
+          }
+
+          const resolved = approvalManager.approve(body.tool_call_id);
+          if (!resolved) {
+            throw new AgentError(
+              'No pending approval found for this tool call',
+              'APPROVAL_NOT_FOUND',
+              404
+            );
+          }
+
+          logger.info('Tool call approved', { runId, toolCallId: body.tool_call_id });
+          res.json({ success: true, run_id: runId, tool_call_id: body.tool_call_id });
+        } catch (error) {
+          next(error);
+        }
+      })();
+    }
+  );
+
+  router.post(
+    '/runs/:run_id/reject',
+    (req: Request, res: Response, next: NextFunction) => {
+      void (async () => {
+        try {
+          const { run_id: runId } = req.params;
+          if (!runId) {
+            throw new ValidationError('run_id is required', 'run_id');
+          }
+          const body = req.body as { tool_call_id?: string; reason?: string };
+          if (!body.tool_call_id || typeof body.tool_call_id !== 'string') {
+            throw new ValidationError('tool_call_id is required', 'tool_call_id');
+          }
+
+          const scope = resolveRequestScope(req);
+          const run = await runRepository.requireRun(runId, scope);
+
+          if (run.status !== 'waiting') {
+            throw new AgentError(
+              'Can only reject tools for runs in waiting status',
+              'RUN_NOT_WAITING',
+              400
+            );
+          }
+
+          if (!approvalManager) {
+            throw new AgentError(
+              'Approval manager not available',
+              'APPROVAL_UNAVAILABLE',
+              500
+            );
+          }
+
+          const resolved = approvalManager.reject(
+            body.tool_call_id,
+            body.reason
+          );
+          if (!resolved) {
+            throw new AgentError(
+              'No pending approval found for this tool call',
+              'APPROVAL_NOT_FOUND',
+              404
+            );
+          }
+
+          logger.info('Tool call rejected', {
+            runId,
+            toolCallId: body.tool_call_id,
+            reason: body.reason,
+          });
+          res.json({ success: true, run_id: runId, tool_call_id: body.tool_call_id });
         } catch (error) {
           next(error);
         }

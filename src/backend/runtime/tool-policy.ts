@@ -96,7 +96,16 @@ export class ToolPolicy {
       };
     }
 
-    // 2. Whitelist: if specified, only listed tools are allowed
+    // 2. High risk tools require approval (check BEFORE whitelist)
+    if (tool.riskLevel === 'high') {
+      return {
+        allowed: false,
+        decision: 'ask',
+        reason: `Tool "${tool.name}" has high risk level — requires approval for role "${agent.roleId}"`,
+      };
+    }
+
+    // 3. Whitelist: if specified, only listed tools are allowed
     if (agent.allowedTools.length > 0) {
       if (agent.allowedTools.some((entry) => this.matchesPolicyEntry(entry, tool))) {
         return { allowed: true, decision: 'allow', reason: 'Tool is in allowed list' };
@@ -105,15 +114,6 @@ export class ToolPolicy {
         allowed: false,
         decision: 'deny',
         reason: `Tool "${tool.name}" is not in the allowed list for role "${agent.roleId}"`,
-      };
-    }
-
-    // 3. High risk tools require approval instead of outright deny
-    if (tool.riskLevel === 'high') {
-      return {
-        allowed: false,
-        decision: 'ask',
-        reason: `Tool "${tool.name}" has high risk level — requires approval for role "${agent.roleId}"`,
       };
     }
 

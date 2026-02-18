@@ -5,7 +5,9 @@
 import { useRef, useEffect, useMemo } from 'react';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
+import { ApprovalCard } from './ApprovalCard';
 import type { ChatMessage as ChatMessageType } from '../../types/events';
+import type { PendingApproval } from '../../hooks/useChat';
 import { useLocaleText } from '../../i18n/useLocaleText';
 import styles from './Chat.module.css';
 
@@ -20,6 +22,9 @@ export interface ChatWindowProps {
   latestRunId?: string | null;
   escalationChildRunId?: string | null;
   onViewGroupDiscussion?: () => void;
+  pendingApproval?: PendingApproval | null;
+  onApprove?: () => Promise<void>;
+  onReject?: (reason?: string) => Promise<void>;
 }
 
 export function ChatWindow({
@@ -33,6 +38,9 @@ export function ChatWindow({
   latestRunId,
   escalationChildRunId,
   onViewGroupDiscussion,
+  pendingApproval,
+  onApprove,
+  onReject,
 }: ChatWindowProps) {
   const { t } = useLocaleText();
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -110,6 +118,13 @@ export function ChatWindow({
               </button>
             )}
           </div>
+        )}
+        {pendingApproval && onApprove && onReject && (
+          <ApprovalCard
+            approval={pendingApproval}
+            onApprove={onApprove}
+            onReject={onReject}
+          />
         )}
         {isRunning && !isWaiting && (
           <div className={styles.typingIndicator} aria-live="polite">

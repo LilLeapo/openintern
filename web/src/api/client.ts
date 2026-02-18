@@ -908,6 +908,55 @@ export class APIClient {
 
     return response.json();
   }
+
+  /**
+   * Approve a tool call that requires approval
+   */
+  async approveToolCall(runId: string, toolCallId: string): Promise<{ success: boolean }> {
+    const response = await fetch(`${this.baseURL}/api/runs/${runId}/approve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({ tool_call_id: toolCallId }),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to approve tool call'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Reject a tool call that requires approval
+   */
+  async rejectToolCall(runId: string, toolCallId: string, reason?: string): Promise<{ success: boolean }> {
+    const response = await fetch(`${this.baseURL}/api/runs/${runId}/reject`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({
+        tool_call_id: toolCallId,
+        ...(reason ? { reason } : {}),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to reject tool call'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
 }
 
 /**

@@ -298,6 +298,23 @@ export class RuntimeToolRouter {
     if (agentContext) {
       const policyResult = this.checkPolicy(name, tool, agentContext);
       if (!policyResult.allowed) {
+        // Distinguish 'ask' (requires approval) from 'deny' (blocked)
+        if (policyResult.decision === 'ask') {
+          logger.info('Tool call requires approval', {
+            tool: name,
+            agentId: agentContext.agentId,
+            roleId: agentContext.roleId,
+            reason: policyResult.reason,
+          });
+          return {
+            success: false,
+            error: `Requires approval: ${policyResult.reason}`,
+            duration: Date.now() - started,
+            requiresApproval: true,
+            policyReason: policyResult.reason,
+            riskLevel: this.getToolRiskLevel(name, tool),
+          };
+        }
         logger.warn('Tool call blocked by policy', {
           tool: name,
           agentId: agentContext.agentId,
@@ -345,7 +362,7 @@ export class RuntimeToolRouter {
     toolName: string,
     tool: RuntimeTool,
     agent: AgentContext
-  ): { allowed: boolean; reason: string } {
+  ): { allowed: boolean; decision: import('./tool-policy.js').PolicyDecision; reason: string } {
     const toolMeta = this.skillRegistry?.getToolMeta(toolName) ?? {
       name: toolName,
       riskLevel: 'low' as const,
@@ -356,6 +373,12 @@ export class RuntimeToolRouter {
       return this.toolPolicy.checkWithDelegated(agent, toolMeta);
     }
     return this.toolPolicy.check(agent, toolMeta);
+  }
+
+  private getToolRiskLevel(toolName: string, tool: RuntimeTool): string {
+    const toolMeta = this.skillRegistry?.getToolMeta(toolName);
+    if (toolMeta) return toolMeta.riskLevel;
+    return tool.metadata?.risk_level ?? 'low';
   }
 
   private getSkillOrThrow(skillId: string): Skill {

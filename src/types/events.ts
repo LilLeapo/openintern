@@ -105,10 +105,28 @@ export const ToolBlockedPayloadSchema = z.object({
  */
 export const ToolRequiresApprovalPayloadSchema = z.object({
   toolName: z.string(),
+  tool_call_id: z.string(),
   args: z.record(z.unknown()),
   reason: z.string(),
   role_id: z.string().optional(),
   risk_level: z.string().optional(),
+});
+
+/**
+ * Tool approved event payload - user approved a tool call
+ */
+export const ToolApprovedPayloadSchema = z.object({
+  toolName: z.string(),
+  tool_call_id: z.string(),
+});
+
+/**
+ * Tool rejected event payload - user rejected a tool call
+ */
+export const ToolRejectedPayloadSchema = z.object({
+  toolName: z.string(),
+  tool_call_id: z.string(),
+  reason: z.string().optional(),
 });
 
 /**
@@ -274,6 +292,8 @@ export const EventTypeSchema = z.enum([
   'tool.result',
   'tool.blocked',
   'tool.requires_approval',
+  'tool.approved',
+  'tool.rejected',
   'tool.batch.started',
   'tool.batch.completed',
   'mcp.tools.refreshed',
@@ -365,6 +385,26 @@ export const ToolRequiresApprovalEventSchema = BaseEventSchema.extend({
 });
 
 export type ToolRequiresApprovalEvent = z.infer<typeof ToolRequiresApprovalEventSchema>;
+
+/**
+ * Tool approved event
+ */
+export const ToolApprovedEventSchema = BaseEventSchema.extend({
+  type: z.literal('tool.approved'),
+  payload: ToolApprovedPayloadSchema,
+});
+
+export type ToolApprovedEvent = z.infer<typeof ToolApprovedEventSchema>;
+
+/**
+ * Tool rejected event
+ */
+export const ToolRejectedEventSchema = BaseEventSchema.extend({
+  type: z.literal('tool.rejected'),
+  payload: ToolRejectedPayloadSchema,
+});
+
+export type ToolRejectedEvent = z.infer<typeof ToolRejectedEventSchema>;
 
 /**
  * Step started event
@@ -504,6 +544,8 @@ export const EventSchema = z.discriminatedUnion('type', [
   ToolResultEventSchema,
   ToolBlockedEventSchema,
   ToolRequiresApprovalEventSchema,
+  ToolApprovedEventSchema,
+  ToolRejectedEventSchema,
   ToolBatchStartedEventSchema,
   ToolBatchCompletedEventSchema,
   StepStartedEventSchema,

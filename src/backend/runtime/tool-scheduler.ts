@@ -33,23 +33,135 @@ export interface BatchResult {
   duration_ms: number;
 }
 
+/**
+ * Pending approval state for a tool call awaiting human decision.
+ */
+export interface PendingApproval {
+  toolCallId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  riskLevel: string;
+  reason: string;
+  runId: string;
+  resolve: (decision: ApprovalDecision) => void;
+}
+
+export interface ApprovalDecision {
+  approved: boolean;
+  reason?: string;
+}
+
 /** Default concurrency limit for parallel tool execution. */
 const DEFAULT_PARALLEL_LIMIT = 8;
+
+/**
+ * ToolApprovalManager manages pending tool approvals using Promise + resolver pattern.
+ * When a tool requires approval, a Promise is created and its resolver stored.
+ * The approve/reject API endpoints resolve the Promise to resume execution.
+ */
+export class ToolApprovalManager {
+  private readonly pending = new Map<string, PendingApproval>();
+
+  /**
+   * Register a pending approval and return a Promise that resolves when
+   * the user approves or rejects.
+   */
+  waitForApproval(
+    toolCallId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    riskLevel: string,
+    reason: string,
+    runId: string
+  ): Promise<ApprovalDecision> {
+    return new Promise<ApprovalDecision>((resolve) => {
+      this.pending.set(toolCallId, {
+        toolCallId,
+        toolName,
+        args,
+        riskLevel,
+        reason,
+        runId,
+        resolve,
+      });
+    });
+  }
+
+  /**
+   * Approve a pending tool call. Returns true if the approval was found and resolved.
+   */
+  approve(toolCallId: string): boolean {
+    const entry = this.pending.get(toolCallId);
+    if (!entry) return false;
+    entry.resolve({ approved: true });
+    this.pending.delete(toolCallId);
+    return true;
+  }
+
+  /**
+   * Reject a pending tool call. Returns true if the rejection was found and resolved.
+   */
+  reject(toolCallId: string, reason?: string): boolean {
+    const entry = this.pending.get(toolCallId);
+    if (!entry) return false;
+    entry.resolve({ approved: false, ...(reason !== undefined ? { reason } : {}) });
+    this.pending.delete(toolCallId);
+    return true;
+  }
+
+  /**
+   * Get a pending approval by tool call ID.
+   */
+  getPending(toolCallId: string): PendingApproval | undefined {
+    return this.pending.get(toolCallId);
+  }
+
+  /**
+   * Get all pending approvals for a given run.
+   */
+  getPendingForRun(runId: string): PendingApproval[] {
+    return [...this.pending.values()].filter((p) => p.runId === runId);
+  }
+
+  /**
+   * Check if there are any pending approvals for a run.
+   */
+  hasPendingForRun(runId: string): boolean {
+    for (const entry of this.pending.values()) {
+      if (entry.runId === runId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Cancel all pending approvals for a run (e.g. when run is cancelled).
+   */
+  cancelForRun(runId: string): void {
+    for (const [id, entry] of this.pending.entries()) {
+      if (entry.runId === runId) {
+        entry.resolve({ approved: false, reason: 'Run cancelled' });
+        this.pending.delete(id);
+      }
+    }
+  }
+}
 
 /**
  * ToolCallScheduler partitions tool calls by safety (mutating vs read-only)
  * and executes them in parallel or serial groups accordingly.
  *
  * Strategy:
- * - read/inspect tools (mutating=false, risk!=high) → parallel group
- * - write/exec tools (mutating=true or risk=high) → serial group
+ * - read/inspect tools (mutating=false, risk!=high) -> parallel group
+ * - write/exec tools (mutating=true or risk=high) -> serial group
  * - Serial group always runs after parallel group completes
  */
 export class ToolCallScheduler {
   private readonly parallelLimit: number;
+  readonly approvalManager: ToolApprovalManager;
 
-  constructor(opts?: { parallelLimit?: number }) {
+  constructor(opts?: { parallelLimit?: number; approvalManager?: ToolApprovalManager }) {
     this.parallelLimit = opts?.parallelLimit ?? DEFAULT_PARALLEL_LIMIT;
+    this.approvalManager = opts?.approvalManager ?? new ToolApprovalManager();
   }
 
   /**
@@ -66,6 +178,12 @@ export class ToolCallScheduler {
       rootSpan: string;
       agentContext?: AgentContext;
       abortSignal?: AbortSignal;
+      /** Callback to emit events during execution (for approval flow). */
+      onEvent?: (event: Event) => void;
+      /** Callback to transition run to waiting status. */
+      onWaiting?: () => Promise<void>;
+      /** Callback to resume run from waiting status. */
+      onResumed?: () => Promise<void>;
     }
   ): Promise<BatchResult> {
     const batchId = `batch_${generateSpanId()}`;
@@ -147,6 +265,9 @@ export class ToolCallScheduler {
       agentId: string;
       agentContext?: AgentContext;
       abortSignal?: AbortSignal;
+      onEvent?: (event: Event) => void;
+      onWaiting?: () => Promise<void>;
+      onResumed?: () => Promise<void>;
     }
   ): Promise<{ results: ToolExecResult[]; events: Event[] }> {
     const events: Event[] = [];
@@ -163,10 +284,7 @@ export class ToolCallScheduler {
           args: call.parameters,
         }));
 
-        const result = await router.callTool(
-          call.name, call.parameters, ctx.agentContext
-        );
-
+        const result = await this.executeWithApproval(call, router, ctx, events);
         events.push(this.createToolResultEvent(ctx, call.name, result));
         return { toolCall: call, result };
       });
@@ -197,6 +315,9 @@ export class ToolCallScheduler {
       agentId: string;
       agentContext?: AgentContext;
       abortSignal?: AbortSignal;
+      onEvent?: (event: Event) => void;
+      onWaiting?: () => Promise<void>;
+      onResumed?: () => Promise<void>;
     }
   ): Promise<{ results: ToolExecResult[]; events: Event[] }> {
     const events: Event[] = [];
@@ -210,15 +331,125 @@ export class ToolCallScheduler {
         args: call.parameters,
       }));
 
-      const result = await router.callTool(
-        call.name, call.parameters, ctx.agentContext
-      );
-
+      const result = await this.executeWithApproval(call, router, ctx, events);
       events.push(this.createToolResultEvent(ctx, call.name, result));
       results.push({ toolCall: call, result });
     }
 
     return { results, events };
+  }
+
+  /**
+   * Execute a tool call, handling the approval flow if the tool requires it.
+   * When a tool returns requiresApproval=true:
+   * 1. Emit tool.requires_approval event
+   * 2. Transition run to waiting status
+   * 3. Wait for user approval/rejection via Promise
+   * 4. On approve: execute the tool and return result
+   * 5. On reject: return error result
+   */
+  private async executeWithApproval(
+    call: ToolCall,
+    router: RuntimeToolRouter,
+    ctx: {
+      stepId: string;
+      rootSpan: string;
+      runId: string;
+      sessionKey: string;
+      agentId: string;
+      agentContext?: AgentContext;
+      abortSignal?: AbortSignal;
+      onEvent?: (event: Event) => void;
+      onWaiting?: () => Promise<void>;
+      onResumed?: () => Promise<void>;
+    },
+    events: Event[]
+  ): Promise<ToolResult> {
+    const approvalStarted = Date.now();
+    const result = await router.callTool(
+      call.name, call.parameters, ctx.agentContext
+    );
+
+    // If tool doesn't require approval, return as-is
+    if (!result.requiresApproval) {
+      return result;
+    }
+
+    // Emit tool.requires_approval event
+    const approvalEvent = this.createApprovalEvent(ctx, {
+      toolName: call.name,
+      tool_call_id: call.id,
+      args: call.parameters,
+      reason: result.policyReason ?? 'Tool requires human approval',
+      risk_level: result.riskLevel ?? 'high',
+    });
+    events.push(approvalEvent);
+
+    // Also emit via callback so it gets broadcast via SSE immediately
+    ctx.onEvent?.(approvalEvent);
+
+    // Transition run to waiting
+    await ctx.onWaiting?.();
+
+    logger.info('Tool call waiting for approval', {
+      runId: ctx.runId,
+      toolName: call.name,
+      toolCallId: call.id,
+    });
+
+    // Wait for user decision
+    const decision = await this.approvalManager.waitForApproval(
+      call.id,
+      call.name,
+      call.parameters,
+      result.riskLevel ?? 'high',
+      result.policyReason ?? 'Tool requires human approval',
+      ctx.runId
+    );
+
+    // Resume run
+    await ctx.onResumed?.();
+
+    if (decision.approved) {
+      // Emit tool.approved event
+      const approvedEvent = this.createGenericEvent(ctx, 'tool.approved', {
+        toolName: call.name,
+        tool_call_id: call.id,
+      });
+      events.push(approvedEvent);
+      ctx.onEvent?.(approvedEvent);
+
+      logger.info('Tool call approved, executing', {
+        runId: ctx.runId,
+        toolName: call.name,
+        toolCallId: call.id,
+      });
+
+      // Execute the tool without policy check (already approved by human)
+      return router.callTool(call.name, call.parameters);
+    }
+
+    // Emit tool.rejected event
+    const rejectedEvent = this.createGenericEvent(ctx, 'tool.rejected', {
+      toolName: call.name,
+      tool_call_id: call.id,
+      ...(decision.reason ? { reason: decision.reason } : {}),
+    });
+    events.push(rejectedEvent);
+    ctx.onEvent?.(rejectedEvent);
+
+    logger.info('Tool call rejected by user', {
+      runId: ctx.runId,
+      toolName: call.name,
+      toolCallId: call.id,
+      reason: decision.reason,
+    });
+
+    return {
+      success: false,
+      error: `Tool call rejected by user${decision.reason ? `: ${decision.reason}` : ''}`,
+      duration: Date.now() - approvalStarted,
+    };
   }
 
   private getToolMeta(toolName: string, router: RuntimeToolRouter): ToolScheduleMeta {
@@ -266,6 +497,45 @@ export class ToolCallScheduler {
     ctx: { runId: string; sessionKey: string; agentId: string; stepId: string; rootSpan: string },
     type: 'tool.called',
     payload: { toolName: string; args: Record<string, unknown> }
+  ): Event {
+    return {
+      v: 1,
+      ts: new Date().toISOString(),
+      session_key: ctx.sessionKey,
+      run_id: ctx.runId,
+      agent_id: ctx.agentId,
+      step_id: ctx.stepId,
+      span_id: generateSpanId(),
+      parent_span_id: ctx.rootSpan,
+      redaction: { contains_secrets: false },
+      type,
+      payload,
+    } as Event;
+  }
+
+  private createApprovalEvent(
+    ctx: { runId: string; sessionKey: string; agentId: string; stepId: string; rootSpan: string },
+    payload: { toolName: string; tool_call_id: string; args: Record<string, unknown>; reason: string; risk_level?: string }
+  ): Event {
+    return {
+      v: 1,
+      ts: new Date().toISOString(),
+      session_key: ctx.sessionKey,
+      run_id: ctx.runId,
+      agent_id: ctx.agentId,
+      step_id: ctx.stepId,
+      span_id: generateSpanId(),
+      parent_span_id: ctx.rootSpan,
+      redaction: { contains_secrets: false },
+      type: 'tool.requires_approval',
+      payload,
+    } as Event;
+  }
+
+  private createGenericEvent(
+    ctx: { runId: string; sessionKey: string; agentId: string; stepId: string; rootSpan: string },
+    type: EventType,
+    payload: Record<string, unknown>
   ): Event {
     return {
       v: 1,

@@ -21,7 +21,7 @@ import { SkillLoader } from './skill-loader.js';
 import { SkillRegistry } from './skill-registry.js';
 import { SkillRepository } from './skill-repository.js';
 import { TokenBudgetManager } from './token-budget-manager.js';
-import { ToolCallScheduler } from './tool-scheduler.js';
+import { ToolCallScheduler, ToolApprovalManager } from './tool-scheduler.js';
 import { RuntimeToolRouter } from './tool-router.js';
 import { EscalationService } from './escalation-service.js';
 import { UploadService } from './upload-service.js';
@@ -102,14 +102,20 @@ function isCancellationError(error: unknown): boolean {
   return message.includes('aborted') || message.includes('cancelled');
 }
 
+export interface RuntimeExecutorResult {
+  execute: (run: QueuedRun, signal: AbortSignal) => Promise<{ status: RunTerminalStatus }>;
+  approvalManager: ToolApprovalManager;
+}
+
 export function createRuntimeExecutor(
   config: RuntimeExecutorConfig
-): (run: QueuedRun, signal: AbortSignal) => Promise<{ status: RunTerminalStatus }> {
+): RuntimeExecutorResult {
   let sharedToolRouter: RuntimeToolRouter | null = null;
   let sharedToolRouterInit: Promise<RuntimeToolRouter> | null = null;
   let sharedMcpManager: McpConnectionManager | null = null;
   let sharedSkillLoader: SkillLoader | null = null;
-  const sharedToolScheduler = new ToolCallScheduler();
+  const sharedApprovalManager = new ToolApprovalManager();
+  const sharedToolScheduler = new ToolCallScheduler({ approvalManager: sharedApprovalManager });
 
   async function refreshSkillRegistry(router: RuntimeToolRouter): Promise<void> {
     const availableTools = router.listTools().map((tool) => tool.name);
@@ -232,7 +238,7 @@ export function createRuntimeExecutor(
     return router;
   }
 
-  return async (run: QueuedRun, signal: AbortSignal): Promise<{ status: RunTerminalStatus }> => {
+  const execute = async (run: QueuedRun, signal: AbortSignal): Promise<{ status: RunTerminalStatus }> => {
     const scope = {
       orgId: run.org_id,
       userId: run.user_id,
@@ -319,6 +325,8 @@ export function createRuntimeExecutor(
       return { status: 'failed' };
     }
   };
+
+  return { execute, approvalManager: sharedApprovalManager };
 }
 
 // ─── Single agent run ────────────────────────────────────────
@@ -380,6 +388,53 @@ async function executeSingleRun(
     ...(modelConfig.provider !== 'mock' && { provider: modelConfig.provider }),
   });
 
+  // Query agent's role and create agentContext for policy checks
+  let agentContext;
+  try {
+    let role = await config.roleRepository.getRoleByAgentId(run.agent_id);
+
+    // If no role found (e.g., agent_id is 'main' or agent_instance doesn't exist),
+    // use a default role with no tool restrictions (high-risk tools still require approval)
+    if (!role) {
+      logger.info('Using default role for agent (no restrictions except risk-level)', {
+        runId: run.run_id,
+        agentId: run.agent_id,
+      });
+      role = {
+        id: 'default',
+        name: 'Default Role',
+        description: 'Default role with no tool restrictions',
+        system_prompt: '',
+        allowed_tools: [], // Empty = all tools allowed (except high-risk)
+        denied_tools: [],  // Empty = no tools denied
+        style_constraints: {},
+        is_lead: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+    }
+
+    const { ToolPolicy } = await import('./tool-policy.js');
+    agentContext = ToolPolicy.contextFromRole(
+      role,
+      run.agent_id,
+      run.delegated_permissions ?? undefined
+    );
+    logger.info('Agent context created for policy checks', {
+      runId: run.run_id,
+      agentId: run.agent_id,
+      roleId: role.id,
+      allowedToolsCount: role.allowed_tools.length,
+      deniedToolsCount: role.denied_tools.length,
+    });
+  } catch (error) {
+    logger.error('Failed to create agent context', {
+      runId: run.run_id,
+      agentId: run.agent_id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   const runner = new SingleAgentRunner({
     maxSteps: config.maxSteps,
     modelConfig,
@@ -393,6 +448,7 @@ async function executeSingleRun(
     skillInjections: skillInjections.length > 0 ? skillInjections : undefined,
     availableGroups: availableGroups && availableGroups.length > 0 ? availableGroups : undefined,
     workDir: config.workDir,
+    ...(agentContext ? { agentContext } : {}),
   });
 
   // Reconstruct conversation history from prior completed runs in the same session
@@ -448,6 +504,23 @@ async function executeSingleRun(
       abortSignal: signal,
       ...(history.length > 0 ? { history } : {}),
       ...(typeof inputContent !== 'string' ? { inputContent } : {}),
+      onEvent: (event) => {
+        // Broadcast via SSE immediately — don't gate on DB write
+        config.sseManager.broadcastToRun(run.run_id, event);
+        void config.eventService.write(event).catch((err) => {
+          logger.warn('Failed to persist onEvent event', {
+            runId: run.run_id,
+            eventType: event.type,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      },
+      onWaiting: async () => {
+        await config.runRepository.setRunWaiting(run.run_id);
+      },
+      onResumed: async () => {
+        await config.runRepository.setRunResumed(run.run_id);
+      },
     }),
     signal
   );
