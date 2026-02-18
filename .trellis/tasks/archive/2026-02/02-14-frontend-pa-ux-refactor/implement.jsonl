@@ -1,0 +1,10 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/shared/index.md", "reason": "Shared coding standards"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/backend/api-module.md", "reason": "API module conventions"}
+{"file": ".trellis/spec/backend/quality.md", "reason": "Code quality requirements"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Component conventions"}
+{"file": "docs/architecture/pa-router-architecture.md", "reason": "PA智能路由架构设计 - 核心设计原则"}
+{"file": "web/src/pages/ChatPage.tsx", "reason": "当前聊天页面实现 - 需要重构的核心文件"}
+{"file": "web/src/hooks/useChat.ts", "reason": "聊天hook - 需要简化API调用逻辑"}

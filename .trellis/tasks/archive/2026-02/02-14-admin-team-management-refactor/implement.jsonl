@@ -1,0 +1,7 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/shared/index.md", "reason": "Shared coding standards"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/frontend/components.md", "reason": "Component conventions"}
+{"file": "web/src/pages/OrchestratorPage.tsx", "reason": "当前团队管理页面 - 需要完全重构"}
+{"file": "web/src/api/client.ts", "reason": "API客户端 - 了解可用的API方法"}
+{"file": "web/src/types/index.ts", "reason": "类型定义 - Role/Group/Member等"}
