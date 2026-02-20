@@ -6,10 +6,10 @@ import type { Mock } from 'vitest';
 import { RuntimeToolRouter } from './tool-router.js';
 import type { MemoryService } from './memory-service.js';
 import type { EventService } from './event-service.js';
-import type { FeishuSyncService } from './feishu-sync-service.js';
-import type { MineruIngestService } from './mineru-ingest-service.js';
+import type { FeishuSyncService } from './integrations/feishu/sync-service.js';
+import type { MineruIngestService } from './integrations/mineru/ingest-service.js';
 import type { AgentContext } from './tool-policy.js';
-import { SkillRegistry } from './skill-registry.js';
+import { SkillRegistry } from './skill/registry.js';
 
 interface MockMemoryService {
   memory_search: Mock;

@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { createApp, type ServerConfig } from '../server.js';
 import { RuntimeToolRouter } from './tool-router.js';
-import { SkillRegistry } from './skill-registry.js';
+import { SkillRegistry } from './skill/registry.js';
 import { ToolPolicy } from './tool-policy.js';
 import type { AgentContext } from './tool-policy.js';
 import type { MemoryService } from './memory-service.js';

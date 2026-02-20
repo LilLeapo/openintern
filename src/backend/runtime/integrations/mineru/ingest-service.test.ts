@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AgentError } from '../../utils/errors.js';
-import { MineruIngestService } from './mineru-ingest-service.js';
-import type { MemoryService } from './memory-service.js';
-import type { MineruClient } from './mineru-client.js';
+import { AgentError } from '../../../../utils/errors.js';
+import { MineruIngestService } from './ingest-service.js';
+import type { MemoryService } from '../../memory-service.js';
+import type { MineruClient } from './client.js';
 
 type MockMemoryService = {
   replace_archival_document: ReturnType<typeof vi.fn>;

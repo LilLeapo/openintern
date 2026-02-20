@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { FeishuChunkingConfig } from '../../types/feishu.js';
+import type { FeishuChunkingConfig } from '../../../../types/feishu.js';
 
 export interface NormalizedChunk {
   text: string;

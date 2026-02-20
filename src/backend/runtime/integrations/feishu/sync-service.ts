@@ -1,17 +1,17 @@
-import { logger } from '../../utils/logger.js';
-import type { MemoryScope } from '../../types/memory.js';
+import { logger } from '../../../../utils/logger.js';
+import type { MemoryScope } from '../../../../types/memory.js';
 import {
   FeishuChunkingConfigSchema,
   type FeishuChunkingConfig,
   type FeishuConnector,
   type FeishuSyncJob,
   type FeishuSyncStats,
-} from '../../types/feishu.js';
-import { AgentError } from '../../utils/errors.js';
-import { FeishuClient } from './feishu-client.js';
-import { normalizeBitableTableToChunks, normalizeDocxToChunks } from './feishu-normalizer.js';
-import { FeishuRepository } from './feishu-repository.js';
-import { MemoryService } from './memory-service.js';
+} from '../../../../types/feishu.js';
+import { AgentError } from '../../../../utils/errors.js';
+import { FeishuClient } from './client.js';
+import { normalizeBitableTableToChunks, normalizeDocxToChunks } from './normalizer.js';
+import { FeishuRepository } from './repository.js';
+import { MemoryService } from '../../memory-service.js';
 
 interface SyncSourceDocx {
   kind: 'docx';

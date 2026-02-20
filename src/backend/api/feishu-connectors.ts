@@ -9,8 +9,8 @@ import {
 import { AgentError, ValidationError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 import { resolveRequestScope } from '../runtime/request-scope.js';
-import { FeishuRepository } from '../runtime/feishu-repository.js';
-import { FeishuSyncService } from '../runtime/feishu-sync-service.js';
+import { FeishuRepository } from '../runtime/integrations/feishu/repository.js';
+import { FeishuSyncService } from '../runtime/integrations/feishu/sync-service.js';
 
 export interface FeishuConnectorsRouterConfig {
   repository: FeishuRepository;

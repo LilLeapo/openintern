@@ -32,12 +32,12 @@ import { createEmbeddingProvider } from './store/embedding-provider.js';
 import { CheckpointService, createRuntimeExecutor, EventService, MemoryService, RunRepository } from './runtime/index.js';
 import { RoleRepository } from './runtime/role-repository.js';
 import { GroupRepository } from './runtime/group-repository.js';
-import { SkillRepository } from './runtime/skill-repository.js';
-import { FeishuRepository } from './runtime/feishu-repository.js';
-import { FeishuClient } from './runtime/feishu-client.js';
-import { FeishuSyncService } from './runtime/feishu-sync-service.js';
-import { MineruClient } from './runtime/mineru-client.js';
-import { MineruIngestService } from './runtime/mineru-ingest-service.js';
+import { SkillRepository } from './runtime/skill/repository.js';
+import { FeishuRepository } from './runtime/integrations/feishu/repository.js';
+import { FeishuClient } from './runtime/integrations/feishu/client.js';
+import { FeishuSyncService } from './runtime/integrations/feishu/sync-service.js';
+import { MineruClient } from './runtime/integrations/mineru/client.js';
+import { MineruIngestService } from './runtime/integrations/mineru/ingest-service.js';
 import { UploadService } from './runtime/upload-service.js';
 import { closeSharedPostgresPool, getPostgresPool, runPostgresMigrations } from './db/index.js';
 

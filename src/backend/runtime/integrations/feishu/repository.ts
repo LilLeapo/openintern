@@ -6,9 +6,9 @@ import type {
   FeishuSyncJob,
   FeishuSyncStats,
   FeishuSyncTrigger,
-} from '../../types/feishu.js';
-import { generateFeishuConnectorId, generateFeishuSyncJobId } from '../../utils/ids.js';
-import { NotFoundError } from '../../utils/errors.js';
+} from '../../../../types/feishu.js';
+import { generateFeishuConnectorId, generateFeishuSyncJobId } from '../../../../utils/ids.js';
+import { NotFoundError } from '../../../../utils/errors.js';
 
 interface FeishuConnectorRow {
   id: string;

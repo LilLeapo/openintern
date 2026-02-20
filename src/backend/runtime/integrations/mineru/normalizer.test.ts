@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeMineruOutputToChunks } from './mineru-normalizer.js';
+import { normalizeMineruOutputToChunks } from './normalizer.js';
 
 describe('normalizeMineruOutputToChunks', () => {
   it('normalizes content_list items into typed chunks', () => {
