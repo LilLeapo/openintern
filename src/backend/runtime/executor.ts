@@ -88,6 +88,8 @@ export interface RuntimeExecutorConfig {
   };
   /** Persist llm.token events in events table (default: false). */
   persistLlmTokens?: boolean;
+  /** RunQueue reference for notifying waiting/resumed state transitions. */
+  runQueue?: { notifyRunWaiting(runId: string): void; notifyRunResumed(runId: string): void };
 }
 
 function isCancellationError(error: unknown): boolean {
@@ -517,9 +519,11 @@ async function executeSingleRun(
       },
       onWaiting: async () => {
         await config.runRepository.setRunWaiting(run.run_id);
+        config.runQueue?.notifyRunWaiting(run.run_id);
       },
       onResumed: async () => {
         await config.runRepository.setRunResumed(run.run_id);
+        config.runQueue?.notifyRunResumed(run.run_id);
       },
     }),
     signal

@@ -72,7 +72,8 @@ export class ToolApprovalManager {
     args: Record<string, unknown>,
     riskLevel: string,
     reason: string,
-    runId: string
+    runId: string,
+    abortSignal?: AbortSignal
   ): Promise<ApprovalDecision> {
     return new Promise<ApprovalDecision>((resolve) => {
       this.pending.set(toolCallId, {
@@ -84,6 +85,12 @@ export class ToolApprovalManager {
         runId,
         resolve,
       });
+      abortSignal?.addEventListener('abort', () => {
+        if (this.pending.has(toolCallId)) {
+          this.pending.delete(toolCallId);
+          resolve({ approved: false, reason: 'Run cancelled' });
+        }
+      }, { once: true });
     });
   }
 
@@ -375,6 +382,17 @@ export class ToolCallScheduler {
       return result;
     }
 
+    // Register pending BEFORE emitting SSE to avoid approve/reject race condition
+    const decisionPromise = this.approvalManager.waitForApproval(
+      call.id,
+      call.name,
+      call.parameters,
+      result.riskLevel ?? 'high',
+      result.policyReason ?? 'Tool requires human approval',
+      ctx.runId,
+      ctx.abortSignal
+    );
+
     // Emit tool.requires_approval event
     const approvalEvent = this.createApprovalEvent(ctx, {
       toolName: call.name,
@@ -398,14 +416,7 @@ export class ToolCallScheduler {
     });
 
     // Wait for user decision
-    const decision = await this.approvalManager.waitForApproval(
-      call.id,
-      call.name,
-      call.parameters,
-      result.riskLevel ?? 'high',
-      result.policyReason ?? 'Tool requires human approval',
-      ctx.runId
-    );
+    const decision = await decisionPromise;
 
     // Resume run
     await ctx.onResumed?.();

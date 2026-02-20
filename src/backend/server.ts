@@ -215,6 +215,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     persistLlmTokens: finalConfig.persistLlmTokens ?? false,
     workDir: finalConfig.workDir ?? `${finalConfig.baseDir}/workspace`,
     ...(finalConfig.mcp ? { mcp: finalConfig.mcp } : {}),
+    runQueue,
   });
   runQueue.setExecutor(runtimeExecutor.execute);
 

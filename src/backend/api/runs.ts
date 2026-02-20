@@ -445,14 +445,15 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
             );
           }
 
-          const resolved = approvalManager.approve(body.tool_call_id);
-          if (!resolved) {
+          const pendingEntry = approvalManager.getPending(body.tool_call_id);
+          if (!pendingEntry || pendingEntry.runId !== runId) {
             throw new AgentError(
               'No pending approval found for this tool call',
               'APPROVAL_NOT_FOUND',
               404
             );
           }
+          approvalManager.approve(body.tool_call_id);
 
           logger.info('Tool call approved', { runId, toolCallId: body.tool_call_id });
           res.json({ success: true, run_id: runId, tool_call_id: body.tool_call_id });
@@ -496,17 +497,15 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
             );
           }
 
-          const resolved = approvalManager.reject(
-            body.tool_call_id,
-            body.reason
-          );
-          if (!resolved) {
+          const pendingEntry = approvalManager.getPending(body.tool_call_id);
+          if (!pendingEntry || pendingEntry.runId !== runId) {
             throw new AgentError(
               'No pending approval found for this tool call',
               'APPROVAL_NOT_FOUND',
               404
             );
           }
+          approvalManager.reject(body.tool_call_id, body.reason);
 
           logger.info('Tool call rejected', {
             runId,
