@@ -24,40 +24,40 @@ describe('ToolRouter', () => {
       const tools = router.listTools();
       const toolNames = tools.map(t => t.name);
 
-      expect(toolNames).toContain('memory.write');
-      expect(toolNames).toContain('memory.search');
-      expect(toolNames).toContain('memory.get');
+      expect(toolNames).toContain('memory_write');
+      expect(toolNames).toContain('memory_search');
+      expect(toolNames).toContain('memory_get');
     });
 
     it('should register custom tool', () => {
       router.registerTool({
-        name: 'custom.tool',
+        name: 'custom_tool',
         description: 'A custom tool',
         parameters: { type: 'object' },
         execute: () => Promise.resolve({ result: 'ok' }),
       });
 
-      expect(router.hasTool('custom.tool')).toBe(true);
+      expect(router.hasTool('custom_tool')).toBe(true);
       expect(router.getToolCount()).toBe(8); // 3 memory + 4 file + 1 custom
     });
 
     it('should unregister tool', () => {
       router.registerTool({
-        name: 'temp.tool',
+        name: 'temp_tool',
         description: 'Temporary',
         parameters: {},
         execute: () => Promise.resolve({}),
       });
 
-      expect(router.hasTool('temp.tool')).toBe(true);
-      router.unregisterTool('temp.tool');
-      expect(router.hasTool('temp.tool')).toBe(false);
+      expect(router.hasTool('temp_tool')).toBe(true);
+      router.unregisterTool('temp_tool');
+      expect(router.hasTool('temp_tool')).toBe(false);
     });
   });
 
   describe('Tool execution', () => {
-    it('should call memory.write tool', async () => {
-      const result = await router.callTool('memory.write', {
+    it('should call memory_write tool', async () => {
+      const result = await router.callTool('memory_write', {
         content: 'Test content',
         tags: ['test'],
       });
@@ -67,13 +67,13 @@ describe('ToolRouter', () => {
       expect(result.duration).toBeGreaterThanOrEqual(0);
     });
 
-    it('should call memory.search tool', async () => {
+    it('should call memory_search tool', async () => {
       // First write something
-      await router.callTool('memory.write', {
+      await router.callTool('memory_write', {
         content: 'Searchable content',
       });
 
-      const result = await router.callTool('memory.search', {
+      const result = await router.callTool('memory_search', {
         query: 'searchable',
         topK: 5,
       });
@@ -83,7 +83,7 @@ describe('ToolRouter', () => {
     });
 
     it('should return error for non-existent tool', async () => {
-      const result = await router.callTool('non.existent', {});
+      const result = await router.callTool('non_existent', {});
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('not found');
@@ -91,13 +91,13 @@ describe('ToolRouter', () => {
 
     it('should handle tool execution errors', async () => {
       router.registerTool({
-        name: 'error.tool',
+        name: 'error_tool',
         description: 'Always fails',
         parameters: {},
         execute: () => Promise.reject(new Error('Intentional error')),
       });
 
-      const result = await router.callTool('error.tool', {});
+      const result = await router.callTool('error_tool', {});
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Intentional error');

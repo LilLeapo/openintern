@@ -236,9 +236,9 @@ describe('RuntimeToolRouter MCP protocol behavior', () => {
     await router.start();
 
     const names = router.listTools().map((tool) => tool.name);
-    expect(names).toContain('fake.echo');
+    expect(names).toContain('fake_echo');
 
-    const result = await router.callTool('fake.echo', { value: 'abc' });
+    const result = await router.callTool('fake_echo', { value: 'abc' });
     expect(result.success).toBe(true);
     expect(result.result).toEqual({
       ok: true,
@@ -251,7 +251,7 @@ describe('RuntimeToolRouter MCP protocol behavior', () => {
 
     await router.start();
 
-    const result = await router.callTool('fake.echo', { value: 'abc' });
+    const result = await router.callTool('fake_echo', { value: 'abc' });
     expect(result.success).toBe(false);
     expect(result.error).toContain('MCP tool returned isError=true');
     expect(result.result).toMatchObject({
@@ -271,10 +271,10 @@ describe('RuntimeToolRouter MCP protocol behavior', () => {
 
     await router.start();
     const beforeReconnect = router.listTools().map((tool) => tool.name);
-    expect(beforeReconnect).toContain('fake.echo');
-    expect(beforeReconnect).not.toContain('fake.after_reconnect');
+    expect(beforeReconnect).toContain('fake_echo');
+    expect(beforeReconnect).not.toContain('fake_after_reconnect');
 
-    const firstCall = await router.callTool('fake.echo', { value: 'abc' });
+    const firstCall = await router.callTool('fake_echo', { value: 'abc' });
     expect(firstCall.success).toBe(true);
     expect(firstCall.result).toEqual({
       ok: true,
@@ -283,9 +283,9 @@ describe('RuntimeToolRouter MCP protocol behavior', () => {
     });
 
     const afterReconnect = router.listTools().map((tool) => tool.name);
-    expect(afterReconnect).toContain('fake.after_reconnect');
+    expect(afterReconnect).toContain('fake_after_reconnect');
 
-    const secondCall = await router.callTool('fake.after_reconnect', { value: 'xyz' });
+    const secondCall = await router.callTool('fake_after_reconnect', { value: 'xyz' });
     expect(secondCall.success).toBe(true);
     expect(secondCall.result).toEqual({
       ok: true,
@@ -304,7 +304,7 @@ describe('RuntimeToolRouter MCP protocol behavior', () => {
     const router = await createRouter({ callMode: 'invalid_shape' });
 
     await router.start();
-    const result = await router.callTool('fake.echo', { value: 'abc' });
+    const result = await router.callTool('fake_echo', { value: 'abc' });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/invalid|schema/i);
   });

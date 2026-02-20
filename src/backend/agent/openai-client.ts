@@ -147,8 +147,8 @@ export class OpenAIClient implements ILLMClient {
     options?: LLMCallOptions,
   ): AsyncIterable<LLMStreamChunk> {
     const body = this.buildRequestBody(messages, tools);
-    (body as Record<string, unknown>).stream = true;
-    (body as Record<string, unknown>).stream_options = { include_usage: true };
+    body['stream'] = true;
+    body['stream_options'] = { include_usage: true };
 
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -182,7 +182,6 @@ export class OpenAIClient implements ILLMClient {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let fullContent = '';
     // Accumulate tool call fragments: index -> { id, name, arguments }
     const toolCallAccum = new Map<number, { id: string; name: string; arguments: string }>();
     let usage: LLMResponse['usage'] | undefined;
@@ -232,7 +231,6 @@ export class OpenAIClient implements ILLMClient {
           // Text content delta
           const textDelta = (delta.content as string) ?? '';
           if (textDelta) {
-            fullContent += textDelta;
             yield { delta: textDelta, done: false };
           }
 

@@ -131,7 +131,7 @@ export class MockLLMClient implements ILLMClient {
         signal.removeEventListener('abort', onAbort);
         resolve();
       }, ms);
-      const onAbort = () => {
+      const onAbort = (): void => {
         clearTimeout(timer);
         reject(Object.assign(new Error('LLM call aborted'), { name: 'AbortError' }));
       };

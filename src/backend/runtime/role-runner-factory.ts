@@ -67,12 +67,12 @@ export class RoleRunnerFactory {
       toolRouter: this.config.toolRouter,
       systemPrompt,
       agentContext,
-      toolScheduler: this.config.toolScheduler,
       promptComposer,
-      budgetManager,
-      compactionService,
-      skillInjections: this.config.skillInjections,
-      workDir: this.config.workDir,
+      ...(this.config.toolScheduler ? { toolScheduler: this.config.toolScheduler } : {}),
+      ...(budgetManager ? { budgetManager } : {}),
+      ...(compactionService ? { compactionService } : {}),
+      ...(this.config.skillInjections ? { skillInjections: this.config.skillInjections } : {}),
+      ...(this.config.workDir ? { workDir: this.config.workDir } : {}),
     };
 
     return new SingleAgentRunner(runnerConfig);

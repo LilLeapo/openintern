@@ -471,7 +471,9 @@ export class ToolCallScheduler {
         mutating: def.metadata.mutating ?? false,
         supports_parallel: def.metadata.supports_parallel ?? true,
         risk_level: def.metadata.risk_level ?? 'low',
-        timeout_ms: def.metadata.timeout_ms,
+        ...(def.metadata.timeout_ms !== undefined
+          ? { timeout_ms: def.metadata.timeout_ms }
+          : {}),
       };
     }
     // Default: read-only tools are safe for parallel
@@ -480,7 +482,6 @@ export class ToolCallScheduler {
       mutating: isWrite,
       supports_parallel: !isWrite,
       risk_level: 'low',
-      timeout_ms: undefined,
     };
   }
 

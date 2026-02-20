@@ -81,7 +81,26 @@ export function createRolesRouter(config: RolesRouterConfig): Router {
             firstError?.path.join('.') ?? 'body'
           );
         }
-        const role = await roleRepository.update(req.params.role_id!, parseResult.data);
+        const updates = {
+          ...(parseResult.data.name !== undefined ? { name: parseResult.data.name } : {}),
+          ...(parseResult.data.description !== undefined
+            ? { description: parseResult.data.description }
+            : {}),
+          ...(parseResult.data.system_prompt !== undefined
+            ? { system_prompt: parseResult.data.system_prompt }
+            : {}),
+          ...(parseResult.data.allowed_tools !== undefined
+            ? { allowed_tools: parseResult.data.allowed_tools }
+            : {}),
+          ...(parseResult.data.denied_tools !== undefined
+            ? { denied_tools: parseResult.data.denied_tools }
+            : {}),
+          ...(parseResult.data.style_constraints !== undefined
+            ? { style_constraints: parseResult.data.style_constraints }
+            : {}),
+          ...(parseResult.data.is_lead !== undefined ? { is_lead: parseResult.data.is_lead } : {}),
+        };
+        const role = await roleRepository.update(req.params.role_id!, updates);
         logger.info('Role updated', { roleId: role.id });
         res.json(role);
       } catch (err) {

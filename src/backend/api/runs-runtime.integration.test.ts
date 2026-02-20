@@ -8,7 +8,6 @@ import { createApp, type ServerConfig } from '../server.js';
 import type { Event } from '../../types/events.js';
 import type { CreateRunResponse, GetRunEventsResponse } from '../../types/api.js';
 import type { RunMeta } from '../../types/run.js';
-import type { QueuedRun } from '../../types/api.js';
 import type { RunExecutor } from '../queue/run-queue.js';
 
 const describeIfDatabase = process.env['DATABASE_URL'] ? describe : describe.skip;

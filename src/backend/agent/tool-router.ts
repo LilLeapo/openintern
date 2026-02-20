@@ -11,7 +11,7 @@
 import type { ToolDefinition, ToolResult } from '../../types/agent.js';
 import type { EmbeddingConfig } from '../../types/embedding.js';
 import { MemoryStore } from '../store/memory-store.js';
-import { ToolError, SandboxError } from '../../utils/errors.js';
+import { ToolError } from '../../utils/errors.js';
 import { generateMemoryId } from '../../utils/ids.js';
 import { logger } from '../../utils/logger.js';
 import { createFileTools } from './file-tools.js';

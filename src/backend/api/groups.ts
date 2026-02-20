@@ -147,7 +147,16 @@ export function createGroupsRouter(config: GroupsRouterConfig): Router {
             firstError?.path.join('.') ?? 'body'
           );
         }
-        const group = await groupRepository.updateGroup(req.params.group_id!, parseResult.data);
+        const updates = {
+          ...(parseResult.data.name !== undefined ? { name: parseResult.data.name } : {}),
+          ...(parseResult.data.description !== undefined
+            ? { description: parseResult.data.description }
+            : {}),
+          ...(parseResult.data.project_id !== undefined
+            ? { project_id: parseResult.data.project_id }
+            : {}),
+        };
+        const group = await groupRepository.updateGroup(req.params.group_id!, updates);
         logger.info('Group updated', { groupId: group.id });
         res.json(group);
       } catch (err) {
@@ -203,10 +212,11 @@ export function createGroupsRouter(config: GroupsRouterConfig): Router {
     void (async () => {
       try {
         const { ordinal } = req.body as { ordinal?: number };
+        const updates = ordinal !== undefined ? { ordinal } : {};
         const member = await groupRepository.updateMember(
           req.params.group_id!,
           req.params.member_id!,
-          { ordinal }
+          updates
         );
         logger.info('Member updated', {
           groupId: req.params.group_id,

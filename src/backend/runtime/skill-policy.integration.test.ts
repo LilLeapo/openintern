@@ -248,6 +248,7 @@ describe('ToolPolicy → SkillRegistry → RuntimeToolRouter integration', () =>
         risk_level: skill.risk_level,
         provider: 'builtin',
         health_status: 'healthy',
+        allow_implicit_invocation: false,
       });
     }
     return new RuntimeToolRouter({
@@ -273,13 +274,13 @@ describe('ToolPolicy → SkillRegistry → RuntimeToolRouter integration', () =>
       deniedTools: [],
     };
 
-    // high-risk tool blocked by default policy
+    // high-risk tool requires approval by default policy
     const blocked = await router.callTool('memory_write', {
       type: 'episodic',
       text: 'test',
     }, agent);
     expect(blocked.success).toBe(false);
-    expect(blocked.blocked).toBe(true);
+    expect(blocked.requiresApproval).toBe(true);
 
     // low-risk tool allowed
     const allowed = await router.callTool('memory_search', {
@@ -317,7 +318,7 @@ describe('ToolPolicy → SkillRegistry → RuntimeToolRouter integration', () =>
     expect(ok.success).toBe(true);
   });
 
-  it('allowedTools whitelist overrides high-risk default block', async () => {
+  it('high-risk tool still requires approval even when whitelisted', async () => {
     const router = createRouterWithSkills([
       { name: 'dangerous', tools: ['memory_write'], risk_level: 'high' },
     ]);
@@ -333,8 +334,8 @@ describe('ToolPolicy → SkillRegistry → RuntimeToolRouter integration', () =>
       type: 'episodic',
       text: 'whitelisted high-risk',
     }, agent);
-    expect(result.success).toBe(true);
-    expect(result.blocked).toBeUndefined();
+    expect(result.success).toBe(false);
+    expect(result.requiresApproval).toBe(true);
   });
 
   it('contextFromRole builds correct AgentContext for policy chain', async () => {

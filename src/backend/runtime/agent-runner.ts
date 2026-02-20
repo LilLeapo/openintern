@@ -1,7 +1,6 @@
 import type { LLMConfig, Message, ToolCall, ContentPart } from '../../types/agent.js';
 import { getMessageText } from '../../types/agent.js';
 import type { Event, EventType } from '../../types/events.js';
-import type { Skill } from '../../types/skill.js';
 import type { ScopeContext } from './scope.js';
 import { createLLMClient, type ILLMClient } from '../agent/llm-client.js';
 import { generateSpanId, generateStepId } from '../../utils/ids.js';
@@ -174,20 +173,28 @@ export class SingleAgentRunner implements AgentRunner {
           history: messages,
           memoryHits,
           skills,
-          skillInjections: this.config.skillInjections,
-          agentContext: this.config.agentContext,
-          availableGroups: this.config.availableGroups,
-          environment: this.config.workDir ? {
-            cwd: this.config.workDir,
-            date: new Date().toISOString().split('T')[0],
-            availableToolNames: tools.map((t) => t.name),
-          } : undefined,
-          budget: this.budgetManager ? {
-            utilization: this.budgetManager.utilization,
-            currentStep: step,
-            maxSteps: this.maxSteps,
-            compactionCount: this.budgetManager.currentCompactionCount,
-          } : undefined,
+          ...(this.config.skillInjections ? { skillInjections: this.config.skillInjections } : {}),
+          ...(this.config.agentContext ? { agentContext: this.config.agentContext } : {}),
+          ...(this.config.availableGroups ? { availableGroups: this.config.availableGroups } : {}),
+          ...(this.config.workDir
+            ? {
+                environment: {
+                  cwd: this.config.workDir,
+                  date: new Date().toISOString().slice(0, 10),
+                  availableToolNames: tools.map((t) => t.name),
+                },
+              }
+            : {}),
+          ...(this.budgetManager
+            ? {
+                budget: {
+                  utilization: this.budgetManager.utilization,
+                  currentStep: step,
+                  maxSteps: this.maxSteps,
+                  compactionCount: this.budgetManager.currentCompactionCount,
+                },
+              }
+            : {}),
         });
 
         // ── LLM call ──
@@ -224,11 +231,14 @@ export class SingleAgentRunner implements AgentRunner {
               content: response.content,
               toolCalls: response.toolCalls,
             });
-            messages.push({
-              role: 'tool',
-              content: 'Error: Doom loop detected — you are repeating the same tool call with identical parameters. Try a different approach or provide a final answer.',
-              toolCallId: response.toolCalls[0].id,
-            });
+            const firstToolCall = response.toolCalls[0];
+            if (firstToolCall) {
+              messages.push({
+                role: 'tool',
+                content: 'Error: Doom loop detected — you are repeating the same tool call with identical parameters. Try a different approach or provide a final answer.',
+                toolCallId: firstToolCall.id,
+              });
+            }
             continue;
           }
 
@@ -397,13 +407,13 @@ export class SingleAgentRunner implements AgentRunner {
   /**
    * Check context budget and auto-compact if needed.
    */
-  private async *maybeCompactContext(
+  private *maybeCompactContext(
     messages: Message[],
     ctx: RunnerContext,
     stepId: string,
     rootSpan: string,
     currentStep: number
-  ): AsyncGenerator<Event, { compacted: boolean; messages: Message[] }, void> {
+  ): Generator<Event, { compacted: boolean; messages: Message[] }, void> {
     if (!this.budgetManager || !this.compactionService) {
       return { compacted: false, messages };
     }

@@ -197,7 +197,7 @@ export class AnthropicClient implements ILLMClient {
     options?: LLMCallOptions,
   ): AsyncIterable<LLMStreamChunk> {
     const body = this.buildRequestBody(messages, tools);
-    (body as Record<string, unknown>).stream = true;
+    body['stream'] = true;
 
     const response = await fetch(`${this.baseUrl}/v1/messages`, {
       method: 'POST',

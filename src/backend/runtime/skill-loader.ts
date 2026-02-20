@@ -88,8 +88,14 @@ export class SkillLoader {
     // Extract frontmatter if present
     const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
     if (fmMatch) {
-      frontmatter = this.parseSimpleYaml(fmMatch[1]);
-      content = fmMatch[2].trim();
+      const frontmatterText = fmMatch[1];
+      const markdownContent = fmMatch[2];
+      if (frontmatterText !== undefined) {
+        frontmatter = this.parseSimpleYaml(frontmatterText);
+      }
+      if (markdownContent !== undefined) {
+        content = markdownContent.trim();
+      }
     }
 
     const name = String(frontmatter['name'] ?? dirName);
@@ -125,7 +131,8 @@ export class SkillLoader {
     try {
       const raw = await fs.promises.readFile(cached.entryPath, 'utf-8');
       const fmMatch = raw.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-      return fmMatch ? fmMatch[1].trim() : raw;
+      const markdownContent = fmMatch?.[1];
+      return markdownContent !== undefined ? markdownContent.trim() : raw;
     } catch {
       return cached.content;
     }
@@ -184,7 +191,11 @@ export class SkillLoader {
     for (const line of text.split('\n')) {
       const match = line.match(/^(\w[\w_]*)\s*:\s*(.*)$/);
       if (!match) continue;
-      const [, key, rawValue] = match;
+      const key = match[1];
+      const rawValue = match[2];
+      if (key === undefined || rawValue === undefined) {
+        continue;
+      }
       const value = rawValue.trim();
       if (value === 'true') result[key] = true;
       else if (value === 'false') result[key] = false;

@@ -72,19 +72,19 @@ describe('MockLLMClient with tools', () => {
 
     tools = [
       {
-        name: 'memory.write',
+        name: 'memory_write',
         description: 'Write to memory',
         parameters: { type: 'object', properties: {} },
       },
       {
-        name: 'memory.search',
+        name: 'memory_search',
         description: 'Search memory',
         parameters: { type: 'object', properties: {} },
       },
     ];
   });
 
-  it('should simulate memory.write tool call', async () => {
+  it('should simulate memory_write tool call', async () => {
     const messages: Message[] = [
       { role: 'user', content: 'Please remember this information' },
     ];
@@ -93,10 +93,10 @@ describe('MockLLMClient with tools', () => {
 
     expect(response.toolCalls).toBeDefined();
     expect(response.toolCalls?.length).toBe(1);
-    expect(response.toolCalls?.[0]?.name).toBe('memory.write');
+    expect(response.toolCalls?.[0]?.name).toBe('memory_write');
   });
 
-  it('should simulate memory.search tool call', async () => {
+  it('should simulate memory_search tool call', async () => {
     const messages: Message[] = [
       { role: 'user', content: 'Search for something' },
     ];
@@ -105,7 +105,7 @@ describe('MockLLMClient with tools', () => {
 
     expect(response.toolCalls).toBeDefined();
     expect(response.toolCalls?.length).toBe(1);
-    expect(response.toolCalls?.[0]?.name).toBe('memory.search');
+    expect(response.toolCalls?.[0]?.name).toBe('memory_search');
   });
 });
 

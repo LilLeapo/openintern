@@ -78,7 +78,7 @@ export class HashEmbeddingProvider implements IEmbeddingProvider {
     this.dimension = dimension;
   }
 
-  async embed(text: string): Promise<number[]> {
+  embed(text: string): Promise<number[]> {
     const tokens = tokenize(text);
     const vec = new Array<number>(this.dimension).fill(0);
 
@@ -89,10 +89,10 @@ export class HashEmbeddingProvider implements IEmbeddingProvider {
       }
     }
 
-    return normalize(vec);
+    return Promise.resolve(normalize(vec));
   }
 
-  async embedBatch(texts: string[]): Promise<number[][]> {
+  embedBatch(texts: string[]): Promise<number[][]> {
     return Promise.all(texts.map((t) => this.embed(t)));
   }
 }

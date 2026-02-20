@@ -24,12 +24,7 @@ type ToolHandler = (params: Record<string, unknown>) => Promise<unknown>;
 interface RuntimeTool extends ToolDefinition {
   handler: ToolHandler;
   source: 'builtin' | 'mcp';
-  metadata?: {
-    risk_level?: 'low' | 'medium' | 'high';
-    mutating?: boolean;
-    supports_parallel?: boolean;
-    timeout_ms?: number;
-  };
+  metadata?: ToolDefinition['metadata'];
 }
 
 interface MCPToolDefinition {
@@ -1130,7 +1125,10 @@ export class RuntimeToolRouter {
         for (const pl of patchLines) {
           if (pl.startsWith('@@')) {
             const match = pl.match(/@@ -(\d+)/);
-            if (match) offset = parseInt(match[1], 10) - 1;
+            const startLine = match?.[1];
+            if (startLine !== undefined) {
+              offset = parseInt(startLine, 10) - 1;
+            }
           } else if (pl.startsWith('-') && !pl.startsWith('---')) {
             if (offset < lines.length) lines.splice(offset, 1);
           } else if (pl.startsWith('+') && !pl.startsWith('+++')) {

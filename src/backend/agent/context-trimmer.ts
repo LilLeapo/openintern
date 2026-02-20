@@ -107,7 +107,7 @@ export class ContextTrimmer {
     // Start with head (first turn) and tail (recent turns)
     const headTurns = turns.slice(0, keepFirst);
     const tailStart = Math.max(keepFirst, turns.length - preserveTurns);
-    let tailTurns = turns.slice(tailStart);
+    const tailTurns = turns.slice(tailStart);
 
     // Calculate tokens for head + tail
     let keptTokens = 0;

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MemoryItemSchema, type MemoryItem } from '../../types/memory.js';
 import { MemoryStoreError } from '../../utils/errors.js';
-import type { HybridSearcher, HybridSearchResult } from './hybrid-searcher.js';
+import type { HybridSearcher } from './hybrid-searcher.js';
 
 /**
  * Keyword index structure: { keyword: [memory_id1, memory_id2, ...] }

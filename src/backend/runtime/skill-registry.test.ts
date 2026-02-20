@@ -21,6 +21,7 @@ describe('SkillRegistry', () => {
       risk_level: 'low',
       provider: 'builtin',
       health_status: 'healthy',
+      allow_implicit_invocation: false,
       ...overrides,
     };
   }

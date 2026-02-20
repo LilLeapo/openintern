@@ -7,7 +7,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { IEmbeddingProvider } from './embedding-provider.js';
 import { logger } from '../../utils/logger.js';
 
 export interface VectorEntry {

@@ -22,7 +22,7 @@ import type { Event } from '../../types/events.js';
 import { EventStore } from '../store/event-store.js';
 import { ContextManager } from './context-manager.js';
 import { ToolRouter } from './tool-router.js';
-import { createLLMClient, type ILLMClient, type LLMStreamChunk } from './llm-client.js';
+import { createLLMClient, type ILLMClient } from './llm-client.js';
 import { RetryPolicy } from './retry-policy.js';
 import { detectOrphanedToolCalls, generateSyntheticResults } from './orphan-detector.js';
 import { generateSpanId, generateStepId } from '../../utils/ids.js';

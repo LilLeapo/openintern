@@ -1,4 +1,4 @@
-import { MCPClient, type MCPClientConfig, type MCPTool } from '../agent/mcp-client.js';
+import { MCPClient, type MCPClientConfig } from '../agent/mcp-client.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -102,10 +102,10 @@ export class McpConnectionManager {
     });
 
     const clientConfig: MCPClientConfig = {
-      pythonPath: config.pythonPath,
-      serverModule: config.serverModule,
-      cwd: config.cwd,
-      timeout: config.timeoutMs,
+      ...(config.pythonPath ? { pythonPath: config.pythonPath } : {}),
+      ...(config.serverModule ? { serverModule: config.serverModule } : {}),
+      ...(config.cwd ? { cwd: config.cwd } : {}),
+      ...(config.timeoutMs !== undefined ? { timeout: config.timeoutMs } : {}),
     };
 
     const client = new MCPClient(clientConfig);
@@ -150,7 +150,7 @@ export class McpConnectionManager {
     const oldTools = this.toolCache.get(serverId) ?? [];
     const oldNames = new Set(oldTools.map((t) => t.name));
 
-    const rawTools = await client.listTools() as MCPTool[];
+    const rawTools = await client.listTools();
     const newTools: McpAggregatedTool[] = rawTools.map((t) => ({
       name: `mcp__${serverId}__${t.name}`,
       originalName: t.name,

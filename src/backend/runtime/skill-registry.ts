@@ -127,6 +127,7 @@ export class SkillRegistry {
         risk_level: 'low',
         provider: 'builtin',
         health_status: 'healthy',
+        allow_implicit_invocation: false,
       });
     }
     if (medTools.length > 0) {
@@ -138,6 +139,7 @@ export class SkillRegistry {
         risk_level: 'medium',
         provider: 'builtin',
         health_status: 'healthy',
+        allow_implicit_invocation: false,
       });
     }
     if (highTools.length > 0) {
@@ -149,6 +151,7 @@ export class SkillRegistry {
         risk_level: 'high',
         provider: 'builtin',
         health_status: 'healthy',
+        allow_implicit_invocation: false,
       });
     }
   }

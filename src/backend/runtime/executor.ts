@@ -144,8 +144,12 @@ export function createRuntimeExecutor(
       (toolName) => registry.getToolMeta(toolName) === null
     );
     if (unresolvedTools.length > 0) {
-      const unresolvedBuiltin = unresolvedTools.filter((toolName) => !toolName.includes('.'));
-      const unresolvedMcp = unresolvedTools.filter((toolName) => toolName.includes('.'));
+      const unresolvedBuiltin = unresolvedTools.filter((toolName) =>
+        Object.prototype.hasOwnProperty.call(BUILTIN_TOOL_RISK_LEVELS, toolName)
+      );
+      const unresolvedMcp = unresolvedTools.filter((toolName) =>
+        !Object.prototype.hasOwnProperty.call(BUILTIN_TOOL_RISK_LEVELS, toolName)
+      );
 
       if (unresolvedBuiltin.length > 0) {
         registry.register({
@@ -160,6 +164,7 @@ export function createRuntimeExecutor(
           risk_level: 'low',
           provider: 'builtin',
           health_status: 'healthy',
+          allow_implicit_invocation: false,
         });
       }
 
@@ -176,6 +181,7 @@ export function createRuntimeExecutor(
           risk_level: 'low',
           provider: 'mcp',
           health_status: 'healthy',
+          allow_implicit_invocation: false,
         });
       }
     }
@@ -364,10 +370,18 @@ async function executeSingleRun(
   // Budget manager
   const budgetManager = config.budget
     ? new TokenBudgetManager({
-        maxContextTokens: config.budget.maxContextTokens,
-        compactionThreshold: config.budget.compactionThreshold,
-        warningThreshold: config.budget.warningThreshold,
-        reserveTokens: config.budget.reserveTokens,
+        ...(config.budget.maxContextTokens !== undefined
+          ? { maxContextTokens: config.budget.maxContextTokens }
+          : {}),
+        ...(config.budget.compactionThreshold !== undefined
+          ? { compactionThreshold: config.budget.compactionThreshold }
+          : {}),
+        ...(config.budget.warningThreshold !== undefined
+          ? { warningThreshold: config.budget.warningThreshold }
+          : {}),
+        ...(config.budget.reserveTokens !== undefined
+          ? { reserveTokens: config.budget.reserveTokens }
+          : {}),
       })
     : undefined;
 
@@ -417,10 +431,11 @@ async function executeSingleRun(
     }
 
     const { ToolPolicy } = await import('./tool-policy.js');
+    const runRecord = await config.runRepository.getRunById(run.run_id);
     agentContext = ToolPolicy.contextFromRole(
       role,
       run.agent_id,
-      run.delegated_permissions ?? undefined
+      runRecord?.delegatedPermissions ?? undefined
     );
     logger.info('Agent context created for policy checks', {
       runId: run.run_id,
@@ -443,12 +458,12 @@ async function executeSingleRun(
     checkpointService: config.checkpointService,
     memoryService: config.memoryService,
     toolRouter,
-    toolScheduler: extras?.toolScheduler,
     promptComposer,
-    budgetManager,
-    compactionService,
-    skillInjections: skillInjections.length > 0 ? skillInjections : undefined,
-    availableGroups: availableGroups && availableGroups.length > 0 ? availableGroups : undefined,
+    ...(extras?.toolScheduler ? { toolScheduler: extras.toolScheduler } : {}),
+    ...(budgetManager ? { budgetManager } : {}),
+    ...(compactionService ? { compactionService } : {}),
+    ...(skillInjections.length > 0 ? { skillInjections } : {}),
+    ...(availableGroups && availableGroups.length > 0 ? { availableGroups } : {}),
     workDir: config.workDir,
     ...(agentContext ? { agentContext } : {}),
   });
@@ -588,10 +603,10 @@ async function executeGroupRun(
     checkpointService: config.checkpointService,
     memoryService: config.memoryService,
     toolRouter,
-    toolScheduler: extras?.toolScheduler,
-    skillInjections: skillInjections.length > 0 ? skillInjections : undefined,
+    ...(extras?.toolScheduler ? { toolScheduler: extras.toolScheduler } : {}),
+    ...(skillInjections.length > 0 ? { skillInjections } : {}),
     workDir: config.workDir,
-    budget: config.budget,
+    ...(config.budget ? { budget: config.budget } : {}),
     ...(delegatedPermissions ? { delegatedPermissions } : {}),
   });
 

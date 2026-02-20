@@ -11,6 +11,7 @@ interface SkillRow {
   risk_level: string;
   provider: string;
   health_status: string;
+  allow_implicit_invocation?: boolean | null;
   created_at: string | Date;
   updated_at: string | Date;
 }
@@ -28,6 +29,7 @@ function mapSkillRow(row: SkillRow): Skill {
     risk_level: row.risk_level as Skill['risk_level'],
     provider: row.provider as Skill['provider'],
     health_status: row.health_status as Skill['health_status'],
+    allow_implicit_invocation: row.allow_implicit_invocation ?? false,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at),
   };

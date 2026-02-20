@@ -341,7 +341,7 @@ describe('RuntimeToolRouter', () => {
 
   it('returns not-found error for unknown tools', async () => {
     const router = createRouter();
-    const result = await router.callTool('unknown.tool', {});
+    const result = await router.callTool('unknown_tool', {});
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Tool not found');
@@ -357,6 +357,7 @@ describe('RuntimeToolRouter', () => {
       risk_level: 'low',
       provider: 'builtin',
       health_status: 'healthy',
+      allow_implicit_invocation: false,
     });
     const router = new RuntimeToolRouter({
       scope: {
@@ -393,6 +394,7 @@ describe('RuntimeToolRouter', () => {
       risk_level: 'low',
       provider: 'builtin',
       health_status: 'healthy',
+      allow_implicit_invocation: false,
     });
     const router = new RuntimeToolRouter({
       scope: {
@@ -555,14 +557,14 @@ describe('RuntimeToolRouter', () => {
         skillRegistry: registry,
       });
 
-      // Agent with no explicit allow/deny — high risk tool should be blocked by default
+      // Agent with no explicit allow/deny — high risk tool requires approval by default
       const result = await router.callTool('memory_write', {
         type: 'episodic',
         text: 'test',
       }, allowedAgent);
 
       expect(result.success).toBe(false);
-      expect(result.blocked).toBe(true);
+      expect(result.requiresApproval).toBe(true);
       expect(result.error).toContain('high risk');
     });
 
@@ -576,6 +578,7 @@ describe('RuntimeToolRouter', () => {
         risk_level: 'low',
         provider: 'builtin',
         health_status: 'healthy',
+        allow_implicit_invocation: false,
       });
       const router = new RuntimeToolRouter({
         scope: { orgId: 'org_test', userId: 'user_test', projectId: null },
