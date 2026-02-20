@@ -137,6 +137,7 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           created_at: created.createdAt,
           status: 'pending',
           llm_config: created.llmConfig ?? undefined,
+          ...(created.groupId ? { group_id: created.groupId } : {}),
           ...(parseResult.data.attachments && parseResult.data.attachments.length > 0
             ? { attachments: parseResult.data.attachments }
             : {}),
@@ -336,6 +337,7 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
             session_key: run.sessionKey,
             run_id: run.id,
             agent_id: 'user',
+            ...(run.groupId ? { group_id: run.groupId } : {}),
             step_id: `step_inject_${Date.now()}`,
             span_id: `span_inject_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
             parent_span_id: null,

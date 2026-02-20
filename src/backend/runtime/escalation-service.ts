@@ -94,6 +94,7 @@ export class EscalationService {
       sessionKey,
       input: childInput,
       agentId: 'orchestrator',
+      groupId,
       llmConfig: null,
       parentRunId,
       ...(delegatedPermissions ? { delegatedPermissions } : {}),

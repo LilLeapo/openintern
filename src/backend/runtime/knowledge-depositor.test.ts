@@ -10,6 +10,7 @@ function createMockRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
     orgId: 'org_test',
     userId: 'user_test',
     projectId: null,
+    groupId: null,
     sessionKey: 's_test',
     input: 'test input',
     status: 'completed',

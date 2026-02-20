@@ -280,7 +280,7 @@ export class GroupRepository {
     avg_duration_ms: number | null;
   }> {
     await this.requireGroup(groupId);
-    const agentId = `group:${groupId}`;
+    const legacyAgentId = `group:${groupId}`;
     const result = await this.pool.query<{
       run_count: string;
       completed_count: string;
@@ -294,8 +294,9 @@ export class GroupRepository {
         AVG(EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000)
           FILTER (WHERE ended_at IS NOT NULL AND started_at IS NOT NULL)::text AS avg_duration_ms
       FROM runs
-      WHERE agent_id = $1`,
-      [agentId]
+      WHERE group_id = $1
+        OR (group_id IS NULL AND agent_id = $2)`,
+      [groupId, legacyAgentId]
     );
     const row = result.rows[0];
     const runCount = Number.parseInt(row?.run_count ?? '0', 10);
@@ -324,7 +325,7 @@ export class GroupRepository {
     duration_ms: number | null;
   }>> {
     await this.requireGroup(groupId);
-    const agentId = `group:${groupId}`;
+    const legacyAgentId = `group:${groupId}`;
     const result = await this.pool.query<{
       id: string;
       status: string;
@@ -335,10 +336,11 @@ export class GroupRepository {
     }>(
       `SELECT id, status, input, created_at, started_at, ended_at
       FROM runs
-      WHERE agent_id = $1
+      WHERE group_id = $1
+        OR (group_id IS NULL AND agent_id = $2)
       ORDER BY created_at DESC
-      LIMIT $2 OFFSET $3`,
-      [agentId, limit, offset]
+      LIMIT $3 OFFSET $4`,
+      [groupId, legacyAgentId, limit, offset]
     );
     return result.rows.map(row => {
       const started = row.started_at ? toIso(row.started_at) : null;

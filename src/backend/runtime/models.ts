@@ -17,6 +17,7 @@ export interface RunRecord {
   orgId: string;
   userId: string;
   projectId: string | null;
+  groupId: string | null;
   sessionKey: string;
   input: string;
   status: RunStatus;
@@ -38,6 +39,7 @@ export interface RunCreateInput {
   sessionKey: string;
   input: string;
   agentId: string;
+  groupId?: string;
   llmConfig: LLMConfigRequest | null;
   parentRunId?: string;
   delegatedPermissions?: DelegatedPermissions;

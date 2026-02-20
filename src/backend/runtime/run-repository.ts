@@ -11,6 +11,7 @@ interface RunRow {
   org_id: string;
   user_id: string;
   project_id: string | null;
+  group_id: string | null;
   session_key: string;
   input: string;
   status: RunStatus;
@@ -32,6 +33,8 @@ interface EventRow {
   id: string | number;
   ts: string | Date;
   agent_id: string;
+  group_id: string | null;
+  message_type: Event['message_type'] | null;
   step_id: string;
   type: Event['type'];
   payload: Event['payload'];
@@ -54,6 +57,7 @@ function mapRunRow(row: RunRow): RunRecord {
     orgId: row.org_id,
     userId: row.user_id,
     projectId: row.project_id,
+    groupId: row.group_id,
     sessionKey: row.session_key,
     input: row.input,
     status: row.status,
@@ -78,6 +82,23 @@ function castBigintCursor(value: string): number {
   return parsed;
 }
 
+type MessageType = NonNullable<Event['message_type']>;
+
+const MESSAGE_TYPE_BY_EVENT_TYPE: Partial<Record<Event['type'], MessageType>> = {
+  'message.task': 'TASK',
+  'message.proposal': 'PROPOSAL',
+  'message.decision': 'DECISION',
+  'message.evidence': 'EVIDENCE',
+  'message.status': 'STATUS',
+};
+
+function resolveMessageType(
+  eventType: Event['type'],
+  explicit: Event['message_type'] | null | undefined
+): MessageType | null {
+  return explicit ?? MESSAGE_TYPE_BY_EVENT_TYPE[eventType] ?? null;
+}
+
 export class RunRepository {
   constructor(private readonly pool: Pool) {}
 
@@ -88,6 +109,7 @@ export class RunRepository {
         org_id,
         user_id,
         project_id,
+        group_id,
         session_key,
         input,
         status,
@@ -95,13 +117,14 @@ export class RunRepository {
         llm_config,
         parent_run_id,
         delegated_permissions
-      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10::jsonb)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11::jsonb)
       RETURNING *`,
       [
         input.id,
         input.scope.orgId,
         input.scope.userId,
         input.scope.projectId,
+        input.groupId ?? null,
         input.sessionKey,
         input.input,
         input.agentId,
@@ -345,6 +368,8 @@ export class RunRepository {
         run_id,
         ts,
         agent_id,
+        group_id,
+        message_type,
         step_id,
         type,
         payload,
@@ -352,12 +377,14 @@ export class RunRepository {
         span_id,
         parent_span_id,
         redaction
-      ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10::jsonb)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12::jsonb)
       RETURNING id::text AS id`,
       [
         event.run_id,
         event.ts,
         event.agent_id,
+        event.group_id ?? null,
+        resolveMessageType(event.type, event.message_type),
         event.step_id,
         event.type,
         JSON.stringify(event.payload),
@@ -380,12 +407,14 @@ export class RunRepository {
     for (const event of events) {
       const offset = params.length;
       values.push(
-        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}::jsonb, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}::jsonb)`
+        `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}::jsonb, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}::jsonb)`
       );
       params.push(
         event.run_id,
         event.ts,
         event.agent_id,
+        event.group_id ?? null,
+        resolveMessageType(event.type, event.message_type),
         event.step_id,
         event.type,
         JSON.stringify(event.payload),
@@ -401,6 +430,8 @@ export class RunRepository {
         run_id,
         ts,
         agent_id,
+        group_id,
+        message_type,
         step_id,
         type,
         payload,
@@ -431,6 +462,8 @@ export class RunRepository {
         id,
         ts,
         agent_id,
+        group_id,
+        message_type,
         step_id,
         type,
         payload,
@@ -447,19 +480,24 @@ export class RunRepository {
       [run.id, cursorValue, limit]
     );
 
-    const items = result.rows.map((row) => ({
-      v: row.v === 1 ? 1 : 1,
-      ts: toIso(row.ts) ?? new Date().toISOString(),
-      session_key: run.sessionKey,
-      run_id: run.id,
-      agent_id: row.agent_id,
-      step_id: row.step_id,
-      span_id: row.span_id,
-      parent_span_id: row.parent_span_id,
-      type: row.type,
-      payload: row.payload,
-      redaction: row.redaction,
-    })) as Event[];
+    const items = result.rows.map((row) => {
+      const messageType = resolveMessageType(row.type, row.message_type);
+      return {
+        v: row.v === 1 ? 1 : 1,
+        ts: toIso(row.ts) ?? new Date().toISOString(),
+        session_key: run.sessionKey,
+        run_id: run.id,
+        agent_id: row.agent_id,
+        ...(row.group_id ? { group_id: row.group_id } : {}),
+        ...(messageType ? { message_type: messageType } : {}),
+        step_id: row.step_id,
+        span_id: row.span_id,
+        parent_span_id: row.parent_span_id,
+        type: row.type,
+        payload: row.payload,
+        redaction: row.redaction,
+      };
+    }) as Event[];
     const nextCursorRow = result.rows[result.rows.length - 1];
     const nextCursor = nextCursorRow ? String(nextCursorRow.id) : null;
     return { items, nextCursor };

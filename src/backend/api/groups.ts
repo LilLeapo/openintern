@@ -305,6 +305,7 @@ export function createGroupsRouter(config: GroupsRouterConfig): Router {
           sessionKey,
           input,
           agentId,
+          groupId,
           llmConfig: llm_config ?? null,
         });
 
@@ -319,7 +320,7 @@ export function createGroupsRouter(config: GroupsRouterConfig): Router {
           created_at: created.createdAt,
           status: 'pending',
           llm_config: created.llmConfig ?? undefined,
-          group_id: groupId,
+          group_id: created.groupId ?? groupId,
         };
         runQueue.enqueue(queuedRun);
 
