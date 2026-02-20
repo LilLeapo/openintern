@@ -199,21 +199,6 @@ export interface RetryConfig {
 }
 
 /**
- * Agent loop configuration
- */
-export interface AgentLoopConfig {
-  maxSteps: number;
-  timeout?: number;
-  modelConfig?: LLMConfig;
-  /** Custom working directory for file tools */
-  workDir?: string;
-  /** Retry policy for transient errors */
-  retry?: RetryConfig;
-  /** Embedding configuration for hybrid search */
-  embedding?: import('./embedding.js').EmbeddingConfig;
-}
-
-/**
  * Context manager configuration
  */
 export interface ContextConfig {
