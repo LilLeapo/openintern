@@ -1,56 +1,29 @@
 import type { QueuedRun } from '../../types/api.js';
-import type { LLMConfig, Message, ContentPart } from '../../types/agent.js';
-import type { Event } from '../../types/events.js';
-import { SSEManager } from '../api/sse.js';
+import type { LLMConfig } from '../../types/agent.js';
+import type { SSEManager } from '../api/sse.js';
 import { logger } from '../../utils/logger.js';
-import { SingleAgentRunner } from './agent-runner.js';
-import { CheckpointService } from './checkpoint-service.js';
-import { CompactionService } from './compaction-service.js';
-import { EpisodicGenerator } from './episodic-generator.js';
-import { EventService } from './event-service.js';
-import { GroupRepository } from './group-repository.js';
-import { KnowledgeDepositor } from './knowledge-depositor.js';
 import { McpConnectionManager, type McpServerConfig } from './mcp-connection-manager.js';
-import { MemoryService } from './memory-service.js';
-import { SerialOrchestrator, type OrchestratorMember } from './orchestrator.js';
-import { PromptComposer } from './prompt-composer.js';
-import { RoleRepository } from './role-repository.js';
-import { RoleRunnerFactory } from './role-runner-factory.js';
-import { RunRepository } from './run-repository.js';
-import { SkillLoader } from './skill-loader.js';
-import { SkillRegistry } from './skill-registry.js';
-import { SkillRepository } from './skill-repository.js';
-import { TokenBudgetManager } from './token-budget-manager.js';
-import { ToolCallScheduler, ToolApprovalManager } from './tool-scheduler.js';
+import type { MemoryService } from './memory-service.js';
 import { RuntimeToolRouter } from './tool-router.js';
+import { SkillLoader } from './skill/loader.js';
+import { ToolCallScheduler, ToolApprovalManager } from './tool-scheduler.js';
 import { EscalationService } from './escalation-service.js';
-import { UploadService } from './upload-service.js';
-import type { FeishuSyncService } from './feishu-sync-service.js';
-import type { MineruIngestService } from './mineru-ingest-service.js';
+import type { CheckpointService } from './checkpoint-service.js';
+import type { EventService } from './event-service.js';
+import type { GroupRepository } from './group-repository.js';
+import type { RoleRepository } from './role-repository.js';
+import type { RunRepository } from './run-repository.js';
+import type { SkillRepository } from './skill/repository.js';
+import type { FeishuSyncService } from './integrations/feishu/sync-service.js';
+import type { MineruIngestService } from './integrations/mineru/ingest-service.js';
+import { refreshSkillRegistry } from './executor/skill-refresh.js';
+import { executeSingleRun } from './executor/single-run.js';
+import { executeGroupRun } from './executor/group-run.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
 type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
 
-const TOKEN_EVENT_BATCH_SIZE = 24;
-const BUILTIN_TOOL_RISK_LEVELS: Record<string, 'low' | 'medium' | 'high'> = {
-  memory_search: 'low',
-  memory_get: 'low',
-  memory_write: 'medium',
-  feishu_ingest_doc: 'medium',
-  mineru_ingest_pdf: 'medium',
-  read_file: 'low',
-  write_file: 'medium',
-  list_files: 'low',
-  glob_files: 'low',
-  grep_files: 'low',
-  exec_command: 'high',
-  apply_patch: 'medium',
-  export_trace: 'low',
-  skills_list: 'low',
-  skills_get: 'low',
-  escalate_to_group: 'medium',
-  list_available_groups: 'low',
-};
+// ─── Config & Result ─────────────────────────────────────────
 
 export interface RuntimeExecutorConfig {
   runRepository: RunRepository;
@@ -73,35 +46,17 @@ export interface RuntimeExecutorConfig {
     cwd?: string;
     timeoutMs?: number;
   };
-  /** Multi-MCP server configurations */
   mcpServers?: McpServerConfig[];
-  /** Skill discovery paths (e.g. ['.skills', '~/.openintern/skills']) */
   skillPaths?: string[];
-  /** Enable implicit skill invocation */
   enableImplicitSkills?: boolean;
-  /** Token budget configuration */
   budget?: {
     maxContextTokens?: number;
     compactionThreshold?: number;
     warningThreshold?: number;
     reserveTokens?: number;
   };
-  /** Persist llm.token events in events table (default: false). */
   persistLlmTokens?: boolean;
-  /** RunQueue reference for notifying waiting/resumed state transitions. */
   runQueue?: { notifyRunWaiting(runId: string): void; notifyRunResumed(runId: string): void };
-}
-
-function isCancellationError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false;
-  }
-  const e = error as { name?: string; message?: string };
-  if (e.name === 'AbortError' || e.name === 'RunCancelledError') {
-    return true;
-  }
-  const message = (e.message ?? '').toLowerCase();
-  return message.includes('aborted') || message.includes('cancelled');
 }
 
 export interface RuntimeExecutorResult {
@@ -109,85 +64,42 @@ export interface RuntimeExecutorResult {
   approvalManager: ToolApprovalManager;
 }
 
-export function createRuntimeExecutor(
-  config: RuntimeExecutorConfig
-): RuntimeExecutorResult {
+// ─── Helpers ─────────────────────────────────────────────────
+
+function isCancellationError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { name?: string; message?: string };
+  if (e.name === 'AbortError' || e.name === 'RunCancelledError') return true;
+  const msg = (e.message ?? '').toLowerCase();
+  return msg.includes('aborted') || msg.includes('cancelled');
+}
+
+function resolveModelConfig(run: QueuedRun, defaults: LLMConfig): LLMConfig {
+  const provider = run.llm_config?.provider ?? defaults.provider;
+  const model = run.llm_config?.model ?? defaults.model;
+  const mc: LLMConfig = { provider, model };
+
+  if (provider === defaults.provider && defaults.apiKey) mc.apiKey = defaults.apiKey;
+  if (run.llm_config?.base_url) mc.baseUrl = run.llm_config.base_url;
+  else if (provider === defaults.provider && defaults.baseUrl) mc.baseUrl = defaults.baseUrl;
+
+  const temperature = run.llm_config?.temperature ?? defaults.temperature;
+  if (temperature !== undefined) mc.temperature = temperature;
+  const maxTokens = run.llm_config?.max_tokens ?? defaults.maxTokens;
+  if (maxTokens !== undefined) mc.maxTokens = maxTokens;
+
+  return mc;
+}
+
+// ─── Factory ─────────────────────────────────────────────────
+
+export function createRuntimeExecutor(config: RuntimeExecutorConfig): RuntimeExecutorResult {
   let sharedToolRouter: RuntimeToolRouter | null = null;
   let sharedToolRouterInit: Promise<RuntimeToolRouter> | null = null;
   let sharedMcpManager: McpConnectionManager | null = null;
   let sharedSkillLoader: SkillLoader | null = null;
   const sharedApprovalManager = new ToolApprovalManager();
   const sharedToolScheduler = new ToolCallScheduler({ approvalManager: sharedApprovalManager });
-
-  async function refreshSkillRegistry(router: RuntimeToolRouter): Promise<void> {
-    const availableTools = router.listTools().map((tool) => tool.name);
-    const registry = new SkillRegistry();
-
-    const builtinToolNames = availableTools.filter((name) =>
-      Object.prototype.hasOwnProperty.call(BUILTIN_TOOL_RISK_LEVELS, name)
-    );
-    registry.registerBuiltinTools(builtinToolNames, BUILTIN_TOOL_RISK_LEVELS);
-
-    try {
-      const persistedSkills = await config.skillRepository.list();
-      for (const skill of persistedSkills) {
-        registry.register(skill);
-      }
-    } catch (error) {
-      logger.error('Failed to load persisted skills for runtime registry', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    // Ensure all available tools are represented in the skill catalog.
-    const unresolvedTools = availableTools.filter(
-      (toolName) => registry.getToolMeta(toolName) === null
-    );
-    if (unresolvedTools.length > 0) {
-      const unresolvedBuiltin = unresolvedTools.filter((toolName) =>
-        Object.prototype.hasOwnProperty.call(BUILTIN_TOOL_RISK_LEVELS, toolName)
-      );
-      const unresolvedMcp = unresolvedTools.filter((toolName) =>
-        !Object.prototype.hasOwnProperty.call(BUILTIN_TOOL_RISK_LEVELS, toolName)
-      );
-
-      if (unresolvedBuiltin.length > 0) {
-        registry.register({
-          id: 'runtime_builtin_auto',
-          name: 'Runtime Builtin (auto)',
-          description: 'Automatically discovered builtin tools.',
-          tools: unresolvedBuiltin.map((name) => ({
-            name,
-            description: '',
-            parameters: {},
-          })),
-          risk_level: 'low',
-          provider: 'builtin',
-          health_status: 'healthy',
-          allow_implicit_invocation: false,
-        });
-      }
-
-      if (unresolvedMcp.length > 0) {
-        registry.register({
-          id: 'runtime_mcp_auto',
-          name: 'Runtime MCP (auto)',
-          description: 'Automatically discovered MCP tools.',
-          tools: unresolvedMcp.map((name) => ({
-            name,
-            description: '',
-            parameters: {},
-          })),
-          risk_level: 'low',
-          provider: 'mcp',
-          health_status: 'healthy',
-          allow_implicit_invocation: false,
-        });
-      }
-    }
-
-    router.setSkillRegistry(registry);
-  }
 
   async function getSkillLoader(): Promise<SkillLoader> {
     if (sharedSkillLoader) return sharedSkillLoader;
@@ -211,7 +123,7 @@ export function createRuntimeExecutor(
   async function getSharedToolRouter(scope: Scope): Promise<RuntimeToolRouter> {
     if (sharedToolRouter) {
       sharedToolRouter.setScope(scope);
-      await refreshSkillRegistry(sharedToolRouter);
+      await refreshSkillRegistry(sharedToolRouter, config.skillRepository);
       return sharedToolRouter;
     }
     if (!sharedToolRouterInit) {
@@ -239,51 +151,19 @@ export function createRuntimeExecutor(
         throw error;
       });
     }
-
     const router = await sharedToolRouterInit;
     router.setScope(scope);
-    await refreshSkillRegistry(router);
+    await refreshSkillRegistry(router, config.skillRepository);
     return router;
   }
 
   const execute = async (run: QueuedRun, signal: AbortSignal): Promise<{ status: RunTerminalStatus }> => {
-    const scope = {
+    const scope: Scope = {
       orgId: run.org_id,
       userId: run.user_id,
       projectId: run.project_id ?? null,
     };
-
-    const selectedProvider = run.llm_config?.provider ?? config.defaultModelConfig.provider;
-    const selectedModel = run.llm_config?.model ?? config.defaultModelConfig.model;
-
-    const modelConfig: LLMConfig = {
-      provider: selectedProvider,
-      model: selectedModel,
-    };
-
-    // Reuse default transport credentials only when provider matches.
-    if (selectedProvider === config.defaultModelConfig.provider) {
-      if (config.defaultModelConfig.apiKey) {
-        modelConfig.apiKey = config.defaultModelConfig.apiKey;
-      }
-    }
-    // Allow request-level transport override (e.g. custom Gemini proxy endpoint).
-    if (run.llm_config?.base_url) {
-      modelConfig.baseUrl = run.llm_config.base_url;
-    } else if (
-      selectedProvider === config.defaultModelConfig.provider
-      && config.defaultModelConfig.baseUrl
-    ) {
-      modelConfig.baseUrl = config.defaultModelConfig.baseUrl;
-    }
-    const temperature = run.llm_config?.temperature ?? config.defaultModelConfig.temperature;
-    if (temperature !== undefined) {
-      modelConfig.temperature = temperature;
-    }
-    const maxTokens = run.llm_config?.max_tokens ?? config.defaultModelConfig.maxTokens;
-    if (maxTokens !== undefined) {
-      modelConfig.maxTokens = maxTokens;
-    }
+    const modelConfig = resolveModelConfig(run, config.defaultModelConfig);
 
     if (signal.aborted) {
       await config.runRepository.setRunCancelled(run.run_id);
@@ -293,26 +173,14 @@ export function createRuntimeExecutor(
     const toolRouter = await getSharedToolRouter(scope);
     const skillLoader = await getSkillLoader();
     const mcpManager = await getMcpManager();
-
-    // Set run context so escalation tool knows the current run
     toolRouter.setRunContext(run.run_id, run.session_key);
-
     await config.runRepository.setRunRunning(run.run_id);
 
     try {
-      let status: RunTerminalStatus;
-      const extras = {
-        toolScheduler: sharedToolScheduler,
-        skillLoader,
-        mcpManager,
-      };
-
-      if (run.group_id) {
-        status = await executeGroupRun(config, run, scope, modelConfig, toolRouter, signal, extras);
-      } else {
-        status = await executeSingleRun(config, run, scope, modelConfig, toolRouter, signal, extras);
-      }
-
+      const extras = { toolScheduler: sharedToolScheduler, skillLoader, mcpManager };
+      const status = run.group_id
+        ? await executeGroupRun(config, run, scope, modelConfig, toolRouter, signal, extras)
+        : await executeSingleRun(config, run, scope, modelConfig, toolRouter, signal, extras);
       return { status };
     } catch (error: unknown) {
       if (signal.aborted || isCancellationError(error)) {
@@ -320,422 +188,12 @@ export function createRuntimeExecutor(
         logger.info('Runtime executor cancelled', { runId: run.run_id });
         return { status: 'cancelled' };
       }
-
       const message = error instanceof Error ? error.message : String(error);
-      await config.runRepository.setRunFailed(run.run_id, {
-        code: 'EXECUTOR_ERROR',
-        message,
-      });
-      logger.error('Runtime executor failed', {
-        runId: run.run_id,
-        error: message,
-      });
+      await config.runRepository.setRunFailed(run.run_id, { code: 'EXECUTOR_ERROR', message });
+      logger.error('Runtime executor failed', { runId: run.run_id, error: message });
       return { status: 'failed' };
     }
   };
 
   return { execute, approvalManager: sharedApprovalManager };
-}
-
-// ─── Single agent run ────────────────────────────────────────
-
-async function executeSingleRun(
-  config: RuntimeExecutorConfig,
-  run: QueuedRun,
-  scope: Scope,
-  modelConfig: LLMConfig,
-  toolRouter: RuntimeToolRouter,
-  signal: AbortSignal,
-  extras?: {
-    toolScheduler?: ToolCallScheduler;
-    skillLoader?: SkillLoader;
-    mcpManager?: McpConnectionManager | null;
-  }
-): Promise<RunTerminalStatus> {
-  // Build skill injections from loaded SKILL.md files
-  const skillLoader = extras?.skillLoader;
-  const skillInjections: { skillId: string; name: string; content: string }[] = [];
-  if (skillLoader) {
-    const implicitSkills = config.enableImplicitSkills
-      ? skillLoader.listImplicitSkills()
-      : [];
-    for (const skill of implicitSkills) {
-      const content = await skillLoader.loadSkillContent(skill.id);
-      if (content) {
-        skillInjections.push({ skillId: skill.id, name: skill.name, content });
-      }
-    }
-  }
-
-  // Budget manager
-  const budgetManager = config.budget
-    ? new TokenBudgetManager({
-        ...(config.budget.maxContextTokens !== undefined
-          ? { maxContextTokens: config.budget.maxContextTokens }
-          : {}),
-        ...(config.budget.compactionThreshold !== undefined
-          ? { compactionThreshold: config.budget.compactionThreshold }
-          : {}),
-        ...(config.budget.warningThreshold !== undefined
-          ? { warningThreshold: config.budget.warningThreshold }
-          : {}),
-        ...(config.budget.reserveTokens !== undefined
-          ? { reserveTokens: config.budget.reserveTokens }
-          : {}),
-      })
-    : undefined;
-
-  const compactionService = budgetManager ? new CompactionService() : undefined;
-
-  // Query available groups for PA system prompt injection
-  let availableGroups;
-  try {
-    availableGroups = await config.groupRepository.listGroupsWithRoles(
-      scope.projectId ?? undefined
-    );
-  } catch (error) {
-    logger.warn('Failed to query available groups for prompt injection', {
-      runId: run.run_id,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  const promptComposer = new PromptComposer({
-    ...(modelConfig.provider !== 'mock' && { provider: modelConfig.provider }),
-  });
-
-  // Query agent's role and create agentContext for policy checks
-  let agentContext;
-  try {
-    let role = await config.roleRepository.getRoleByAgentId(run.agent_id);
-
-    // If no role found (e.g., agent_id is 'main' or agent_instance doesn't exist),
-    // use a default role with no tool restrictions (high-risk tools still require approval)
-    if (!role) {
-      logger.info('Using default role for agent (no restrictions except risk-level)', {
-        runId: run.run_id,
-        agentId: run.agent_id,
-      });
-      role = {
-        id: 'default',
-        name: 'Default Role',
-        description: 'Default role with no tool restrictions',
-        system_prompt: '',
-        allowed_tools: [], // Empty = all tools allowed (except high-risk)
-        denied_tools: [],  // Empty = no tools denied
-        style_constraints: {},
-        is_lead: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-    }
-
-    const { ToolPolicy } = await import('./tool-policy.js');
-    const runRecord = await config.runRepository.getRunById(run.run_id);
-    agentContext = ToolPolicy.contextFromRole(
-      role,
-      run.agent_id,
-      runRecord?.delegatedPermissions ?? undefined
-    );
-    logger.info('Agent context created for policy checks', {
-      runId: run.run_id,
-      agentId: run.agent_id,
-      roleId: role.id,
-      allowedToolsCount: role.allowed_tools.length,
-      deniedToolsCount: role.denied_tools.length,
-    });
-  } catch (error) {
-    logger.error('Failed to create agent context', {
-      runId: run.run_id,
-      agentId: run.agent_id,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  const runner = new SingleAgentRunner({
-    maxSteps: config.maxSteps,
-    modelConfig,
-    checkpointService: config.checkpointService,
-    memoryService: config.memoryService,
-    toolRouter,
-    promptComposer,
-    ...(extras?.toolScheduler ? { toolScheduler: extras.toolScheduler } : {}),
-    ...(budgetManager ? { budgetManager } : {}),
-    ...(compactionService ? { compactionService } : {}),
-    ...(skillInjections.length > 0 ? { skillInjections } : {}),
-    ...(availableGroups && availableGroups.length > 0 ? { availableGroups } : {}),
-    workDir: config.workDir,
-    ...(agentContext ? { agentContext } : {}),
-  });
-
-  // Reconstruct conversation history from prior completed runs in the same session
-  const history: Message[] = [];
-  try {
-    const priorRuns = await config.runRepository.listSessionHistory(scope, run.session_key, 20);
-    for (const priorRun of priorRuns) {
-      if (priorRun.id === run.run_id) continue;
-      history.push({ role: 'user', content: priorRun.input });
-      if (priorRun.result) {
-        history.push({ role: 'assistant', content: priorRun.result });
-      }
-    }
-  } catch (error) {
-    logger.warn('Failed to reconstruct session history', {
-      runId: run.run_id,
-      sessionKey: run.session_key,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  // Resolve attachments into content parts
-  let inputContent: string | ContentPart[] = run.input;
-  if (run.attachments && run.attachments.length > 0) {
-    try {
-      const uploadService = new UploadService(config.workDir.replace(/\/workspace$/, ''));
-      const attachmentParts = await uploadService.resolveAttachments(
-        run.attachments.map((a) => a.upload_id),
-        scope,
-      );
-      if (attachmentParts.length > 0) {
-        inputContent = [
-          { type: 'text' as const, text: run.input },
-          ...attachmentParts,
-        ];
-      }
-    } catch (error) {
-      logger.warn('Failed to resolve attachments, proceeding with text only', {
-        runId: run.run_id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  const status = await consumeEventStream(
-    config,
-    run.run_id,
-    runner.run(run.input, {
-      runId: run.run_id,
-      sessionKey: run.session_key,
-      scope,
-      agentId: run.agent_id,
-      abortSignal: signal,
-      ...(history.length > 0 ? { history } : {}),
-      ...(typeof inputContent !== 'string' ? { inputContent } : {}),
-      onEvent: (event) => {
-        // Broadcast via SSE immediately — don't gate on DB write
-        config.sseManager.broadcastToRun(run.run_id, event);
-        void config.eventService.write(event).catch((err) => {
-          logger.warn('Failed to persist onEvent event', {
-            runId: run.run_id,
-            eventType: event.type,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      },
-      onWaiting: async () => {
-        await config.runRepository.setRunWaiting(run.run_id);
-        config.runQueue?.notifyRunWaiting(run.run_id);
-      },
-      onResumed: async () => {
-        await config.runRepository.setRunResumed(run.run_id);
-        config.runQueue?.notifyRunResumed(run.run_id);
-      },
-    }),
-    signal
-  );
-  return status ?? (signal.aborted ? 'cancelled' : 'completed');
-}
-
-// ─── Group run (serial orchestration) ────────────────────────
-
-async function executeGroupRun(
-  config: RuntimeExecutorConfig,
-  run: QueuedRun,
-  scope: Scope,
-  modelConfig: LLMConfig,
-  toolRouter: RuntimeToolRouter,
-  signal: AbortSignal,
-  extras?: {
-    toolScheduler?: ToolCallScheduler;
-    skillLoader?: SkillLoader;
-    mcpManager?: McpConnectionManager | null;
-  }
-): Promise<RunTerminalStatus> {
-  const groupId = run.group_id!;
-  const members = await config.groupRepository.listMembers(groupId);
-
-  if (members.length === 0) {
-    throw new Error(`Group ${groupId} has no members`);
-  }
-
-  // Read delegated permissions from the run record (Phase C)
-  const runRecord = await config.runRepository.getRunById(run.run_id);
-  const delegatedPermissions = runRecord?.delegatedPermissions ?? undefined;
-
-  // Resolve roles for each member
-  const orchMembers: OrchestratorMember[] = [];
-  for (const member of members) {
-    const role = await config.roleRepository.getById(member.role_id);
-    if (!role) {
-      throw new Error(`Role ${member.role_id} not found for member ${member.id}`);
-    }
-    orchMembers.push({
-      role,
-      agentInstanceId: member.agent_instance_id ?? member.id,
-    });
-  }
-
-  // Build skill injections for group runners
-  const skillLoader = extras?.skillLoader;
-  const skillInjections: { skillId: string; name: string; content: string }[] = [];
-  if (skillLoader && config.enableImplicitSkills) {
-    for (const skill of skillLoader.listImplicitSkills()) {
-      const content = await skillLoader.loadSkillContent(skill.id);
-      if (content) {
-        skillInjections.push({ skillId: skill.id, name: skill.name, content });
-      }
-    }
-  }
-
-  const factory = new RoleRunnerFactory({
-    maxSteps: config.maxSteps,
-    modelConfig,
-    checkpointService: config.checkpointService,
-    memoryService: config.memoryService,
-    toolRouter,
-    ...(extras?.toolScheduler ? { toolScheduler: extras.toolScheduler } : {}),
-    ...(skillInjections.length > 0 ? { skillInjections } : {}),
-    workDir: config.workDir,
-    ...(config.budget ? { budget: config.budget } : {}),
-    ...(delegatedPermissions ? { delegatedPermissions } : {}),
-  });
-
-  const orchestrator = new SerialOrchestrator({
-    groupId,
-    members: orchMembers,
-    maxRounds: 3,
-    runnerFactory: factory,
-  });
-
-  const status = await consumeEventStream(
-    config,
-    run.run_id,
-    orchestrator.run(run.input, {
-      runId: run.run_id,
-      sessionKey: run.session_key,
-      scope,
-      abortSignal: signal,
-    }),
-    signal,
-    groupId,
-    scope
-  );
-  return status ?? (signal.aborted ? 'cancelled' : 'completed');
-}
-
-// ─── Shared event processing ─────────────────────────────────
-
-async function consumeEventStream(
-  config: RuntimeExecutorConfig,
-  runId: string,
-  stream: AsyncGenerator<Event, unknown, void>,
-  signal: AbortSignal,
-  groupId?: string,
-  scope?: Scope
-): Promise<RunTerminalStatus | null> {
-  let tokenBuffer: Event[] = [];
-  let terminalStatus: RunTerminalStatus | null = null;
-  const persistLlmTokens = config.persistLlmTokens === true;
-
-  const flushTokens = async (): Promise<void> => {
-    if (tokenBuffer.length === 0) {
-      return;
-    }
-    await config.eventService.writeBatch(tokenBuffer);
-    tokenBuffer = [];
-  };
-
-  for await (const event of stream) {
-    if (event.type === 'llm.token') {
-      config.sseManager.broadcastToRun(runId, event);
-      if (persistLlmTokens) {
-        tokenBuffer.push(event);
-        if (tokenBuffer.length >= TOKEN_EVENT_BATCH_SIZE) {
-          await flushTokens();
-        }
-      }
-      continue;
-    }
-
-    await flushTokens();
-    const status = await processEvent(config, runId, event, groupId, scope);
-    if (status) {
-      terminalStatus = status;
-    }
-    if (signal.aborted && terminalStatus === null) {
-      terminalStatus = 'cancelled';
-    }
-  }
-
-  await flushTokens();
-  return terminalStatus;
-}
-
-async function processEvent(
-  config: RuntimeExecutorConfig,
-  runId: string,
-  event: Event,
-  groupId?: string,
-  scope?: Scope
-): Promise<RunTerminalStatus | null> {
-  await config.eventService.write(event);
-  config.sseManager.broadcastToRun(runId, event);
-
-  if (event.type === 'run.completed') {
-    await config.runRepository.setRunCompleted(runId, event.payload.output);
-
-    // Auto-generate episodic memories for group runs
-    if (groupId && scope) {
-      try {
-        const generator = new EpisodicGenerator(
-          config.memoryService,
-          config.eventService
-        );
-        await generator.generateFromRun(runId, groupId, scope);
-      } catch (err) {
-        logger.error('Failed to generate episodic memories', {
-          runId,
-          groupId,
-          error: String(err),
-        });
-      }
-
-      // Deposit group results back into parent PA's memory (Phase C)
-      try {
-        const depositor = new KnowledgeDepositor({
-          memoryService: config.memoryService,
-          runRepository: config.runRepository,
-        });
-        await depositor.depositGroupResults(runId, scope, event.payload.output ?? '');
-      } catch (err) {
-        logger.error('Failed to deposit group run knowledge', {
-          runId,
-          groupId,
-          error: String(err),
-        });
-      }
-    }
-    return 'completed';
-  } else if (event.type === 'run.failed') {
-    if (event.payload.error.code === 'RUN_CANCELLED') {
-      await config.runRepository.setRunCancelled(runId);
-      return 'cancelled';
-    }
-    await config.runRepository.setRunFailed(runId, {
-      code: event.payload.error.code,
-      message: event.payload.error.message,
-    });
-    return 'failed';
-  }
-  return null;
 }
