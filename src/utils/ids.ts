@@ -80,17 +80,27 @@ export function generateSkillId(): string {
 }
 
 /**
- * Generate a Feishu connector ID (format: fconn_<alphanumeric>)
+ * Generate a plugin ID (format: plug_<alphanumeric>)
  */
-export function generateFeishuConnectorId(): string {
-  return `fconn_${randomAlphanumeric(12)}`;
+export function generatePluginId(): string {
+  return `plug_${randomAlphanumeric(12)}`;
 }
 
 /**
- * Generate a Feishu sync job ID (format: fsjob_<alphanumeric>)
+ * Generate a plugin job ID (format: pjob_<alphanumeric>)
  */
+export function generatePluginJobId(): string {
+  return `pjob_${randomAlphanumeric(12)}`;
+}
+
+/** @deprecated Use generatePluginId */
+export function generateFeishuConnectorId(): string {
+  return generatePluginId();
+}
+
+/** @deprecated Use generatePluginJobId */
 export function generateFeishuSyncJobId(): string {
-  return `fsjob_${randomAlphanumeric(12)}`;
+  return generatePluginJobId();
 }
 
 /**

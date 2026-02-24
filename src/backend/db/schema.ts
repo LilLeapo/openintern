@@ -236,60 +236,52 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
     END IF;
   END $$`,
 
-  // ─── Feishu Connector: connector config + sync jobs + source state ───
-  `CREATE TABLE IF NOT EXISTS feishu_connectors (
+  // ─── Plugin: generic connector + jobs + key-value state ───
+  `CREATE TABLE IF NOT EXISTS plugins (
     id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
     org_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     name TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active', 'paused')),
     config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    state JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_by TEXT NOT NULL,
-    last_sync_at TIMESTAMPTZ,
-    last_success_at TIMESTAMPTZ,
-    last_error TEXT,
-    last_polled_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
-  `CREATE INDEX IF NOT EXISTS feishu_connectors_scope_idx
-    ON feishu_connectors (org_id, project_id, created_at DESC)`,
-  `CREATE INDEX IF NOT EXISTS feishu_connectors_status_idx
-    ON feishu_connectors (status, last_polled_at ASC NULLS FIRST)`,
+  `CREATE INDEX IF NOT EXISTS plugins_provider_scope_idx
+    ON plugins (provider, org_id, project_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS plugins_provider_status_idx
+    ON plugins (provider, status)`,
 
-  `CREATE TABLE IF NOT EXISTS feishu_sync_jobs (
+  `CREATE TABLE IF NOT EXISTS plugin_jobs (
     id TEXT PRIMARY KEY,
-    connector_id TEXT NOT NULL REFERENCES feishu_connectors(id) ON DELETE CASCADE,
+    plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
     org_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
-    trigger TEXT NOT NULL CHECK (trigger IN ('manual', 'poll')),
+    kind TEXT NOT NULL DEFAULT 'sync',
+    trigger TEXT NOT NULL CHECK (trigger IN ('manual', 'poll', 'webhook')),
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
     started_at TIMESTAMPTZ,
     ended_at TIMESTAMPTZ,
-    stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+    result JSONB NOT NULL DEFAULT '{}'::jsonb,
     error_message TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
-  `CREATE INDEX IF NOT EXISTS feishu_sync_jobs_connector_idx
-    ON feishu_sync_jobs (connector_id, created_at DESC)`,
-  `CREATE INDEX IF NOT EXISTS feishu_sync_jobs_scope_idx
-    ON feishu_sync_jobs (org_id, project_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS plugin_jobs_plugin_idx
+    ON plugin_jobs (plugin_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS plugin_jobs_scope_idx
+    ON plugin_jobs (org_id, project_id, created_at DESC)`,
 
-  `CREATE TABLE IF NOT EXISTS feishu_source_state (
-    connector_id TEXT NOT NULL REFERENCES feishu_connectors(id) ON DELETE CASCADE,
-    source_key TEXT NOT NULL,
-    source_type TEXT NOT NULL CHECK (source_type IN ('docx', 'bitable')),
-    source_id TEXT NOT NULL,
-    revision_id TEXT,
-    content_hash TEXT,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    updated_at TIMESTAMPTZ,
-    last_synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (connector_id, source_key)
+  `CREATE TABLE IF NOT EXISTS plugin_kv (
+    plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (plugin_id, key)
   )`,
-  `CREATE INDEX IF NOT EXISTS feishu_source_state_connector_idx
-    ON feishu_source_state (connector_id, source_type, last_synced_at DESC)`,
 
   // ─── PA Escalation: parent_run_id + waiting status ─────────
   `DO $$ BEGIN

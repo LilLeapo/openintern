@@ -33,6 +33,7 @@ import { CheckpointService, createRuntimeExecutor, EventService, MemoryService, 
 import { RoleRepository } from './runtime/role-repository.js';
 import { GroupRepository } from './runtime/group-repository.js';
 import { SkillRepository } from './runtime/skill/repository.js';
+import { PluginRepository } from './runtime/plugin/repository.js';
 import { FeishuRepository } from './runtime/integrations/feishu/repository.js';
 import { FeishuClient } from './runtime/integrations/feishu/client.js';
 import { FeishuSyncService } from './runtime/integrations/feishu/sync-service.js';
@@ -116,7 +117,8 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   const roleRepository = new RoleRepository(pool);
   const groupRepository = new GroupRepository(pool);
   const skillRepository = new SkillRepository(pool);
-  const feishuRepository = new FeishuRepository(pool);
+  const pluginRepository = new PluginRepository(pool);
+  const feishuRepository = new FeishuRepository(pluginRepository);
   const eventService = new EventService(runRepository);
   const checkpointService = new CheckpointService(runRepository);
   const requestedEmbedding = finalConfig.embeddingConfig ?? finalConfig.embedding ?? {

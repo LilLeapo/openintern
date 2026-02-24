@@ -1,4 +1,3 @@
-import type { Pool } from 'pg';
 import type {
   FeishuConnector,
   FeishuConnectorConfig,
@@ -7,51 +6,11 @@ import type {
   FeishuSyncStats,
   FeishuSyncTrigger,
 } from '../../../../types/feishu.js';
-import { generateFeishuConnectorId, generateFeishuSyncJobId } from '../../../../utils/ids.js';
+import { generatePluginId, generatePluginJobId } from '../../../../utils/ids.js';
 import { NotFoundError } from '../../../../utils/errors.js';
+import type { PluginRepository, PluginRow, PluginJobRow, PluginKvRow } from '../../plugin/repository.js';
 
-interface FeishuConnectorRow {
-  id: string;
-  org_id: string;
-  project_id: string;
-  name: string;
-  status: FeishuConnectorStatus;
-  config: FeishuConnectorConfig;
-  created_by: string;
-  last_sync_at: string | Date | null;
-  last_success_at: string | Date | null;
-  last_error: string | null;
-  last_polled_at: string | Date | null;
-  created_at: string | Date;
-  updated_at: string | Date;
-}
-
-interface FeishuSyncJobRow {
-  id: string;
-  connector_id: string;
-  org_id: string;
-  project_id: string;
-  trigger: FeishuSyncTrigger;
-  status: FeishuSyncJob['status'];
-  started_at: string | Date | null;
-  ended_at: string | Date | null;
-  stats: FeishuSyncStats;
-  error_message: string | null;
-  created_at: string | Date;
-  updated_at: string | Date;
-}
-
-interface FeishuSourceStateRow {
-  connector_id: string;
-  source_key: string;
-  source_type: 'docx' | 'bitable';
-  source_id: string;
-  revision_id: string | null;
-  content_hash: string | null;
-  metadata: Record<string, unknown>;
-  updated_at: string | Date | null;
-  last_synced_at: string | Date;
-}
+const PROVIDER = 'feishu';
 
 export interface FeishuSourceState {
   connector_id: string;
@@ -65,59 +24,60 @@ export interface FeishuSourceState {
   last_synced_at: string;
 }
 
-function toIso(value: string | Date | null): string | null {
-  if (!value) {
-    return null;
-  }
+function toIso(value: string | Date | null | undefined): string | null {
+  if (!value) return null;
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
-function mapConnectorRow(row: FeishuConnectorRow): FeishuConnector {
+function mapPluginToConnector(row: PluginRow): FeishuConnector {
+  const state = row.state;
   return {
     id: row.id,
     org_id: row.org_id,
     project_id: row.project_id,
     name: row.name,
-    status: row.status,
-    config: row.config,
+    status: row.status as FeishuConnectorStatus,
+    config: row.config as unknown as FeishuConnectorConfig,
     created_by: row.created_by,
-    last_sync_at: toIso(row.last_sync_at),
-    last_success_at: toIso(row.last_success_at),
-    last_error: row.last_error,
-    last_polled_at: toIso(row.last_polled_at),
+    last_sync_at: toIso(state.last_sync_at as string | null),
+    last_success_at: toIso(state.last_success_at as string | null),
+    last_error: (state.last_error as string) ?? null,
+    last_polled_at: toIso(state.last_polled_at as string | null),
     created_at: toIso(row.created_at) ?? new Date().toISOString(),
     updated_at: toIso(row.updated_at) ?? new Date().toISOString(),
   };
 }
 
-function mapJobRow(row: FeishuSyncJobRow): FeishuSyncJob {
+function mapJobToSyncJob(row: PluginJobRow): FeishuSyncJob {
+  const result = row.result;
   return {
     id: row.id,
-    connector_id: row.connector_id,
+    connector_id: row.plugin_id,
     org_id: row.org_id,
     project_id: row.project_id,
-    trigger: row.trigger,
+    trigger: row.trigger as FeishuSyncTrigger,
     status: row.status,
     started_at: toIso(row.started_at),
     ended_at: toIso(row.ended_at),
-    stats: row.stats,
+    stats: (result.stats ?? result) as FeishuSyncStats,
     error_message: row.error_message,
     created_at: toIso(row.created_at) ?? new Date().toISOString(),
     updated_at: toIso(row.updated_at) ?? new Date().toISOString(),
   };
 }
 
-function mapSourceStateRow(row: FeishuSourceStateRow): FeishuSourceState {
+function mapKvToSourceState(row: PluginKvRow): FeishuSourceState {
+  const v = row.value;
   return {
-    connector_id: row.connector_id,
-    source_key: row.source_key,
-    source_type: row.source_type,
-    source_id: row.source_id,
-    revision_id: row.revision_id,
-    content_hash: row.content_hash,
-    metadata: row.metadata ?? {},
-    updated_at: toIso(row.updated_at),
-    last_synced_at: toIso(row.last_synced_at) ?? new Date().toISOString(),
+    connector_id: row.plugin_id,
+    source_key: row.key,
+    source_type: v.source_type as 'docx' | 'bitable',
+    source_id: v.source_id as string,
+    revision_id: (v.revision_id as string) ?? null,
+    content_hash: (v.content_hash as string) ?? null,
+    metadata: (v.metadata as Record<string, unknown>) ?? {},
+    updated_at: toIso(v.updated_at as string | null),
+    last_synced_at: toIso(row.updated_at) ?? new Date().toISOString(),
   };
 }
 
@@ -132,7 +92,7 @@ const DEFAULT_STATS: FeishuSyncStats = {
 };
 
 export class FeishuRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly repo: PluginRepository) {}
 
   async createConnector(input: {
     orgId: string;
@@ -142,121 +102,63 @@ export class FeishuRepository {
     status: FeishuConnectorStatus;
     config: FeishuConnectorConfig;
   }): Promise<FeishuConnector> {
-    const id = generateFeishuConnectorId();
-    const result = await this.pool.query<FeishuConnectorRow>(
-      `INSERT INTO feishu_connectors (
-        id, org_id, project_id, name, status, config, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
-      RETURNING *`,
-      [
-        id,
-        input.orgId,
-        input.projectId,
-        input.name,
-        input.status,
-        JSON.stringify(input.config),
-        input.createdBy,
-      ]
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw new Error('Failed to create Feishu connector');
-    }
-    return mapConnectorRow(row);
+    const row = await this.repo.createPlugin({
+      id: generatePluginId(),
+      provider: PROVIDER,
+      orgId: input.orgId,
+      projectId: input.projectId,
+      name: input.name,
+      status: input.status,
+      config: input.config as unknown as Record<string, unknown>,
+      createdBy: input.createdBy,
+    });
+    return mapPluginToConnector(row);
   }
 
   async listConnectors(scope: { orgId: string; projectId: string }): Promise<FeishuConnector[]> {
-    const result = await this.pool.query<FeishuConnectorRow>(
-      `SELECT * FROM feishu_connectors
-      WHERE org_id = $1 AND project_id = $2
-      ORDER BY created_at DESC`,
-      [scope.orgId, scope.projectId]
-    );
-    return result.rows.map(mapConnectorRow);
+    const rows = await this.repo.listPlugins(PROVIDER, scope.orgId, scope.projectId);
+    return rows.map(mapPluginToConnector);
   }
 
   async listActiveConnectors(): Promise<FeishuConnector[]> {
-    const result = await this.pool.query<FeishuConnectorRow>(
-      `SELECT * FROM feishu_connectors
-      WHERE status = 'active'
-      ORDER BY COALESCE(last_polled_at, '1970-01-01'::timestamptz) ASC`
-    );
-    return result.rows.map(mapConnectorRow);
+    const rows = await this.repo.listActivePlugins(PROVIDER);
+    return rows.map(mapPluginToConnector);
   }
 
   async getConnector(
     scope: { orgId: string; projectId: string },
-    connectorId: string
+    connectorId: string,
   ): Promise<FeishuConnector | null> {
-    const result = await this.pool.query<FeishuConnectorRow>(
-      `SELECT * FROM feishu_connectors
-      WHERE id = $1 AND org_id = $2 AND project_id = $3
-      LIMIT 1`,
-      [connectorId, scope.orgId, scope.projectId]
-    );
-    const row = result.rows[0];
-    return row ? mapConnectorRow(row) : null;
+    const row = await this.repo.getPluginScoped(connectorId, PROVIDER, scope.orgId, scope.projectId);
+    return row ? mapPluginToConnector(row) : null;
   }
 
   async requireConnector(
     scope: { orgId: string; projectId: string },
-    connectorId: string
+    connectorId: string,
   ): Promise<FeishuConnector> {
     const connector = await this.getConnector(scope, connectorId);
-    if (!connector) {
-      throw new NotFoundError('Feishu connector', connectorId);
-    }
+    if (!connector) throw new NotFoundError('Feishu connector', connectorId);
     return connector;
   }
 
   async updateConnector(
     scope: { orgId: string; projectId: string },
     connectorId: string,
-    patch: {
-      name?: string;
-      status?: FeishuConnectorStatus;
-      config?: FeishuConnectorConfig;
-    }
+    patch: { name?: string; status?: FeishuConnectorStatus; config?: FeishuConnectorConfig },
   ): Promise<FeishuConnector> {
-    const updates: string[] = [];
-    const params: unknown[] = [connectorId, scope.orgId, scope.projectId];
-
-    if (patch.name !== undefined) {
-      updates.push(`name = $${params.push(patch.name)}`);
-    }
-    if (patch.status !== undefined) {
-      updates.push(`status = $${params.push(patch.status)}`);
-    }
-    if (patch.config !== undefined) {
-      updates.push(`config = $${params.push(JSON.stringify(patch.config))}::jsonb`);
-    }
-    if (updates.length === 0) {
-      return this.requireConnector(scope, connectorId);
-    }
-    updates.push('updated_at = NOW()');
-
-    const result = await this.pool.query<FeishuConnectorRow>(
-      `UPDATE feishu_connectors
-      SET ${updates.join(', ')}
-      WHERE id = $1 AND org_id = $2 AND project_id = $3
-      RETURNING *`,
-      params
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw new NotFoundError('Feishu connector', connectorId);
-    }
-    return mapConnectorRow(row);
+    const p: Record<string, unknown> = {};
+    if (patch.name !== undefined) p.name = patch.name;
+    if (patch.status !== undefined) p.status = patch.status;
+    if (patch.config !== undefined) p.config = patch.config;
+    if (Object.keys(p).length === 0) return this.requireConnector(scope, connectorId);
+    const row = await this.repo.updatePlugin(connectorId, PROVIDER, scope.orgId, scope.projectId, p);
+    if (!row) throw new NotFoundError('Feishu connector', connectorId);
+    return mapPluginToConnector(row);
   }
 
   async touchConnectorPolledAt(connectorId: string): Promise<void> {
-    await this.pool.query(
-      `UPDATE feishu_connectors
-      SET last_polled_at = NOW(),
-          updated_at = NOW()
-      WHERE id = $1`,
-      [connectorId]
-    );
+    await this.repo.updatePluginState(connectorId, { last_polled_at: new Date().toISOString() });
   }
 
   async updateConnectorSyncResult(input: {
@@ -264,27 +166,19 @@ export class FeishuRepository {
     success: boolean;
     errorMessage: string | null;
   }): Promise<void> {
+    const now = new Date().toISOString();
     if (input.success) {
-      await this.pool.query(
-        `UPDATE feishu_connectors
-        SET last_sync_at = NOW(),
-            last_success_at = NOW(),
-            last_error = NULL,
-            updated_at = NOW()
-        WHERE id = $1`,
-        [input.connectorId]
-      );
-      return;
+      await this.repo.updatePluginState(input.connectorId, {
+        last_sync_at: now,
+        last_success_at: now,
+        last_error: null,
+      });
+    } else {
+      await this.repo.updatePluginState(input.connectorId, {
+        last_sync_at: now,
+        last_error: input.errorMessage,
+      });
     }
-
-    await this.pool.query(
-      `UPDATE feishu_connectors
-      SET last_sync_at = NOW(),
-          last_error = $2,
-          updated_at = NOW()
-      WHERE id = $1`,
-      [input.connectorId, input.errorMessage]
-    );
   }
 
   async createSyncJob(input: {
@@ -293,112 +187,49 @@ export class FeishuRepository {
     projectId: string;
     trigger: FeishuSyncTrigger;
   }): Promise<FeishuSyncJob> {
-    const id = generateFeishuSyncJobId();
-    const result = await this.pool.query<FeishuSyncJobRow>(
-      `INSERT INTO feishu_sync_jobs (
-        id, connector_id, org_id, project_id, trigger, status, stats
-      ) VALUES ($1, $2, $3, $4, $5, 'pending', $6::jsonb)
-      RETURNING *`,
-      [id, input.connectorId, input.orgId, input.projectId, input.trigger, JSON.stringify(DEFAULT_STATS)]
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw new Error('Failed to create Feishu sync job');
-    }
-    return mapJobRow(row);
+    const row = await this.repo.createJob({
+      id: generatePluginJobId(),
+      pluginId: input.connectorId,
+      orgId: input.orgId,
+      projectId: input.projectId,
+      kind: 'sync',
+      trigger: input.trigger,
+      result: { stats: DEFAULT_STATS },
+    });
+    return mapJobToSyncJob(row);
   }
 
   async setSyncJobRunning(jobId: string): Promise<void> {
-    await this.pool.query(
-      `UPDATE feishu_sync_jobs
-      SET status = 'running',
-          started_at = NOW(),
-          updated_at = NOW()
-      WHERE id = $1`,
-      [jobId]
-    );
+    await this.repo.setJobRunning(jobId);
   }
 
   async setSyncJobCompleted(jobId: string, stats: FeishuSyncStats): Promise<FeishuSyncJob> {
-    const result = await this.pool.query<FeishuSyncJobRow>(
-      `UPDATE feishu_sync_jobs
-      SET status = 'completed',
-          stats = $2::jsonb,
-          ended_at = NOW(),
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING *`,
-      [jobId, JSON.stringify(stats)]
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw new NotFoundError('Feishu sync job', jobId);
-    }
-    return mapJobRow(row);
+    const row = await this.repo.setJobCompleted(jobId, { stats });
+    return mapJobToSyncJob(row);
   }
 
-  async setSyncJobFailed(
-    jobId: string,
-    stats: FeishuSyncStats,
-    errorMessage: string
-  ): Promise<FeishuSyncJob> {
-    const result = await this.pool.query<FeishuSyncJobRow>(
-      `UPDATE feishu_sync_jobs
-      SET status = 'failed',
-          stats = $2::jsonb,
-          error_message = $3,
-          ended_at = NOW(),
-          updated_at = NOW()
-      WHERE id = $1
-      RETURNING *`,
-      [jobId, JSON.stringify(stats), errorMessage]
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw new NotFoundError('Feishu sync job', jobId);
-    }
-    return mapJobRow(row);
+  async setSyncJobFailed(jobId: string, stats: FeishuSyncStats, errorMessage: string): Promise<FeishuSyncJob> {
+    const row = await this.repo.setJobFailed(jobId, { stats }, errorMessage);
+    return mapJobToSyncJob(row);
   }
 
   async listSyncJobs(
     scope: { orgId: string; projectId: string },
     connectorId: string,
-    limit: number
+    limit: number,
   ): Promise<FeishuSyncJob[]> {
-    const result = await this.pool.query<FeishuSyncJobRow>(
-      `SELECT * FROM feishu_sync_jobs
-      WHERE connector_id = $1 AND org_id = $2 AND project_id = $3
-      ORDER BY created_at DESC
-      LIMIT $4`,
-      [connectorId, scope.orgId, scope.projectId, limit]
-    );
-    return result.rows.map(mapJobRow);
+    const rows = await this.repo.listJobs(connectorId, scope.orgId, scope.projectId, limit);
+    return rows.map(mapJobToSyncJob);
   }
 
   async getRunningJob(connectorId: string): Promise<FeishuSyncJob | null> {
-    const result = await this.pool.query<FeishuSyncJobRow>(
-      `SELECT * FROM feishu_sync_jobs
-      WHERE connector_id = $1 AND status = 'running'
-      ORDER BY created_at DESC
-      LIMIT 1`,
-      [connectorId]
-    );
-    const row = result.rows[0];
-    return row ? mapJobRow(row) : null;
+    const row = await this.repo.getRunningJob(connectorId);
+    return row ? mapJobToSyncJob(row) : null;
   }
 
-  async getSourceState(
-    connectorId: string,
-    sourceKey: string
-  ): Promise<FeishuSourceState | null> {
-    const result = await this.pool.query<FeishuSourceStateRow>(
-      `SELECT * FROM feishu_source_state
-      WHERE connector_id = $1 AND source_key = $2
-      LIMIT 1`,
-      [connectorId, sourceKey]
-    );
-    const row = result.rows[0];
-    return row ? mapSourceStateRow(row) : null;
+  async getSourceState(connectorId: string, sourceKey: string): Promise<FeishuSourceState | null> {
+    const row = await this.repo.getKv(connectorId, sourceKey);
+    return row ? mapKvToSourceState(row) : null;
   }
 
   async upsertSourceState(input: {
@@ -411,30 +242,13 @@ export class FeishuRepository {
     metadata: Record<string, unknown>;
     updatedAt: string | null;
   }): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO feishu_source_state (
-        connector_id, source_key, source_type, source_id,
-        revision_id, content_hash, metadata, updated_at, last_synced_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::timestamptz, NOW())
-      ON CONFLICT (connector_id, source_key)
-      DO UPDATE SET
-        source_type = EXCLUDED.source_type,
-        source_id = EXCLUDED.source_id,
-        revision_id = EXCLUDED.revision_id,
-        content_hash = EXCLUDED.content_hash,
-        metadata = EXCLUDED.metadata,
-        updated_at = EXCLUDED.updated_at,
-        last_synced_at = NOW()`,
-      [
-        input.connectorId,
-        input.sourceKey,
-        input.sourceType,
-        input.sourceId,
-        input.revisionId,
-        input.contentHash,
-        JSON.stringify(input.metadata),
-        input.updatedAt,
-      ]
-    );
+    await this.repo.upsertKv(input.connectorId, input.sourceKey, {
+      source_type: input.sourceType,
+      source_id: input.sourceId,
+      revision_id: input.revisionId,
+      content_hash: input.contentHash,
+      metadata: input.metadata,
+      updated_at: input.updatedAt,
+    });
   }
 }
