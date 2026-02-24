@@ -57,6 +57,7 @@ export interface RuntimeExecutorConfig {
   };
   persistLlmTokens?: boolean;
   runQueue?: { notifyRunWaiting(runId: string): void; notifyRunResumed(runId: string): void };
+  swarmCoordinator?: import('./swarm-coordinator.js').SwarmCoordinator;
 }
 
 export interface RuntimeExecutorResult {
@@ -142,6 +143,9 @@ export function createRuntimeExecutor(config: RuntimeExecutorConfig): RuntimeExe
           ...(config.mcp ? { mcp: config.mcp } : {}),
           escalationService,
           groupRepository: config.groupRepository,
+          runRepository: config.runRepository,
+          roleRepository: config.roleRepository,
+          ...(config.runQueue ? { runQueue: { enqueue: (runId: string) => config.runQueue!.notifyRunResumed(runId) } } : {}),
         });
         await router.start();
         sharedToolRouter = router;

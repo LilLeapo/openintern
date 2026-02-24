@@ -22,6 +22,7 @@ import { register as registerCodingTools } from './tools/coding/tools.js';
 import { register as registerSkillTools } from './tools/skill/tools.js';
 import { register as registerEscalationTools } from './tools/escalation/tools.js';
 import { register as registerExportTools } from './tools/export/tools.js';
+import { register as registerRoutingTools } from './tools/routing/tools.js';
 
 // ─── Integration modules ────────────────────────────────
 import { register as registerFeishuTools } from './integrations/feishu/tools.js';
@@ -118,6 +119,9 @@ export interface RuntimeToolRouterConfig {
   skillRegistry?: SkillRegistry;
   escalationService?: EscalationService;
   groupRepository?: GroupRepository;
+  runRepository?: import('./run-repository.js').RunRepository;
+  roleRepository?: import('./role-repository.js').RoleRepository;
+  runQueue?: { enqueue(runId: string): void };
   currentRunId?: string;
   currentSessionKey?: string;
 }
@@ -146,6 +150,9 @@ export class RuntimeToolRouter {
       workDir: config.workDir,
       escalationService: config.escalationService,
       groupRepository: config.groupRepository,
+      runRepository: config.runRepository,
+      roleRepository: config.roleRepository,
+      runQueue: config.runQueue,
       skillRegistry: config.skillRegistry ?? null,
       scope: config.scope,
       currentRunId: config.currentRunId ?? null,
@@ -272,7 +279,14 @@ export class RuntimeToolRouter {
           duration: Date.now() - started,
         };
       }
-      return { success: true, result, duration: Date.now() - started };
+      // Propagate requiresSuspension from tool return value to ToolResult level
+      const isSuspension = result && typeof result === 'object' && (result as Record<string, unknown>)['requiresSuspension'] === true;
+      return {
+        success: !isSuspension,
+        result,
+        duration: Date.now() - started,
+        ...(isSuspension ? { requiresSuspension: true } : {}),
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { success: false, error: message, duration: Date.now() - started };
@@ -313,6 +327,7 @@ export class RuntimeToolRouter {
       registerSkillTools,
       registerEscalationTools,
       registerExportTools,
+      registerRoutingTools,
       registerFeishuTools,
       registerMineruTools,
     ];

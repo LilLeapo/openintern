@@ -361,4 +361,23 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
       ALTER TABLE runs ADD COLUMN suspend_reason TEXT;
     END IF;
   END $$`,
+
+  // ─── Phase 3: Event-Driven Dynamic Swarm ─────────────────
+  `CREATE TABLE IF NOT EXISTS run_dependencies (
+    id            BIGSERIAL PRIMARY KEY,
+    parent_run_id TEXT NOT NULL REFERENCES runs(id),
+    child_run_id  TEXT NOT NULL REFERENCES runs(id),
+    tool_call_id  TEXT NOT NULL,
+    role_id       TEXT,
+    goal          TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending'
+      CHECK (status IN ('pending','completed','failed')),
+    result        TEXT,
+    error         TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at  TIMESTAMPTZ,
+    UNIQUE(parent_run_id, child_run_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_run_deps_parent ON run_dependencies(parent_run_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_run_deps_child  ON run_dependencies(child_run_id)`,
 ];

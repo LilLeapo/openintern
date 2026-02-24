@@ -1,6 +1,7 @@
 import type { RuntimeTool, ToolContext } from '../_helpers.js';
 import { extractString } from '../_helpers.js';
 import { ToolError } from '../../../../utils/errors.js';
+import { generateRunId } from '../../../../utils/ids.js';
 
 export function register(ctx: ToolContext): RuntimeTool[] {
   return [
@@ -20,29 +21,62 @@ export function register(ctx: ToolContext): RuntimeTool[] {
       source: 'builtin',
       metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
       handler: async (params) => {
-        const escalationService = ctx.escalationService;
-        if (!escalationService) {
-          throw new ToolError('Escalation service is not configured', 'escalate_to_group');
+        const { escalationService, runRepository, groupRepository, runQueue } = ctx;
+        if (!escalationService || !runRepository || !groupRepository || !runQueue) {
+          throw new ToolError('Escalation dependencies not configured', 'escalate_to_group');
         }
         if (!ctx.currentRunId || !ctx.currentSessionKey) {
           throw new ToolError('Run context is not set; cannot escalate outside of a run', 'escalate_to_group');
         }
-        const groupId = extractString(params['group_id']);
+
         const goal = extractString(params['goal']);
         const context = extractString(params['context']);
         if (!goal) throw new ToolError('goal is required', 'escalate_to_group');
 
-        return escalationService.escalate({
-          parentRunId: ctx.currentRunId,
+        // Resolve group
+        const groupId = extractString(params['group_id'])
+          ?? await escalationService.selectGroup(goal, ctx.scope.projectId ?? undefined);
+
+        const group = await groupRepository.getGroup(groupId);
+        if (!group) throw new ToolError(`Group not found: ${groupId}`, 'escalate_to_group');
+
+        const members = await groupRepository.listMembers(groupId);
+        if (members.length === 0) {
+          throw new ToolError(`Group ${groupId} has no members`, 'escalate_to_group');
+        }
+
+        // Build child run
+        const childRunId = generateRunId();
+        const childInput = context ? `Goal: ${goal}\n\nContext: ${context}` : `Goal: ${goal}`;
+
+        const parentRun = await runRepository.getRunById(ctx.currentRunId);
+        const delegatedPermissions = ctx.currentAgentContext?.delegatedPermissions
+          ?? parentRun?.delegatedPermissions ?? null;
+
+        await runRepository.createRun({
+          id: childRunId,
           scope: ctx.scope,
-          sessionKey: ctx.currentSessionKey,
-          goal,
-          ...(groupId ? { groupId } : {}),
-          ...(context ? { context } : {}),
-          ...(ctx.currentAgentContext?.delegatedPermissions
-            ? { delegatedPermissions: ctx.currentAgentContext.delegatedPermissions }
-            : {}),
+          sessionKey: ctx.currentSessionKey!,
+          input: childInput,
+          agentId: 'orchestrator',
+          groupId,
+          llmConfig: null,
+          parentRunId: ctx.currentRunId!,
+          ...(delegatedPermissions ? { delegatedPermissions } : {}),
         });
+
+        await runRepository.createDependency(
+          ctx.currentRunId!, childRunId, `escalation_${childRunId}`, null, goal
+        );
+
+        runQueue.enqueue(childRunId);
+
+        return {
+          success: false,
+          requiresSuspension: true,
+          childRunIds: [childRunId],
+          message: `Escalated to group "${group.name}". Run will suspend until group completes.`,
+        };
       },
     },
     {

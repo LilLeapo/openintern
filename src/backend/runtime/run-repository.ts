@@ -3,7 +3,7 @@ import type { LLMConfigRequest } from '../../types/api.js';
 import type { RunMeta } from '../../types/run.js';
 import { NotFoundError } from '../../utils/errors.js';
 import type { Event } from '../../types/events.js';
-import type { DelegatedPermissions, EventCursorPage, RunCreateInput, RunRecord, RunStatus } from './models.js';
+import type { DelegatedPermissions, EventCursorPage, RunCreateInput, RunDependency, RunRecord, RunStatus } from './models.js';
 import { appendScopePredicate, type ScopeContext } from './scope.js';
 
 interface RunRow {
@@ -29,6 +29,36 @@ interface RunRow {
   suspend_reason: string | null;
   event_count?: string;
   tool_count?: string;
+}
+
+interface RunDependencyRow {
+  id: string | number;
+  parent_run_id: string;
+  child_run_id: string;
+  tool_call_id: string;
+  role_id: string | null;
+  goal: string;
+  status: 'pending' | 'completed' | 'failed';
+  result: string | null;
+  error: string | null;
+  created_at: string | Date;
+  completed_at: string | Date | null;
+}
+
+function mapDepRow(row: RunDependencyRow): RunDependency {
+  return {
+    id: typeof row.id === 'string' ? Number.parseInt(row.id, 10) : row.id,
+    parentRunId: row.parent_run_id,
+    childRunId: row.child_run_id,
+    toolCallId: row.tool_call_id,
+    roleId: row.role_id,
+    goal: row.goal,
+    status: row.status,
+    result: row.result,
+    error: row.error,
+    createdAt: toIso(row.created_at) ?? new Date().toISOString(),
+    completedAt: toIso(row.completed_at),
+  };
 }
 
 interface EventRow {
@@ -666,5 +696,106 @@ export class RunRepository {
       eventCount: Number.parseInt(row?.event_count ?? '0', 10),
       toolCalls: Number.parseInt(row?.tool_count ?? '0', 10),
     };
+  }
+
+  // ─── Run Dependencies ───────────────────────────────────
+
+  async createDependency(
+    parentRunId: string,
+    childRunId: string,
+    toolCallId: string,
+    roleId: string | null,
+    goal: string
+  ): Promise<RunDependency> {
+    const result = await this.pool.query<RunDependencyRow>(
+      `INSERT INTO run_dependencies (parent_run_id, child_run_id, tool_call_id, role_id, goal)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *`,
+      [parentRunId, childRunId, toolCallId, roleId, goal]
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error('Failed to create run dependency');
+    return mapDepRow(row);
+  }
+
+  /**
+   * Atomically complete a dependency and return the count of remaining pending
+   * siblings. Uses SELECT FOR UPDATE to prevent race conditions on fan-in.
+   */
+  async completeDependencyAtomic(
+    childRunId: string,
+    status: 'completed' | 'failed',
+    result?: string,
+    error?: string
+  ): Promise<{ dep: RunDependency; pendingCount: number } | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Lock all sibling rows for this parent
+      const depResult = await client.query<RunDependencyRow>(
+        `SELECT * FROM run_dependencies WHERE child_run_id = $1 LIMIT 1`,
+        [childRunId]
+      );
+      const depRow = depResult.rows[0];
+      if (!depRow) {
+        await client.query('ROLLBACK');
+        return null;
+      }
+
+      // Lock all siblings for this parent to prevent concurrent fan-in
+      await client.query(
+        `SELECT id FROM run_dependencies WHERE parent_run_id = $1 FOR UPDATE`,
+        [depRow.parent_run_id]
+      );
+
+      // Update this dependency
+      const updated = await client.query<RunDependencyRow>(
+        `UPDATE run_dependencies
+        SET status = $2, result = $3, error = $4, completed_at = NOW()
+        WHERE child_run_id = $1
+        RETURNING *`,
+        [childRunId, status, result ?? null, error ?? null]
+      );
+
+      // Count remaining pending
+      const countResult = await client.query<{ cnt: string }>(
+        `SELECT COUNT(*)::text AS cnt FROM run_dependencies
+        WHERE parent_run_id = $1 AND status = 'pending'`,
+        [depRow.parent_run_id]
+      );
+
+      await client.query('COMMIT');
+
+      const updatedRow = updated.rows[0];
+      if (!updatedRow) return null;
+
+      return {
+        dep: mapDepRow(updatedRow),
+        pendingCount: Number.parseInt(countResult.rows[0]?.cnt ?? '0', 10),
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listDependenciesByParent(parentRunId: string): Promise<RunDependency[]> {
+    const result = await this.pool.query<RunDependencyRow>(
+      `SELECT * FROM run_dependencies WHERE parent_run_id = $1 ORDER BY id ASC`,
+      [parentRunId]
+    );
+    return result.rows.map(mapDepRow);
+  }
+
+  async getDependencyByChild(childRunId: string): Promise<RunDependency | null> {
+    const result = await this.pool.query<RunDependencyRow>(
+      `SELECT * FROM run_dependencies WHERE child_run_id = $1 LIMIT 1`,
+      [childRunId]
+    );
+    const row = result.rows[0];
+    return row ? mapDepRow(row) : null;
   }
 }

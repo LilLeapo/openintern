@@ -84,6 +84,20 @@ async function processEvent(
         });
       }
     }
+
+    // Check if this child completion should wake a parent
+    if (config.swarmCoordinator) {
+      try {
+        await config.swarmCoordinator.onChildTerminal(
+          runId, 'completed', event.payload.output
+        );
+      } catch (err) {
+        logger.error('SwarmCoordinator failed on child completed', {
+          runId, error: String(err),
+        });
+      }
+    }
+
     return 'completed';
   }
 
@@ -101,6 +115,20 @@ async function processEvent(
       code: event.payload.error.code,
       message: event.payload.error.message,
     });
+
+    // Check if this child failure should wake a parent
+    if (config.swarmCoordinator) {
+      try {
+        await config.swarmCoordinator.onChildTerminal(
+          runId, 'failed', undefined, event.payload.error.message
+        );
+      } catch (err) {
+        logger.error('SwarmCoordinator failed on child failed', {
+          runId, error: String(err),
+        });
+      }
+    }
+
     return 'failed';
   }
 

@@ -51,3 +51,17 @@ export interface EventCursorPage<T> {
   items: T[];
   nextCursor: string | null;
 }
+
+export interface RunDependency {
+  id: number;
+  parentRunId: string;
+  childRunId: string;
+  toolCallId: string;
+  roleId: string | null;
+  goal: string;
+  status: 'pending' | 'completed' | 'failed';
+  result: string | null;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}

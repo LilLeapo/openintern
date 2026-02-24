@@ -136,7 +136,7 @@ export class EscalationService {
    * Auto-select a group based on the goal.
    * Phase B simplified strategy: pick the first available group.
    */
-  private async selectGroup(goal: string, projectId?: string): Promise<string> {
+  async selectGroup(goal: string, projectId?: string): Promise<string> {
     const groups = await this.groupRepository.listGroups(projectId);
     if (groups.length === 0) {
       throw new ToolError(

@@ -4,8 +4,8 @@ import type { RuntimeExecutorConfig } from '../executor.js';
 import type { RuntimeToolRouter } from '../tool-router.js';
 import type { ToolCallScheduler } from '../tool-scheduler.js';
 import type { SkillLoader } from '../skill/loader.js';
-import { SerialOrchestrator, type OrchestratorMember } from '../orchestrator.js';
-import { RoleRunnerFactory } from '../role-runner-factory.js';
+import { SingleAgentRunner } from '../agent-runner.js';
+import { PromptComposer } from '../prompt-composer.js';
 import { consumeEventStream } from './event-consumer.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
@@ -29,56 +29,67 @@ export async function executeGroupRun(
     throw new Error(`Group ${groupId} has no members`);
   }
 
-  const runRecord = await config.runRepository.getRunById(run.run_id);
-  const delegatedPermissions = runRecord?.delegatedPermissions ?? undefined;
+  const group = await config.groupRepository.getGroup(groupId);
+  if (!group) throw new Error(`Group ${groupId} not found`);
 
-  const orchMembers: OrchestratorMember[] = [];
+  // Build member roster for dispatcher system prompt
+  const roster: string[] = [];
   for (const member of members) {
     const role = await config.roleRepository.getById(member.role_id);
     if (!role) throw new Error(`Role ${member.role_id} not found for member ${member.id}`);
-    orchMembers.push({
-      role,
-      agentInstanceId: member.agent_instance_id ?? member.id,
-    });
+    roster.push(`- ${role.name} (role_id: "${role.id}"): ${role.description}`);
   }
 
-  // Build skill injections
-  const skillInjections: { skillId: string; name: string; content: string }[] = [];
-  if (extras?.skillLoader && config.enableImplicitSkills) {
-    for (const skill of extras.skillLoader.listImplicitSkills()) {
-      const content = await extras.skillLoader.loadSkillContent(skill.id);
-      if (content) skillInjections.push({ skillId: skill.id, name: skill.name, content });
-    }
-  }
+  const dispatcherPrompt = `You are the dispatcher for group "${group.name}": ${group.description}
 
-  const factory = new RoleRunnerFactory({
+Available team members:
+${roster.join('\n')}
+
+Instructions:
+- Analyze the request and delegate to the right specialist(s)
+- Use handoff_to(role_id, goal) for single tasks
+- Use dispatch_subtasks([...]) for parallel work
+- When results return, synthesize a final answer
+- Do NOT do the work yourself — delegate.`;
+
+  const promptComposer = new PromptComposer({
+    ...(modelConfig.provider !== 'mock' && { provider: modelConfig.provider }),
+  });
+
+  const runner = new SingleAgentRunner({
     maxSteps: config.maxSteps,
     modelConfig,
     checkpointService: config.checkpointService,
     memoryService: config.memoryService,
     toolRouter,
+    promptComposer,
     ...(extras?.toolScheduler ? { toolScheduler: extras.toolScheduler } : {}),
-    ...(skillInjections.length > 0 ? { skillInjections } : {}),
     workDir: config.workDir,
     ...(config.budget ? { budget: config.budget } : {}),
-    ...(delegatedPermissions ? { delegatedPermissions } : {}),
+    systemPrompt: dispatcherPrompt,
   });
 
-  const orchestrator = new SerialOrchestrator({
-    groupId,
-    members: orchMembers,
-    maxRounds: 3,
-    runnerFactory: factory,
-  });
+  // Check for existing checkpoint (resume from suspension)
+  const checkpoint = await config.checkpointService.loadLatest(run.run_id, run.agent_id);
+  const resumeFrom = checkpoint ? {
+    stepNumber: checkpoint.stepNumber,
+    messages: checkpoint.messages,
+    workingState: checkpoint.workingState,
+  } : undefined;
 
   const status = await consumeEventStream(
     config,
     run.run_id,
-    orchestrator.run(run.input, {
+    runner.run(run.input, {
       runId: run.run_id,
       sessionKey: run.session_key,
       scope,
+      agentId: run.agent_id,
       abortSignal: signal,
+      onSuspend: async (reason: string) => {
+        await config.runRepository.setRunSuspended(run.run_id, reason);
+      },
+      ...(resumeFrom ? { resumeFrom } : {}),
     }),
     signal,
     groupId,

@@ -61,6 +61,43 @@ export class CheckpointService {
     }
   }
 
+  /**
+   * Append tool-result messages to an existing checkpoint (used by SwarmCoordinator
+   * to inject child results before waking a suspended parent).
+   */
+  async appendToolResults(
+    runId: string,
+    agentId: string,
+    messages: Array<{ role: 'tool'; content: unknown; toolCallId: string }>
+  ): Promise<void> {
+    const cp = await this.runs.getLatestCheckpoint(runId, agentId);
+    if (!cp) throw new Error(`No checkpoint found for run ${runId}`);
+    const state = cp.state as unknown as SlimCheckpointState;
+    const startOrdinal = state.message_count;
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await this.runs.appendMessages(
+        runId, agentId, state.step_id, messages, startOrdinal, client
+      );
+      const newState: SlimCheckpointState = {
+        ...state,
+        message_count: startOrdinal + messages.length,
+      };
+      await this.runs.createCheckpoint(
+        runId, agentId, state.step_id,
+        newState as unknown as Record<string, unknown>
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async loadLatest(
     runId: string,
     agentId: string

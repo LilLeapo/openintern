@@ -10,6 +10,8 @@ import type { MineruIngestService } from '../integrations/mineru/ingest-service.
 import type { SkillRegistry } from '../skill/registry.js';
 import type { EscalationService } from '../escalation-service.js';
 import type { GroupRepository } from '../group-repository.js';
+import type { RunRepository } from '../run-repository.js';
+import type { RoleRepository } from '../role-repository.js';
 import { ToolError } from '../../../utils/errors.js';
 
 export type ToolHandler = (params: Record<string, unknown>) => Promise<unknown>;
@@ -29,6 +31,9 @@ export interface ToolContext {
   workDir: string;
   escalationService: EscalationService | undefined;
   groupRepository: GroupRepository | undefined;
+  runRepository: RunRepository | undefined;
+  roleRepository: RoleRepository | undefined;
+  runQueue: { enqueue(runId: string): void } | undefined;
   skillRegistry: SkillRegistry | null;
   scope: ScopeContext;
   currentRunId: string | null;

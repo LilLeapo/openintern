@@ -157,6 +157,7 @@ export const ToolResultSchema = z.object({
   duration: z.number().nonnegative(),
   blocked: z.boolean().optional(),
   requiresApproval: z.boolean().optional(),
+  requiresSuspension: z.boolean().optional(),
   policyReason: z.string().optional(),
   riskLevel: z.string().optional(),
 });

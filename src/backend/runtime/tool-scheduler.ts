@@ -404,6 +404,13 @@ export class ToolCallScheduler {
       call.name, call.parameters, ctx.agentContext
     );
 
+    // If tool requires suspension (e.g. routing/escalation), suspend immediately
+    if (result.requiresSuspension && ctx.onSuspend) {
+      const reason = 'Delegated to child runs';
+      await ctx.onSuspend(reason);
+      throw new RunSuspendedError(call.id, call.name, call.parameters, reason);
+    }
+
     // If tool doesn't require approval, return as-is
     if (!result.requiresApproval) {
       return result;
