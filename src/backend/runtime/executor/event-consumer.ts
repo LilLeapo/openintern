@@ -5,7 +5,7 @@ import { KnowledgeDepositor } from '../knowledge-depositor.js';
 import { logger } from '../../../utils/logger.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
-type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
+type RunTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'suspended';
 
 const TOKEN_EVENT_BATCH_SIZE = 24;
 
@@ -85,6 +85,11 @@ async function processEvent(
       }
     }
     return 'completed';
+  }
+
+  if (event.type === 'run.suspended') {
+    // Run already set to suspended by onSuspend callback — just return status
+    return 'suspended';
   }
 
   if (event.type === 'run.failed') {

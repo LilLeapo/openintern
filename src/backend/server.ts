@@ -120,7 +120,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   const pluginRepository = new PluginRepository(pool);
   const feishuRepository = new FeishuRepository(pluginRepository);
   const eventService = new EventService(runRepository);
-  const checkpointService = new CheckpointService(runRepository);
+  const checkpointService = new CheckpointService(runRepository, pool);
   const requestedEmbedding = finalConfig.embeddingConfig ?? finalConfig.embedding ?? {
     provider: 'hash',
     dimension: 256,

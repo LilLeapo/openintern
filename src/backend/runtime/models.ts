@@ -1,7 +1,7 @@
 import type { LLMConfigRequest } from '../../types/api.js';
 import type { ScopeContext } from './scope.js';
 
-export type RunStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+export type RunStatus = 'pending' | 'running' | 'waiting' | 'suspended' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * Permissions delegated from a parent PA run to a child group run.
@@ -31,6 +31,8 @@ export interface RunRecord {
   startedAt: string | null;
   endedAt: string | null;
   cancelledAt: string | null;
+  suspendedAt: string | null;
+  suspendReason: string | null;
 }
 
 export interface RunCreateInput {

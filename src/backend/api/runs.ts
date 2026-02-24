@@ -387,8 +387,13 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
             return;
           }
 
+          if (run.status === 'suspended') {
+            await runRepository.setRunCancelled(runId);
+            res.json({ success: true, run_id: runId });
+            return;
+          }
+
           if (run.status === 'running' || run.status === 'waiting') {
-            // Cancel pending approvals so the agent loop unblocks
             if (run.status === 'waiting' && approvalManager) {
               approvalManager.cancelForRun(runId);
             }
@@ -431,9 +436,31 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           const scope = resolveRequestScope(req);
           const run = await runRepository.requireRun(runId, scope);
 
+          if (run.status === 'suspended') {
+            // Checkpoint-based: resume from disk
+            await runRepository.setRunResumedFromSuspension(runId);
+            // Re-enqueue the run so the executor picks it up
+            const queuedRun: QueuedRun = {
+              run_id: run.id,
+              org_id: run.orgId,
+              user_id: run.userId,
+              ...(run.projectId ? { project_id: run.projectId } : {}),
+              session_key: run.sessionKey,
+              input: run.input,
+              agent_id: run.agentId,
+              created_at: run.createdAt,
+              status: 'pending',
+              ...(run.groupId ? { group_id: run.groupId } : {}),
+            };
+            runQueue.enqueue(queuedRun);
+            logger.info('Suspended run approved and re-enqueued', { runId, toolCallId: body.tool_call_id });
+            res.json({ success: true, run_id: runId, tool_call_id: body.tool_call_id });
+            return;
+          }
+
           if (run.status !== 'waiting') {
             throw new AgentError(
-              'Can only approve tools for runs in waiting status',
+              'Can only approve tools for runs in waiting or suspended status',
               'RUN_NOT_WAITING',
               400
             );
@@ -483,9 +510,32 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           const scope = resolveRequestScope(req);
           const run = await runRepository.requireRun(runId, scope);
 
+          if (run.status === 'suspended') {
+            // Checkpoint-based: resume from disk with rejection marker
+            await runRepository.setRunResumedFromSuspension(runId);
+            const queuedRun: QueuedRun = {
+              run_id: run.id,
+              org_id: run.orgId,
+              user_id: run.userId,
+              ...(run.projectId ? { project_id: run.projectId } : {}),
+              session_key: run.sessionKey,
+              input: run.input,
+              agent_id: run.agentId,
+              created_at: run.createdAt,
+              status: 'pending',
+              ...(run.groupId ? { group_id: run.groupId } : {}),
+            };
+            runQueue.enqueue(queuedRun);
+            logger.info('Suspended run rejected and re-enqueued', {
+              runId, toolCallId: body.tool_call_id, reason: body.reason,
+            });
+            res.json({ success: true, run_id: runId, tool_call_id: body.tool_call_id });
+            return;
+          }
+
           if (run.status !== 'waiting') {
             throw new AgentError(
-              'Can only reject tools for runs in waiting status',
+              'Can only reject tools for runs in waiting or suspended status',
               'RUN_NOT_WAITING',
               400
             );

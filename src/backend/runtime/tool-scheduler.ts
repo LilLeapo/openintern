@@ -31,6 +31,13 @@ export interface BatchResult {
   results: ToolExecResult[];
   events: Event[];
   duration_ms: number;
+  /** Set when a tool requires approval and the run was suspended */
+  suspended?: {
+    toolCallId: string;
+    toolName: string;
+    args: Record<string, unknown>;
+    reason: string;
+  };
 }
 
 /**
@@ -49,6 +56,21 @@ export interface PendingApproval {
 export interface ApprovalDecision {
   approved: boolean;
   reason?: string;
+}
+
+/**
+ * Thrown when a tool requires approval and the run should suspend to disk.
+ */
+export class RunSuspendedError extends Error {
+  constructor(
+    public readonly toolCallId: string,
+    public readonly toolName: string,
+    public readonly args: Record<string, unknown>,
+    public readonly reason: string
+  ) {
+    super(`Run suspended: tool ${toolName} requires approval`);
+    this.name = 'RunSuspendedError';
+  }
 }
 
 /** Default concurrency limit for parallel tool execution. */
@@ -187,10 +209,12 @@ export class ToolCallScheduler {
       abortSignal?: AbortSignal;
       /** Callback to emit events during execution (for approval flow). */
       onEvent?: (event: Event) => void;
-      /** Callback to transition run to waiting status. */
+      /** Callback to transition run to waiting status (legacy in-memory). */
       onWaiting?: () => Promise<void>;
-      /** Callback to resume run from waiting status. */
+      /** Callback to resume run from waiting status (legacy in-memory). */
       onResumed?: () => Promise<void>;
+      /** Callback to suspend run to disk (new checkpoint-based). */
+      onSuspend?: (reason: string) => Promise<void>;
     }
   ): Promise<BatchResult> {
     const batchId = `batch_${generateSpanId()}`;
@@ -275,6 +299,7 @@ export class ToolCallScheduler {
       onEvent?: (event: Event) => void;
       onWaiting?: () => Promise<void>;
       onResumed?: () => Promise<void>;
+      onSuspend?: (reason: string) => Promise<void>;
     }
   ): Promise<{ results: ToolExecResult[]; events: Event[] }> {
     const events: Event[] = [];
@@ -325,6 +350,7 @@ export class ToolCallScheduler {
       onEvent?: (event: Event) => void;
       onWaiting?: () => Promise<void>;
       onResumed?: () => Promise<void>;
+      onSuspend?: (reason: string) => Promise<void>;
     }
   ): Promise<{ results: ToolExecResult[]; events: Event[] }> {
     const events: Event[] = [];
@@ -369,6 +395,7 @@ export class ToolCallScheduler {
       onEvent?: (event: Event) => void;
       onWaiting?: () => Promise<void>;
       onResumed?: () => Promise<void>;
+      onSuspend?: (reason: string) => Promise<void>;
     },
     events: Event[]
   ): Promise<ToolResult> {
@@ -382,79 +409,55 @@ export class ToolCallScheduler {
       return result;
     }
 
-    // Register pending BEFORE emitting SSE to avoid approve/reject race condition
-    const decisionPromise = this.approvalManager.waitForApproval(
-      call.id,
-      call.name,
-      call.parameters,
-      result.riskLevel ?? 'high',
-      result.policyReason ?? 'Tool requires human approval',
-      ctx.runId,
-      ctx.abortSignal
-    );
+    const reason = result.policyReason ?? 'Tool requires human approval';
 
     // Emit tool.requires_approval event
     const approvalEvent = this.createApprovalEvent(ctx, {
       toolName: call.name,
       tool_call_id: call.id,
       args: call.parameters,
-      reason: result.policyReason ?? 'Tool requires human approval',
+      reason,
       risk_level: result.riskLevel ?? 'high',
     });
     events.push(approvalEvent);
-
-    // Also emit via callback so it gets broadcast via SSE immediately
     ctx.onEvent?.(approvalEvent);
 
-    // Transition run to waiting
+    // New path: suspend to disk instead of holding a Promise in memory
+    if (ctx.onSuspend) {
+      await ctx.onSuspend(reason);
+      throw new RunSuspendedError(call.id, call.name, call.parameters, reason);
+    }
+
+    // Legacy path: hold Promise in memory
+    const decisionPromise = this.approvalManager.waitForApproval(
+      call.id, call.name, call.parameters,
+      result.riskLevel ?? 'high', reason, ctx.runId, ctx.abortSignal
+    );
+
     await ctx.onWaiting?.();
 
     logger.info('Tool call waiting for approval', {
-      runId: ctx.runId,
-      toolName: call.name,
-      toolCallId: call.id,
+      runId: ctx.runId, toolName: call.name, toolCallId: call.id,
     });
 
-    // Wait for user decision
     const decision = await decisionPromise;
-
-    // Resume run
     await ctx.onResumed?.();
 
     if (decision.approved) {
-      // Emit tool.approved event
       const approvedEvent = this.createGenericEvent(ctx, 'tool.approved', {
-        toolName: call.name,
-        tool_call_id: call.id,
+        toolName: call.name, tool_call_id: call.id,
       });
       events.push(approvedEvent);
       ctx.onEvent?.(approvedEvent);
-
-      logger.info('Tool call approved, executing', {
-        runId: ctx.runId,
-        toolName: call.name,
-        toolCallId: call.id,
-      });
-
-      // Execute the tool without policy check (already approved by human)
       return router.callTool(call.name, call.parameters);
     }
 
-    // Emit tool.rejected event
     const rejectedEvent = this.createGenericEvent(ctx, 'tool.rejected', {
-      toolName: call.name,
-      tool_call_id: call.id,
+      toolName: call.name, tool_call_id: call.id,
       ...(decision.reason ? { reason: decision.reason } : {}),
     });
     events.push(rejectedEvent);
     ctx.onEvent?.(rejectedEvent);
-
-    logger.info('Tool call rejected by user', {
-      runId: ctx.runId,
-      toolName: call.name,
-      toolCallId: call.id,
-      reason: decision.reason,
-    });
 
     return {
       success: false,

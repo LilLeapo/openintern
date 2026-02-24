@@ -11,7 +11,7 @@ import { MemoryService } from './memory-service.js';
 import { PromptComposer, type SkillInjection } from './prompt-composer.js';
 import { RuntimeToolRouter } from './tool-router.js';
 import { TokenBudgetManager } from './token-budget-manager.js';
-import { ToolCallScheduler } from './tool-scheduler.js';
+import { ToolCallScheduler, RunSuspendedError } from './tool-scheduler.js';
 import type { ToolResult } from '../../types/agent.js';
 import type { AgentContext } from './tool-policy.js';
 import type { GroupWithRoles } from './group-repository.js';
@@ -34,10 +34,18 @@ export interface RunnerContext {
   onWaiting?: () => Promise<void>;
   /** Callback to resume run from waiting status */
   onResumed?: () => Promise<void>;
+  /** Callback to suspend run to disk (checkpoint-based) */
+  onSuspend?: (reason: string) => Promise<void>;
+  /** Restored checkpoint state for resuming a suspended run */
+  resumeFrom?: {
+    stepNumber: number;
+    messages: Message[];
+    workingState: Record<string, unknown>;
+  };
 }
 
 export interface RunnerResult {
-  status: 'completed' | 'failed';
+  status: 'completed' | 'failed' | 'suspended';
   output?: string;
   error?: string;
   steps: number;
@@ -110,23 +118,36 @@ export class SingleAgentRunner implements AgentRunner {
   }
 
   async *run(input: string, ctx: RunnerContext): AsyncGenerator<Event, RunnerResult, void> {
-    const userContent: string | ContentPart[] = ctx.inputContent ?? input;
-    let messages: Message[] = [
-      ...(ctx.history ?? []),
-      { role: 'user', content: userContent },
-    ];
+    const resuming = ctx.resumeFrom != null;
+    let messages: Message[];
+    let lastSavedMessageCount: number;
+    let startStep: number;
+
+    if (resuming) {
+      messages = ctx.resumeFrom!.messages;
+      lastSavedMessageCount = messages.length;
+      startStep = ctx.resumeFrom!.stepNumber + 1;
+    } else {
+      const userContent: string | ContentPart[] = ctx.inputContent ?? input;
+      messages = [
+        ...(ctx.history ?? []),
+        { role: 'user', content: userContent },
+      ];
+      lastSavedMessageCount = 0;
+      startStep = 1;
+    }
+
     const llmClient = createLLMClient(this.config.modelConfig);
     const rootSpan = generateSpanId();
     const startedAt = Date.now();
     let lastToolResult: unknown = null;
     let steps = 0;
 
-    yield this.createEvent(ctx, generateStepId(0), rootSpan, 'run.started', {
-      input,
-    });
+    yield this.createEvent(ctx, generateStepId(0), rootSpan,
+      resuming ? 'run.resumed' as EventType : 'run.started', { input });
 
     try {
-      for (let step = 1; step <= this.maxSteps; step++) {
+      for (let step = startStep; step <= this.maxSteps; step++) {
         this.throwIfAborted(ctx.abortSignal);
         steps = step;
         const stepId = generateStepId(step);
@@ -263,6 +284,7 @@ export class SingleAgentRunner implements AgentRunner {
               ...(ctx.onEvent ? { onEvent: ctx.onEvent } : {}),
               ...(ctx.onWaiting ? { onWaiting: ctx.onWaiting } : {}),
               ...(ctx.onResumed ? { onResumed: ctx.onResumed } : {}),
+              ...(ctx.onSuspend ? { onSuspend: ctx.onSuspend } : {}),
             }
           );
 
@@ -284,7 +306,7 @@ export class SingleAgentRunner implements AgentRunner {
             yield event;
           }
 
-          await this.saveCheckpoint(ctx, stepId, messages, memoryHits, lastToolResult);
+          lastSavedMessageCount = await this.saveCheckpoint(ctx, stepId, messages, lastSavedMessageCount, memoryHits, lastToolResult);
 
           yield this.createEvent(ctx, stepId, rootSpan, 'step.completed', {
             stepNumber: step,
@@ -296,7 +318,7 @@ export class SingleAgentRunner implements AgentRunner {
 
         // ── Final answer ──
         messages.push({ role: 'assistant', content: response.content });
-        await this.saveCheckpoint(ctx, stepId, messages, memoryHits, lastToolResult);
+        lastSavedMessageCount = await this.saveCheckpoint(ctx, stepId, messages, lastSavedMessageCount, memoryHits, lastToolResult);
 
         yield this.createEvent(ctx, stepId, rootSpan, 'step.completed', {
           stepNumber: step,
@@ -318,20 +340,22 @@ export class SingleAgentRunner implements AgentRunner {
 
       throw new Error(`Max steps (${this.maxSteps}) reached`);
     } catch (error) {
+      if (error instanceof RunSuspendedError) {
+        const stepId = generateStepId(Math.max(steps, 1));
+        yield this.createEvent(ctx, stepId, rootSpan, 'run.suspended', {
+          toolCallId: error.toolCallId,
+          toolName: error.toolName,
+          reason: error.reason,
+        });
+        return { status: 'suspended', steps };
+      }
       const message = error instanceof Error ? error.message : String(error);
       const stepId = generateStepId(Math.max(steps, 1));
       const code = error instanceof RunCancelledError ? 'RUN_CANCELLED' : 'AGENT_ERROR';
       yield this.createEvent(ctx, stepId, rootSpan, 'run.failed', {
-        error: {
-          code,
-          message,
-        },
+        error: { code, message },
       });
-      return {
-        status: 'failed',
-        error: message,
-        steps,
-      };
+      return { status: 'failed', error: message, steps };
     }
   }
 
@@ -453,23 +477,24 @@ export class SingleAgentRunner implements AgentRunner {
     ctx: RunnerContext,
     stepId: string,
     messages: Message[],
+    lastSavedMessageCount: number,
     memoryHits: Array<{ id: string; snippet: string; score: number; type: string }>,
     lastToolResult: unknown
-  ): Promise<void> {
+  ): Promise<number> {
     await this.config.checkpointService.save(
       ctx.runId,
       ctx.agentId,
       stepId,
+      messages,
+      lastSavedMessageCount,
       {
-        working_state: {
-          memory_hits: memoryHits,
-          last_tool_result: lastToolResult,
-          plan: 'single-agent-loop',
-          budget_state: this.budgetManager?.getState(),
-        },
-        messages,
+        memory_hits: memoryHits,
+        last_tool_result: lastToolResult,
+        plan: 'single-agent-loop',
+        budget_state: this.budgetManager?.getState(),
       }
     );
+    return messages.length;
   }
 
   private createEvent<T extends EventType>(

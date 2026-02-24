@@ -2,7 +2,6 @@
  * Agent module exports
  */
 
-export { ContextManager } from './context-manager.js';
 export { ToolRouter, type Tool } from './tool-router.js';
 export { createLLMClient, MockLLMClient, type ILLMClient } from './llm-client.js';
 export { OpenAIClient } from './openai-client.js';

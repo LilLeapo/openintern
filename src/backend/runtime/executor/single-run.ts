@@ -14,7 +14,7 @@ import { logger } from '../../../utils/logger.js';
 import { consumeEventStream } from './event-consumer.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
-type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
+type RunTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'suspended';
 
 export async function executeSingleRun(
   config: RuntimeExecutorConfig,
@@ -57,6 +57,14 @@ export async function executeSingleRun(
   const history = await buildSessionHistory(config, run, scope);
   const inputContent = await resolveInputContent(config, run, scope);
 
+  // Check for existing checkpoint (resume from suspension)
+  const checkpoint = await config.checkpointService.loadLatest(run.run_id, run.agent_id);
+  const resumeFrom = checkpoint ? {
+    stepNumber: checkpoint.stepNumber,
+    messages: checkpoint.messages,
+    workingState: checkpoint.workingState,
+  } : undefined;
+
   const status = await consumeEventStream(
     config,
     run.run_id,
@@ -85,6 +93,10 @@ export async function executeSingleRun(
         await config.runRepository.setRunResumed(run.run_id);
         config.runQueue?.notifyRunResumed(run.run_id);
       },
+      onSuspend: async (reason: string) => {
+        await config.runRepository.setRunSuspended(run.run_id, reason);
+      },
+      ...(resumeFrom ? { resumeFrom } : {}),
     }),
     signal
   );

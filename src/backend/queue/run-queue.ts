@@ -39,7 +39,7 @@ export type QueueEventHandler = (run: QueuedRun) => void;
 export type RunExecutor = (
   run: QueuedRun,
   signal: AbortSignal
-) => Promise<{ status: 'completed' | 'failed' | 'cancelled' } | void>;
+) => Promise<{ status: 'completed' | 'failed' | 'cancelled' | 'suspended' } | void>;
 
 /**
  * Queue configuration
@@ -327,7 +327,7 @@ export class RunQueue extends EventEmitter {
     logger.info('Run started', { runId: run.run_id });
 
     try {
-      let finalStatus: 'completed' | 'failed' | 'cancelled' = 'completed';
+      let finalStatus: 'completed' | 'failed' | 'cancelled' | 'suspended' = 'completed';
       if (this.executor) {
         // Execute with timeout
         const result = await Promise.race([
@@ -349,6 +349,9 @@ export class RunQueue extends EventEmitter {
         this.completedRuns.set(run.run_id, cancelledRun);
         this.emit('run.cancelled', cancelledRun);
         logger.info('Run cancelled while running', { runId: run.run_id });
+      } else if (finalStatus === 'suspended') {
+        // Run suspended to disk — don't track in completedRuns, it will be re-enqueued on resume
+        logger.info('Run suspended to disk', { runId: run.run_id });
       } else if (finalStatus === 'failed') {
         const failedRun: QueuedRun = {
           ...runningRun,
@@ -503,7 +506,7 @@ export class RunQueue extends EventEmitter {
       for (const line of lines) {
         try {
           const run = JSON.parse(line) as QueuedRun;
-          if (run.status === 'pending' || run.status === 'running') {
+          if (run.status === 'pending' || run.status === 'running' || run.status === 'suspended') {
             run.status = 'pending';
             this.queue.push(run);
             restored++;

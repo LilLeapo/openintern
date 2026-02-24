@@ -25,6 +25,8 @@ interface RunRow {
   started_at: string | Date | null;
   ended_at: string | Date | null;
   cancelled_at: string | Date | null;
+  suspended_at: string | Date | null;
+  suspend_reason: string | null;
   event_count?: string;
   tool_count?: string;
 }
@@ -71,6 +73,8 @@ function mapRunRow(row: RunRow): RunRecord {
     startedAt: toIso(row.started_at),
     endedAt: toIso(row.ended_at),
     cancelledAt: toIso(row.cancelled_at),
+    suspendedAt: toIso(row.suspended_at),
+    suspendReason: row.suspend_reason ?? null,
   };
 }
 
@@ -203,7 +207,7 @@ export class RunRepository {
           cancelled_at = NOW(),
           ended_at = NOW()
       WHERE id = $1
-        AND status IN ('pending', 'running', 'waiting')`,
+        AND status IN ('pending', 'running', 'waiting', 'suspended')`,
       [runId]
     );
   }
@@ -224,6 +228,30 @@ export class RunRepository {
       SET status = 'running'
       WHERE id = $1
         AND status = 'waiting'`,
+      [runId]
+    );
+  }
+
+  async setRunSuspended(runId: string, reason: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE runs
+      SET status = 'suspended',
+          suspended_at = NOW(),
+          suspend_reason = $2
+      WHERE id = $1
+        AND status = 'running'`,
+      [runId, reason]
+    );
+  }
+
+  async setRunResumedFromSuspension(runId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE runs
+      SET status = 'pending',
+          suspended_at = NULL,
+          suspend_reason = NULL
+      WHERE id = $1
+        AND status = 'suspended'`,
       [runId]
     );
   }
@@ -559,6 +587,66 @@ export class RunRepository {
       params
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async appendMessages(
+    runId: string,
+    agentId: string,
+    stepId: string,
+    messages: Array<{ role: string; content: unknown; toolCallId?: string; toolCalls?: unknown }>,
+    startOrdinal: number,
+    client?: PoolClient
+  ): Promise<void> {
+    if (messages.length === 0) return;
+    const db = client ?? this.pool;
+    const values: string[] = [];
+    const params: unknown[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i]!;
+      const off = params.length;
+      values.push(
+        `($${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6}::jsonb, $${off + 7}, $${off + 8}::jsonb)`
+      );
+      params.push(
+        runId,
+        agentId,
+        stepId,
+        startOrdinal + i,
+        m.role,
+        JSON.stringify(m.content),
+        m.toolCallId ?? null,
+        m.toolCalls ? JSON.stringify(m.toolCalls) : null
+      );
+    }
+    await db.query(
+      `INSERT INTO run_messages (run_id, agent_id, step_id, ordinal, role, content, tool_call_id, tool_calls)
+      VALUES ${values.join(',')}`,
+      params
+    );
+  }
+
+  async loadMessages(
+    runId: string,
+    agentId: string
+  ): Promise<Array<{ role: string; content: unknown; toolCallId?: string; toolCalls?: unknown }>> {
+    const result = await this.pool.query<{
+      role: string;
+      content: unknown;
+      tool_call_id: string | null;
+      tool_calls: unknown | null;
+    }>(
+      `SELECT role, content, tool_call_id, tool_calls
+      FROM run_messages
+      WHERE run_id = $1 AND agent_id = $2
+      ORDER BY ordinal ASC`,
+      [runId, agentId]
+    );
+    return result.rows.map((row) => ({
+      role: row.role,
+      content: row.content,
+      ...(row.tool_call_id ? { toolCallId: row.tool_call_id } : {}),
+      ...(row.tool_calls ? { toolCalls: row.tool_calls } : {}),
+    }));
   }
 
   async countEventsAndTools(runId: string): Promise<{ eventCount: number; toolCalls: number }> {

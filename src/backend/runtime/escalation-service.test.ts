@@ -24,6 +24,8 @@ function createMockRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
     startedAt: null,
     endedAt: null,
     cancelledAt: null,
+    suspendedAt: null,
+    suspendReason: null,
     ...overrides,
   };
 }

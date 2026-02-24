@@ -316,4 +316,49 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
       ALTER TABLE runs ADD COLUMN delegated_permissions JSONB;
     END IF;
   END $$`,
+
+  // ─── Checkpoint v2: run_messages table ─────────────────────
+  `CREATE TABLE IF NOT EXISTS run_messages (
+    id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user','assistant','system','tool')),
+    content JSONB NOT NULL,
+    tool_call_id TEXT,
+    tool_calls JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS run_messages_run_agent_idx
+    ON run_messages (run_id, agent_id, ordinal)`,
+
+  // ─── Checkpoint v2: suspended status + columns ─────────────
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conname = 'runs_status_check_v3'
+    ) THEN
+      ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_status_check_v2;
+      ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_status_check;
+      ALTER TABLE runs ADD CONSTRAINT runs_status_check_v3
+        CHECK (status IN ('pending', 'running', 'waiting', 'suspended', 'completed', 'failed', 'cancelled'));
+    END IF;
+  END $$`,
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'runs' AND column_name = 'suspended_at'
+    ) THEN
+      ALTER TABLE runs ADD COLUMN suspended_at TIMESTAMPTZ;
+    END IF;
+  END $$`,
+  `DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'runs' AND column_name = 'suspend_reason'
+    ) THEN
+      ALTER TABLE runs ADD COLUMN suspend_reason TEXT;
+    END IF;
+  END $$`,
 ];

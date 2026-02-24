@@ -24,16 +24,6 @@ export class EventStoreError extends AgentError {
 }
 
 /**
- * Error for CheckpointStore operations
- */
-export class CheckpointStoreError extends AgentError {
-  constructor(message: string, details?: Record<string, unknown>) {
-    super(message, 'CHECKPOINT_STORE_ERROR', 500, details);
-    this.name = 'CheckpointStoreError';
-  }
-}
-
-/**
  * Error for MemoryStore operations
  */
 export class MemoryStoreError extends AgentError {

@@ -165,6 +165,15 @@ export const RunResumedPayloadSchema = z.object({
 });
 
 /**
+ * Run suspended event payload
+ */
+export const RunSuspendedPayloadSchema = z.object({
+  toolCallId: z.string(),
+  toolName: z.string(),
+  reason: z.string(),
+});
+
+/**
  * Step retried event payload
  */
 export const StepRetriedPayloadSchema = z.object({
@@ -281,6 +290,7 @@ export const EventTypeSchema = z.enum([
   'run.completed',
   'run.failed',
   'run.resumed',
+  'run.suspended',
   'run.compacted',
   'run.warning',
   'step.started',
@@ -345,6 +355,16 @@ export const RunResumedEventSchema = BaseEventSchema.extend({
 });
 
 export type RunResumedEvent = z.infer<typeof RunResumedEventSchema>;
+
+/**
+ * Run suspended event
+ */
+export const RunSuspendedEventSchema = BaseEventSchema.extend({
+  type: z.literal('run.suspended'),
+  payload: RunSuspendedPayloadSchema,
+});
+
+export type RunSuspendedEvent = z.infer<typeof RunSuspendedEventSchema>;
 
 /**
  * Tool called event
@@ -538,6 +558,7 @@ export const EventSchema = z.discriminatedUnion('type', [
   RunCompletedEventSchema,
   RunFailedEventSchema,
   RunResumedEventSchema,
+  RunSuspendedEventSchema,
   RunCompactedEventSchema,
   RunWarningEventSchema,
   ToolCalledEventSchema,

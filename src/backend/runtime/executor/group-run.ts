@@ -9,7 +9,7 @@ import { RoleRunnerFactory } from '../role-runner-factory.js';
 import { consumeEventStream } from './event-consumer.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
-type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
+type RunTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'suspended';
 
 export async function executeGroupRun(
   config: RuntimeExecutorConfig,

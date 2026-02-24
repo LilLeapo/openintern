@@ -5,7 +5,6 @@
  * - Build LLM context (system prompt + history)
  * - Context trimming (token limit)
  * - Memory retrieval
- * - Checkpoint management
  */
 
 import type {
@@ -16,8 +15,6 @@ import type {
 } from '../../types/agent.js';
 import { getMessageText } from '../../types/agent.js';
 import type { MemoryItem } from '../../types/memory.js';
-import type { Checkpoint } from '../../types/checkpoint.js';
-import { CheckpointStore } from '../store/checkpoint-store.js';
 import { MemoryStore } from '../store/memory-store.js';
 import { TokenCounter } from './token-counter.js';
 import { ContextTrimmer } from './context-trimmer.js';
@@ -52,7 +49,6 @@ export interface ContextAvailability {
 export class ContextManager {
   private config: ContextConfig;
   private messages: Message[] = [];
-  private checkpointStore: CheckpointStore;
   private memoryStore: MemoryStore;
   private runId: string;
   private sessionKey: string;
@@ -69,7 +65,6 @@ export class ContextManager {
     this.runId = runId;
     this.sessionKey = sessionKey;
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.checkpointStore = new CheckpointStore(sessionKey, runId, baseDir);
     this.memoryStore = new MemoryStore(`${baseDir}/memory/shared`);
     this.tokenCounter = new TokenCounter();
     this.contextTrimmer = new ContextTrimmer(this.tokenCounter, {
@@ -240,70 +235,4 @@ export class ContextManager {
     };
   }
 
-  /**
-   * Save checkpoint to storage (preserves toolCallId and toolCalls)
-   */
-  async saveCheckpoint(): Promise<void> {
-    const stepId = `step_${this.currentStepNumber.toString().padStart(4, '0')}`;
-
-    const checkpoint: Checkpoint = {
-      v: 1,
-      created_at: new Date().toISOString(),
-      run_id: this.runId,
-      step_id: stepId,
-      state: {
-        messages: this.messages.map((m) => {
-          const msg: Checkpoint['state']['messages'][number] = {
-            role: m.role as 'user' | 'assistant' | 'system' | 'tool',
-            content: m.content,
-          };
-          if (m.toolCallId) {
-            msg.toolCallId = m.toolCallId;
-          }
-          if (m.toolCalls && m.toolCalls.length > 0) {
-            msg.toolCalls = m.toolCalls;
-          }
-          return msg;
-        }),
-      },
-    };
-
-    await this.checkpointStore.saveLatest(checkpoint);
-    logger.debug('Checkpoint saved', { runId: this.runId, stepId });
-  }
-
-  /**
-   * Load checkpoint from storage (restores toolCallId and toolCalls)
-   */
-  async loadCheckpoint(): Promise<Checkpoint | null> {
-    const checkpoint = await this.checkpointStore.loadLatest();
-
-    if (checkpoint) {
-      // Restore messages from checkpoint, including toolCallId and toolCalls
-      this.messages = checkpoint.state.messages.map((m) => {
-        const msg: Message = { role: m.role, content: m.content };
-        if (m.toolCallId) {
-          msg.toolCallId = m.toolCallId;
-        }
-        if (m.toolCalls && m.toolCalls.length > 0) {
-          msg.toolCalls = m.toolCalls;
-        }
-        return msg;
-      });
-
-      // Extract step number from step_id
-      const stepMatch = checkpoint.step_id.match(/step_(\d+)/);
-      if (stepMatch && stepMatch[1]) {
-        this.currentStepNumber = parseInt(stepMatch[1], 10);
-      }
-
-      logger.debug('Checkpoint loaded', {
-        runId: this.runId,
-        stepId: checkpoint.step_id,
-        messageCount: this.messages.length,
-      });
-    }
-
-    return checkpoint;
-  }
 }

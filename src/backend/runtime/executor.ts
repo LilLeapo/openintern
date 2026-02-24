@@ -21,7 +21,7 @@ import { executeSingleRun } from './executor/single-run.js';
 import { executeGroupRun } from './executor/group-run.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
-type RunTerminalStatus = 'completed' | 'failed' | 'cancelled';
+type RunTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'suspended';
 
 // ─── Config & Result ─────────────────────────────────────────
 

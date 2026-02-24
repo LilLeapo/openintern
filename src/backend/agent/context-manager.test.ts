@@ -81,25 +81,4 @@ describe('ContextManager', () => {
       expect(context.systemPrompt).toContain('AI assistant');
     });
   });
-
-  describe('Checkpoint management', () => {
-    it('should save and load checkpoint', async () => {
-      contextManager.addMessage('user', 'Test message');
-      contextManager.setStepNumber(3);
-
-      await contextManager.saveCheckpoint();
-
-      // Create new manager and load checkpoint
-      const newManager = new ContextManager(runId, sessionKey, {}, testDir);
-      const checkpoint = await newManager.loadCheckpoint();
-
-      expect(checkpoint).not.toBeNull();
-      expect(checkpoint?.step_id).toBe('step_0003');
-    });
-
-    it('should return null for non-existent checkpoint', async () => {
-      const checkpoint = await contextManager.loadCheckpoint();
-      expect(checkpoint).toBeNull();
-    });
-  });
 });
