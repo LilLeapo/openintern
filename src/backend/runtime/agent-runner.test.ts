@@ -4,6 +4,7 @@ import { EventSchema } from '../../types/events.js';
 import type { LLMResponse } from '../../types/agent.js';
 import { createLLMClient } from '../agent/llm-client.js';
 import { SingleAgentRunner, type RunnerContext } from './agent-runner.js';
+import { RunSuspendedError } from './tool-scheduler.js';
 
 vi.mock('../agent/llm-client.js', () => ({
   createLLMClient: vi.fn(),
@@ -549,6 +550,162 @@ describe('SingleAgentRunner', () => {
     expect(events.findIndex((event) => event.type === 'llm.token')).toBeLessThan(
       events.findIndex((event) => event.type === 'llm.called')
     );
+  });
+
+  it('passes incremental checkpoint window when resuming from existing messages', async () => {
+    const memoryService = {
+      memory_search: vi.fn(async () => []),
+      memory_search_pa: vi.fn(async () => []),
+      memory_search_tiered: vi.fn(async () => []),
+    };
+    const checkpointService = {
+      save: vi.fn(async () => undefined),
+    };
+    const toolRouter = {
+      listTools: vi.fn(() => [
+        {
+          name: 'read_file',
+          description: 'read file',
+          parameters: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path'],
+          },
+        },
+      ]),
+      listSkills: vi.fn(() => []),
+      callTool: vi.fn(async () => ({
+        success: true,
+        result: { content: 'ok' },
+        duration: 1,
+      })),
+    };
+    const chat = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: 'need tool',
+        usage: usage(),
+        toolCalls: [
+          {
+            id: 'tc_resume',
+            name: 'read_file',
+            parameters: { path: 'README.md' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        content: 'done',
+        usage: usage(),
+      });
+    mockedCreateLLMClient.mockReturnValue({ chat });
+
+    const runner = new SingleAgentRunner({
+      maxSteps: 3,
+      modelConfig: { provider: 'mock', model: 'mock-model' },
+      checkpointService: checkpointService as never,
+      memoryService: memoryService as never,
+      toolRouter: toolRouter as never,
+    });
+
+    const resumedMessages = [
+      { role: 'user' as const, content: 'q1' },
+      { role: 'assistant' as const, content: 'a1' },
+      { role: 'tool' as const, content: '{"old":true}', toolCallId: 'tc_old' },
+    ];
+
+    await collectRun(
+      runner,
+      'ignored after resume',
+      {
+        ...runnerContext,
+        resumeFrom: {
+          stepNumber: 1,
+          messages: resumedMessages,
+          workingState: { plan: 'resume' },
+        },
+      },
+      []
+    );
+
+    expect(checkpointService.save).toHaveBeenCalled();
+    const saveCalls = (checkpointService.save as { mock: { calls: Array<unknown[]> } }).mock.calls;
+    const incrementalCall = saveCalls.find((call) => call[4] === 3);
+    expect(incrementalCall).toBeDefined();
+    expect(incrementalCall?.[2]).toBe('step_0002');
+    const nextCall = saveCalls.find((call) => call[2] === 'step_0003');
+    expect(nextCall?.[4]).toBe(5);
+  });
+
+  it('emits run.suspended and returns suspended when scheduler throws RunSuspendedError', async () => {
+    const memoryService = {
+      memory_search: vi.fn(async () => []),
+      memory_search_pa: vi.fn(async () => []),
+      memory_search_tiered: vi.fn(async () => []),
+    };
+    const checkpointService = {
+      save: vi.fn(async () => undefined),
+    };
+    const toolRouter = {
+      listTools: vi.fn(() => [
+        {
+          name: 'dangerous_tool',
+          description: 'danger',
+          parameters: {
+            type: 'object',
+            properties: {},
+          },
+        },
+      ]),
+      listSkills: vi.fn(() => []),
+      callTool: vi.fn(async () => ({
+        success: true,
+        result: {},
+        duration: 1,
+      })),
+    };
+    const toolScheduler = {
+      executeBatch: vi.fn(async () => {
+        throw new RunSuspendedError(
+          'tc_suspend',
+          'dangerous_tool',
+          { path: '/etc/passwd' },
+          'Requires approval'
+        );
+      }),
+    };
+    const chat = vi.fn(async () => ({
+      content: 'requesting dangerous tool',
+      usage: usage(),
+      toolCalls: [
+        {
+          id: 'tc_suspend',
+          name: 'dangerous_tool',
+          parameters: { path: '/etc/passwd' },
+        },
+      ],
+    }));
+    mockedCreateLLMClient.mockReturnValue({ chat });
+
+    const runner = new SingleAgentRunner({
+      maxSteps: 2,
+      modelConfig: { provider: 'mock', model: 'mock-model' },
+      checkpointService: checkpointService as never,
+      memoryService: memoryService as never,
+      toolRouter: toolRouter as never,
+      toolScheduler: toolScheduler as never,
+    });
+
+    const { events, result } = await collectRun(runner, 'suspend me', runnerContext, []);
+
+    expect(result.status).toBe('suspended');
+    expect(events.map((event) => event.type)).toEqual([
+      'run.started',
+      'step.started',
+      'llm.called',
+      'run.suspended',
+    ]);
+    expect(events.some((event) => event.type === 'run.failed')).toBe(false);
+    expect(checkpointService.save).toHaveBeenCalledTimes(1);
   });
 
   it('emits RUN_CANCELLED when abort signal is already cancelled', async () => {

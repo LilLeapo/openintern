@@ -263,6 +263,7 @@ export function createApp(config: Partial<ServerConfig> = {}): {
     sseManager,
     runRepository,
     eventService,
+    checkpointService,
     approvalManager: runtimeExecutor.approvalManager,
   });
   app.use('/api', runsRouter);

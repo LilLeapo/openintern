@@ -59,16 +59,28 @@ export class SwarmCoordinator {
     const parentRun = await this.runRepo.getRunById(parentRunId);
     if (!parentRun) return;
 
-    const toolMessages = deps.map((dep) => ({
+    const grouped = new Map<string, RunDependency[]>();
+    for (const dep of deps) {
+      const existing = grouped.get(dep.toolCallId);
+      if (existing) {
+        existing.push(dep);
+        continue;
+      }
+      grouped.set(dep.toolCallId, [dep]);
+    }
+
+    const toolMessages = [...grouped.entries()].map(([toolCallId, groupDeps]) => ({
       role: 'tool' as const,
       content: JSON.stringify({
-        child_run_id: dep.childRunId,
-        role: dep.roleId,
-        goal: dep.goal,
-        status: dep.status,
-        result: dep.result ?? dep.error,
+        child_results: groupDeps.map((dep) => ({
+          child_run_id: dep.childRunId,
+          role: dep.roleId,
+          goal: dep.goal,
+          status: dep.status,
+          result: dep.result ?? dep.error,
+        })),
       }),
-      toolCallId: dep.toolCallId,
+      toolCallId,
     }));
 
     await this.checkpointService.appendToolResults(

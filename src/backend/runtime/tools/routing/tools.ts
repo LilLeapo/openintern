@@ -26,6 +26,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
             role_id: extractString(params['role_id']),
             goal: extractString(params['goal']),
             context: extractString(params['context']),
+            tool_call_id: extractString(params['__tool_call_id']),
           },
         ]);
       },
@@ -65,6 +66,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
             role_id: extractString(s['role_id']),
             goal: extractString(s['goal']),
             context: extractString(s['context']),
+            tool_call_id: extractString(params['__tool_call_id']),
           }))
         );
       },
@@ -74,7 +76,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
 
 async function handleRouting(
   ctx: ToolContext,
-  subtasks: Array<{ role_id: string | null; goal: string | null; context: string | null }>
+  subtasks: Array<{ role_id: string | null; goal: string | null; context: string | null; tool_call_id?: string | null }>
 ): Promise<unknown> {
   const { runRepository, roleRepository, runQueue } = ctx;
   if (!runRepository || !roleRepository || !runQueue) {
@@ -83,6 +85,8 @@ async function handleRouting(
   if (!ctx.currentRunId || !ctx.currentSessionKey) {
     throw new ToolError('Run context not set', 'handoff_to');
   }
+  const currentRunId = ctx.currentRunId;
+  const currentSessionKey = ctx.currentSessionKey;
 
   // Validate all inputs first
   for (const st of subtasks) {
@@ -95,26 +99,32 @@ async function handleRouting(
   // Create child runs + dependencies
   const childRunIds: string[] = [];
   for (const st of subtasks) {
+    const roleId = st.role_id;
+    const goal = st.goal;
+    if (!roleId || !goal) {
+      throw new ToolError('role_id and goal are required', 'handoff_to');
+    }
     const childRunId = generateRunId();
     const childInput = st.context
-      ? `Goal: ${st.goal}\n\nContext: ${st.context}`
-      : `Goal: ${st.goal}`;
+      ? `Goal: ${goal}\n\nContext: ${st.context}`
+      : `Goal: ${goal}`;
 
     await runRepository.createRun({
       id: childRunId,
       scope: ctx.scope,
-      sessionKey: ctx.currentSessionKey!,
+      sessionKey: currentSessionKey,
       input: childInput,
-      agentId: st.role_id!,
+      agentId: roleId,
       llmConfig: null,
-      parentRunId: ctx.currentRunId!,
+      parentRunId: currentRunId,
     });
 
-    // tool_call_id is not available here — use a synthetic one keyed to the child
-    // The actual tool_call_id will be set by the caller (ToolCallScheduler)
-    // For now we use the currentRunId + childRunId as a placeholder
     await runRepository.createDependency(
-      ctx.currentRunId!, childRunId, `routing_${childRunId}`, st.role_id, st.goal!
+      currentRunId,
+      childRunId,
+      st.tool_call_id ?? `routing_${childRunId}`,
+      roleId,
+      goal
     );
 
     runQueue.enqueue(childRunId);

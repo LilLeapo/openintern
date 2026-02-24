@@ -16,6 +16,22 @@ export interface LoadedCheckpoint {
   workingState: Record<string, unknown>;
 }
 
+function stripMessagesField(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripMessagesField);
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(record)) {
+      if (key === 'messages') continue;
+      cleaned[key] = stripMessagesField(val);
+    }
+    return cleaned;
+  }
+  return value;
+}
+
 export class CheckpointService {
   constructor(
     private readonly runs: RunRepository,
@@ -31,6 +47,7 @@ export class CheckpointService {
     workingState: Record<string, unknown>
   ): Promise<void> {
     const newMessages = messages.slice(lastSavedCount);
+    const sanitizedWorkingState = this.sanitizeWorkingState(workingState);
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -49,9 +66,11 @@ export class CheckpointService {
         step_id: stepId,
         step_number: parseInt(stepId.replace('step_', ''), 10),
         message_count: messages.length,
-        working_state: workingState,
+        working_state: sanitizedWorkingState,
       };
-      await this.runs.createCheckpoint(runId, agentId, stepId, slim as unknown as Record<string, unknown>);
+      await this.runs.createCheckpoint(
+        runId, agentId, stepId, slim as unknown as Record<string, unknown>, client
+      );
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -87,7 +106,8 @@ export class CheckpointService {
       };
       await this.runs.createCheckpoint(
         runId, agentId, state.step_id,
-        newState as unknown as Record<string, unknown>
+        newState as unknown as Record<string, unknown>,
+        client
       );
       await client.query('COMMIT');
     } catch (err) {
@@ -118,5 +138,11 @@ export class CheckpointService {
       messages,
       workingState: state.working_state ?? {},
     };
+  }
+
+  private sanitizeWorkingState(
+    state: Record<string, unknown>
+  ): Record<string, unknown> {
+    return stripMessagesField(state) as Record<string, unknown>;
   }
 }

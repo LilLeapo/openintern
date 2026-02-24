@@ -400,8 +400,9 @@ export class ToolCallScheduler {
     events: Event[]
   ): Promise<ToolResult> {
     const approvalStarted = Date.now();
+    const paramsWithInternalCallId = this.withInternalToolCallId(call);
     const result = await router.callTool(
-      call.name, call.parameters, ctx.agentContext
+      call.name, paramsWithInternalCallId, ctx.agentContext
     );
 
     // If tool requires suspension (e.g. routing/escalation), suspend immediately
@@ -456,7 +457,7 @@ export class ToolCallScheduler {
       });
       events.push(approvedEvent);
       ctx.onEvent?.(approvedEvent);
-      return router.callTool(call.name, call.parameters);
+      return router.callTool(call.name, paramsWithInternalCallId);
     }
 
     const rejectedEvent = this.createGenericEvent(ctx, 'tool.rejected', {
@@ -471,6 +472,16 @@ export class ToolCallScheduler {
       error: `Tool call rejected by user${decision.reason ? `: ${decision.reason}` : ''}`,
       duration: Date.now() - approvalStarted,
     };
+  }
+
+  private withInternalToolCallId(call: ToolCall): Record<string, unknown> {
+    if (call.name !== 'handoff_to' && call.name !== 'dispatch_subtasks') {
+      return call.parameters;
+    }
+    if ('__tool_call_id' in call.parameters) {
+      return call.parameters;
+    }
+    return { ...call.parameters, __tool_call_id: call.id };
   }
 
   private getToolMeta(toolName: string, router: RuntimeToolRouter): ToolScheduleMeta {

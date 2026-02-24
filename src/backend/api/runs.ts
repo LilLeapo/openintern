@@ -28,6 +28,7 @@ import { logger } from '../../utils/logger.js';
 import { RunQueue } from '../queue/run-queue.js';
 import { SSEManager } from './sse.js';
 import { EventService } from '../runtime/event-service.js';
+import type { CheckpointService } from '../runtime/checkpoint-service.js';
 import { resolveRequestScope } from '../runtime/request-scope.js';
 import { RunRepository } from '../runtime/run-repository.js';
 import type { ToolApprovalManager } from '../runtime/tool-scheduler.js';
@@ -37,6 +38,7 @@ export interface RunsRouterConfig {
   sseManager: SSEManager;
   runRepository: RunRepository;
   eventService: EventService;
+  checkpointService?: CheckpointService;
   approvalManager?: ToolApprovalManager;
 }
 
@@ -98,7 +100,7 @@ function sendError(res: Response, error: ErrorResponse, status: number): void {
 
 export function createRunsRouter(config: RunsRouterConfig): Router {
   const router = Router();
-  const { runQueue, sseManager, runRepository, eventService, approvalManager } = config;
+  const { runQueue, sseManager, runRepository, eventService, checkpointService, approvalManager } = config;
 
   router.post('/runs', (req: Request, res: Response, next: NextFunction) => {
     void (async () => {
@@ -438,6 +440,22 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
 
           if (run.status === 'suspended') {
             // Checkpoint-based: resume from disk
+            if (checkpointService) {
+              await checkpointService.appendToolResults(
+                runId,
+                run.agentId,
+                [
+                  {
+                    role: 'tool',
+                    toolCallId: body.tool_call_id,
+                    content: JSON.stringify({
+                      approved: true,
+                      tool_call_id: body.tool_call_id,
+                    }),
+                  },
+                ]
+              );
+            }
             await runRepository.setRunResumedFromSuspension(runId);
             // Re-enqueue the run so the executor picks it up
             const queuedRun: QueuedRun = {
@@ -512,6 +530,22 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
 
           if (run.status === 'suspended') {
             // Checkpoint-based: resume from disk with rejection marker
+            if (checkpointService) {
+              const rejectionMessage = body.reason
+                ? `Error: Tool call rejected by user: ${body.reason}`
+                : 'Error: Tool call rejected by user';
+              await checkpointService.appendToolResults(
+                runId,
+                run.agentId,
+                [
+                  {
+                    role: 'tool',
+                    toolCallId: body.tool_call_id,
+                    content: rejectionMessage,
+                  },
+                ]
+              );
+            }
             await runRepository.setRunResumedFromSuspension(runId);
             const queuedRun: QueuedRun = {
               run_id: run.id,

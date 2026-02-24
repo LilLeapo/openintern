@@ -141,10 +141,18 @@ export class SingleAgentRunner implements AgentRunner {
     const rootSpan = generateSpanId();
     const startedAt = Date.now();
     let lastToolResult: unknown = null;
+    let lastMemoryHits: Array<{ id: string; snippet: string; score: number; type: string }> = [];
     let steps = 0;
 
-    yield this.createEvent(ctx, generateStepId(0), rootSpan,
-      resuming ? 'run.resumed' as EventType : 'run.started', { input });
+    if (resuming) {
+      const checkpointStepId = generateStepId(ctx.resumeFrom!.stepNumber);
+      yield this.createEvent(ctx, generateStepId(0), rootSpan, 'run.resumed', {
+        checkpoint_step_id: checkpointStepId,
+        orphaned_tool_calls: 0,
+      });
+    } else {
+      yield this.createEvent(ctx, generateStepId(0), rootSpan, 'run.started' as EventType, { input });
+    }
 
     try {
       for (let step = startStep; step <= this.maxSteps; step++) {
@@ -186,6 +194,7 @@ export class SingleAgentRunner implements AgentRunner {
               top_k: 6,
               ...(ctx.agentInstanceId ? { agent_instance_id: ctx.agentInstanceId } : {}),
             });
+        lastMemoryHits = memoryHits;
 
         // ── Compose prompt via PromptComposer ──
         const skills = this.config.toolRouter.listSkills();
@@ -342,6 +351,25 @@ export class SingleAgentRunner implements AgentRunner {
     } catch (error) {
       if (error instanceof RunSuspendedError) {
         const stepId = generateStepId(Math.max(steps, 1));
+        try {
+          lastSavedMessageCount = await this.saveCheckpoint(
+            ctx,
+            stepId,
+            messages,
+            lastSavedMessageCount,
+            lastMemoryHits,
+            lastToolResult
+          );
+        } catch (saveError) {
+          const saveErrorMessage = saveError instanceof Error ? saveError.message : String(saveError);
+          yield this.createEvent(ctx, stepId, rootSpan, 'run.failed', {
+            error: {
+              code: 'CHECKPOINT_SAVE_FAILED',
+              message: saveErrorMessage,
+            },
+          });
+          return { status: 'failed', error: saveErrorMessage, steps };
+        }
         yield this.createEvent(ctx, stepId, rootSpan, 'run.suspended', {
           toolCallId: error.toolCallId,
           toolName: error.toolName,

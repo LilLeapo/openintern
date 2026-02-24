@@ -565,9 +565,11 @@ export class RunRepository {
     runId: string,
     agentId: string,
     stepId: string,
-    state: Record<string, unknown>
+    state: Record<string, unknown>,
+    client?: PoolClient
   ): Promise<void> {
-    await this.pool.query(
+    const db = client ?? this.pool;
+    await db.query(
       `INSERT INTO checkpoints (run_id, agent_id, step_id, state)
       VALUES ($1, $2, $3, $4::jsonb)`,
       [runId, agentId, stepId, JSON.stringify(state)]
@@ -663,7 +665,7 @@ export class RunRepository {
       role: string;
       content: unknown;
       tool_call_id: string | null;
-      tool_calls: unknown | null;
+      tool_calls: Record<string, unknown> | null;
     }>(
       `SELECT role, content, tool_call_id, tool_calls
       FROM run_messages
