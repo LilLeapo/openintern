@@ -84,10 +84,11 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         required: ['path'],
       },
       source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
       handler: async (params) => {
         const filePath = extractString(params['path']);
         if (!filePath) throw new ToolError('path is required', 'read_file');
-        const resolved = resolveWithinWorkDir(ctx.workDir, filePath);
+        const resolved = resolveWithinWorkDir(ctx.workDir, filePath, 'read_file');
         const ext = path.extname(resolved).toLowerCase();
 
         if (ext === '.pdf') {
@@ -140,7 +141,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         if (!filePath || typeof content !== 'string') {
           throw new ToolError('path and content are required', 'write_file');
         }
-        const resolved = resolveWithinWorkDir(ctx.workDir, filePath);
+        const resolved = resolveWithinWorkDir(ctx.workDir, filePath, 'write_file');
         await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
         await fs.promises.writeFile(resolved, content, 'utf-8');
         return { path: filePath, bytes_written: Buffer.byteLength(content, 'utf-8') };
@@ -159,7 +160,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
       metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
       handler: async (params) => {
         const dirPath = extractString(params['path']) ?? '.';
-        const resolved = resolveWithinWorkDir(ctx.workDir, dirPath);
+        const resolved = resolveWithinWorkDir(ctx.workDir, dirPath, 'list_files');
         const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
         return entries.map((e) => ({
           name: e.name,
@@ -169,11 +170,11 @@ export function register(ctx: ToolContext): RuntimeTool[] {
     },
     {
       name: 'glob_files',
-      description: 'Find files matching a glob pattern in the workspace',
+      description: 'Find files matching a glob pattern in the workspace (supports ** and * wildcards)',
       parameters: {
         type: 'object',
         properties: {
-          pattern: { type: 'string', description: 'Glob pattern (e.g. "src/**/*.ts")' },
+          pattern: { type: 'string', description: 'Glob pattern (e.g. "src/**/*.ts", "*.json")' },
           cwd: { type: 'string', description: 'Relative base directory (default: workspace root)' },
         },
         required: ['pattern'],
@@ -184,18 +185,23 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         const pattern = extractString(params['pattern']);
         if (!pattern) throw new ToolError('pattern is required', 'glob_files');
         const cwd = extractString(params['cwd']) ?? '.';
-        const resolved = resolveWithinWorkDir(ctx.workDir, cwd);
-        return new Promise((resolve, reject) => {
-          execFile('find', [resolved, '-type', 'f', '-name', pattern.replace(/\*\*\//g, '')],
-            { timeout: 10000, maxBuffer: 1024 * 512 },
-            (err, stdout) => {
-              if (err) { reject(new ToolError(`glob failed: ${err.message}`, 'glob_files')); return; }
-              const files = stdout.trim().split('\n').filter(Boolean)
-                .map((f) => path.relative(ctx.workDir, f));
-              resolve({ pattern, matches: files.slice(0, 500), total: files.length });
-            },
-          );
-        });
+        const resolved = resolveWithinWorkDir(ctx.workDir, cwd, 'glob_files');
+
+        // Build regex from glob pattern
+        const regexStr = pattern
+          .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // escape regex special chars
+          .replace(/\*\*/g, '\0')                   // temp placeholder for **
+          .replace(/\*/g, '[^/]*')                  // * matches within a segment
+          .replace(/\0/g, '.*')                     // ** matches across segments
+          .replace(/\?/g, '[^/]');                   // ? matches single char
+        const regex = new RegExp(`^${regexStr}$`);
+
+        const entries = (await fs.promises.readdir(resolved, { recursive: true })) as string[];
+        const matches = entries
+          .filter((entry) => regex.test(entry))
+          .map((entry) => cwd === '.' ? entry : path.join(cwd, entry));
+
+        return { pattern, matches: matches.slice(0, 500), total: matches.length };
       },
     },
     {
@@ -219,7 +225,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         const searchPath = extractString(params['path']) ?? '.';
         const include = extractString(params['include']);
         const maxResults = typeof params['max_results'] === 'number' ? params['max_results'] : 50;
-        const resolved = resolveWithinWorkDir(ctx.workDir, searchPath);
+        const resolved = resolveWithinWorkDir(ctx.workDir, searchPath, 'grep_files');
         const args = ['-rn', '--color=never', '-E', pattern];
         if (include) args.push('--include', include);
         args.push(resolved);
@@ -227,7 +233,9 @@ export function register(ctx: ToolContext): RuntimeTool[] {
           execFile('grep', args,
             { timeout: 15000, maxBuffer: 1024 * 1024 },
             (err, stdout) => {
-              if (err && (err as NodeJS.ErrnoException).code !== '1' && !stdout) {
+              // grep exits with code 1 when no matches found — not an error
+              const exitCode = (err as NodeJS.ErrnoException & { status?: number })?.status;
+              if (err && exitCode !== 1 && !stdout) {
                 reject(new ToolError(`grep failed: ${err.message}`, 'grep_files'));
                 return;
               }
@@ -239,6 +247,93 @@ export function register(ctx: ToolContext): RuntimeTool[] {
             },
           );
         });
+      },
+    },
+    {
+      name: 'delete_file',
+      description: 'Delete a file from the workspace',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative file path within workspace' },
+        },
+        required: ['path'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const filePath = extractString(params['path']);
+        if (!filePath) throw new ToolError('path is required', 'delete_file');
+        const resolved = resolveWithinWorkDir(ctx.workDir, filePath, 'delete_file');
+        const stat = await fs.promises.stat(resolved).catch(() => null);
+        if (!stat) throw new ToolError(`File not found: ${filePath}`, 'delete_file');
+        if (stat.isDirectory()) throw new ToolError('Cannot delete a directory with delete_file', 'delete_file');
+        await fs.promises.unlink(resolved);
+        return { path: filePath, deleted: true };
+      },
+    },
+    {
+      name: 'move_file',
+      description: 'Move or rename a file within the workspace',
+      parameters: {
+        type: 'object',
+        properties: {
+          source: { type: 'string', description: 'Current relative file path' },
+          destination: { type: 'string', description: 'New relative file path' },
+        },
+        required: ['source', 'destination'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const src = extractString(params['source']);
+        const dst = extractString(params['destination']);
+        if (!src || !dst) throw new ToolError('source and destination are required', 'move_file');
+        const resolvedSrc = resolveWithinWorkDir(ctx.workDir, src, 'move_file');
+        const resolvedDst = resolveWithinWorkDir(ctx.workDir, dst, 'move_file');
+        const stat = await fs.promises.stat(resolvedSrc).catch(() => null);
+        if (!stat) throw new ToolError(`Source not found: ${src}`, 'move_file');
+        await fs.promises.mkdir(path.dirname(resolvedDst), { recursive: true });
+        await fs.promises.rename(resolvedSrc, resolvedDst);
+        return { source: src, destination: dst, moved: true };
+      },
+    },
+    {
+      name: 'search_replace',
+      description: 'Search and replace text in a file. Safer than apply_patch for targeted edits.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative file path' },
+          search: { type: 'string', description: 'Exact text to find' },
+          replace: { type: 'string', description: 'Replacement text' },
+          all: { type: 'boolean', description: 'Replace all occurrences (default: false)' },
+        },
+        required: ['path', 'search', 'replace'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const filePath = extractString(params['path']);
+        const search = params['search'];
+        const replace = params['replace'];
+        if (!filePath || typeof search !== 'string' || typeof replace !== 'string') {
+          throw new ToolError('path, search, and replace are required', 'search_replace');
+        }
+        const resolved = resolveWithinWorkDir(ctx.workDir, filePath, 'search_replace');
+        const content = await fs.promises.readFile(resolved, 'utf-8');
+        if (!content.includes(search)) {
+          throw new ToolError('Search string not found in file', 'search_replace');
+        }
+        const replaceAll = params['all'] === true;
+        const updated = replaceAll
+          ? content.split(search).join(replace)
+          : content.replace(search, replace);
+        const count = replaceAll
+          ? (content.split(search).length - 1)
+          : 1;
+        await fs.promises.writeFile(resolved, updated, 'utf-8');
+        return { path: filePath, replacements: count };
       },
     },
   ];
