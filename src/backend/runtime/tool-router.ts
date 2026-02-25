@@ -121,7 +121,7 @@ export interface RuntimeToolRouterConfig {
   groupRepository?: GroupRepository;
   runRepository?: import('./run-repository.js').RunRepository;
   roleRepository?: import('./role-repository.js').RoleRepository;
-  runQueue?: { enqueue(runId: string): void };
+  runQueue?: { enqueue(runId: string): Promise<void> | void };
   currentRunId?: string;
   currentSessionKey?: string;
 }

@@ -127,7 +127,7 @@ async function handleRouting(
       goal
     );
 
-    runQueue.enqueue(childRunId);
+    await runQueue.enqueue(childRunId);
     childRunIds.push(childRunId);
   }
 

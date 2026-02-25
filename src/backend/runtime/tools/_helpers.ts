@@ -33,7 +33,7 @@ export interface ToolContext {
   groupRepository: GroupRepository | undefined;
   runRepository: RunRepository | undefined;
   roleRepository: RoleRepository | undefined;
-  runQueue: { enqueue(runId: string): void } | undefined;
+  runQueue: { enqueue(runId: string): Promise<void> | void } | undefined;
   skillRegistry: SkillRegistry | null;
   scope: ScopeContext;
   currentRunId: string | null;

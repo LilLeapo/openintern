@@ -3,6 +3,7 @@ import type { LLMConfig } from '../../types/agent.js';
 import type { SSEManager } from '../api/sse.js';
 import { logger } from '../../utils/logger.js';
 import { McpConnectionManager, type McpServerConfig } from './mcp-connection-manager.js';
+import { SwarmCoordinator } from './swarm-coordinator.js';
 import type { MemoryService } from './memory-service.js';
 import { RuntimeToolRouter } from './tool-router.js';
 import { SkillLoader } from './skill/loader.js';
@@ -56,7 +57,11 @@ export interface RuntimeExecutorConfig {
     reserveTokens?: number;
   };
   persistLlmTokens?: boolean;
-  runQueue?: { notifyRunWaiting(runId: string): void; notifyRunResumed(runId: string): void };
+  runQueue?: {
+    enqueue(run: QueuedRun): void;
+    notifyRunWaiting(runId: string): void;
+    notifyRunResumed(runId: string): void;
+  };
   swarmCoordinator?: import('./swarm-coordinator.js').SwarmCoordinator;
 }
 
@@ -92,6 +97,24 @@ function resolveModelConfig(run: QueuedRun, defaults: LLMConfig): LLMConfig {
   return mc;
 }
 
+function mapRunRecordToQueuedRun(run: Awaited<ReturnType<RunRepository['getRunById']>>): QueuedRun | null {
+  if (!run) return null;
+  return {
+    run_id: run.id,
+    org_id: run.orgId,
+    user_id: run.userId,
+    ...(run.projectId ? { project_id: run.projectId } : {}),
+    session_key: run.sessionKey,
+    input: run.input,
+    agent_id: run.agentId,
+    created_at: run.createdAt,
+    status: 'pending',
+    ...(run.llmConfig ? { llm_config: run.llmConfig } : {}),
+    ...(run.groupId ? { group_id: run.groupId } : {}),
+    ...(run.parentRunId ? { parent_run_id: run.parentRunId } : {}),
+  };
+}
+
 // ─── Factory ─────────────────────────────────────────────────
 
 export function createRuntimeExecutor(config: RuntimeExecutorConfig): RuntimeExecutorResult {
@@ -101,6 +124,29 @@ export function createRuntimeExecutor(config: RuntimeExecutorConfig): RuntimeExe
   let sharedSkillLoader: SkillLoader | null = null;
   const sharedApprovalManager = new ToolApprovalManager();
   const sharedToolScheduler = new ToolCallScheduler({ approvalManager: sharedApprovalManager });
+  const sharedSwarmCoordinator = config.swarmCoordinator
+    ?? (config.runQueue
+      ? new SwarmCoordinator({
+          runRepository: config.runRepository,
+          checkpointService: config.checkpointService,
+          enqueueRun: (runId: string) => {
+            void (async () => {
+              const run = await config.runRepository.getRunById(runId);
+              const queuedRun = mapRunRecordToQueuedRun(run);
+              if (!queuedRun) {
+                logger.warn('Cannot enqueue resumed parent run: run not found', { runId });
+                return;
+              }
+              config.runQueue!.enqueue(queuedRun);
+            })().catch((error: unknown) => {
+              logger.error('Failed to enqueue resumed parent run', {
+                runId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          },
+        })
+      : undefined);
 
   async function getSkillLoader(): Promise<SkillLoader> {
     if (sharedSkillLoader) return sharedSkillLoader;
@@ -145,7 +191,21 @@ export function createRuntimeExecutor(config: RuntimeExecutorConfig): RuntimeExe
           groupRepository: config.groupRepository,
           runRepository: config.runRepository,
           roleRepository: config.roleRepository,
-          ...(config.runQueue ? { runQueue: { enqueue: (runId: string) => config.runQueue!.notifyRunResumed(runId) } } : {}),
+          ...(config.runQueue
+            ? {
+                runQueue: {
+                  enqueue: async (runId: string) => {
+                    const run = await config.runRepository.getRunById(runId);
+                    const queuedRun = mapRunRecordToQueuedRun(run);
+                    if (!queuedRun) {
+                      logger.warn('Cannot enqueue child run: run not found', { runId });
+                      return;
+                    }
+                    config.runQueue!.enqueue(queuedRun);
+                  },
+                },
+              }
+            : {}),
         });
         await router.start();
         sharedToolRouter = router;
@@ -183,8 +243,24 @@ export function createRuntimeExecutor(config: RuntimeExecutorConfig): RuntimeExe
     try {
       const extras = { toolScheduler: sharedToolScheduler, skillLoader, mcpManager };
       const status = run.group_id
-        ? await executeGroupRun(config, run, scope, modelConfig, toolRouter, signal, extras)
-        : await executeSingleRun(config, run, scope, modelConfig, toolRouter, signal, extras);
+        ? await executeGroupRun(
+            { ...config, ...(sharedSwarmCoordinator ? { swarmCoordinator: sharedSwarmCoordinator } : {}) },
+            run,
+            scope,
+            modelConfig,
+            toolRouter,
+            signal,
+            extras
+          )
+        : await executeSingleRun(
+            { ...config, ...(sharedSwarmCoordinator ? { swarmCoordinator: sharedSwarmCoordinator } : {}) },
+            run,
+            scope,
+            modelConfig,
+            toolRouter,
+            signal,
+            extras
+          );
       return { status };
     } catch (error: unknown) {
       if (signal.aborted || isCancellationError(error)) {

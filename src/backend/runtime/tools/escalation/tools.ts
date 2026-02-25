@@ -69,7 +69,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
           ctx.currentRunId!, childRunId, `escalation_${childRunId}`, null, goal
         );
 
-        runQueue.enqueue(childRunId);
+        await runQueue.enqueue(childRunId);
 
         return {
           success: false,
