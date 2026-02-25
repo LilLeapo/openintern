@@ -24,6 +24,11 @@ export function useSSE(runId: string | null): UseSSEResult {
   }, []);
 
   useEffect(() => {
+    // Start each run with a fresh event buffer.
+    setEvents([]);
+    setIsConnected(false);
+    setError(null);
+
     if (!runId) {
       return;
     }

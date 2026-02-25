@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../components/Layout/AppShell';
 import { apiClient } from '../api/client';
 import { useSSE } from '../hooks/useSSE';
@@ -6,6 +6,7 @@ import { useLocaleText } from '../i18n/useLocaleText';
 import { useAppPreferences } from '../context/AppPreferencesContext';
 import { recordRunScope } from '../utils/runScopeRegistry';
 import type { Event } from '../types/events';
+import type { Group } from '../types';
 import styles from './EmulatorPage.module.css';
 
 interface EmulatorMessage {
@@ -20,20 +21,6 @@ interface InjectedMemory {
   fact: string;
   weight: number;
 }
-
-interface IdentityPreset {
-  id: string;
-  label: string;
-  orgId: string;
-  userId: string;
-  projectId: string;
-}
-
-const PRESETS: IdentityPreset[] = [
-  { id: 'boss_001', label: 'boss_001', orgId: 'org_board', userId: 'boss_001', projectId: 'finance' },
-  { id: 'intern_002', label: 'intern_002', orgId: 'org_board', userId: 'intern_002', projectId: 'intern-lab' },
-  { id: 'ops_007', label: 'ops_007', orgId: 'org_ops', userId: 'ops_007', projectId: 'incident-center' },
-];
 
 function genId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -60,126 +47,237 @@ function classifyRoute(events: Event[]): string {
   return names[0] ?? 'direct';
 }
 
+function sanitizeSessionPart(value: string): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9_]/g, '_');
+  return normalized || 'default';
+}
+
 export function EmulatorPage() {
   const { t } = useLocaleText();
   const { tenantScope, setTenantScope } = useAppPreferences();
-  const [identityId, setIdentityId] = useState(PRESETS[0]!.id);
+
+  const [orgIdDraft, setOrgIdDraft] = useState(tenantScope.orgId);
+  const [userIdDraft, setUserIdDraft] = useState(tenantScope.userId);
+  const [projectIdDraft, setProjectIdDraft] = useState(tenantScope.projectId ?? '');
+
   const [messages, setMessages] = useState<EmulatorMessage[]>([]);
   const [input, setInput] = useState('');
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [debugMode, setDebugMode] = useState(true);
   const [eventLog, setEventLog] = useState<Event[]>([]);
-  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [injectedMemories, setInjectedMemories] = useState<InjectedMemory[]>([]);
   const [memoryFact, setMemoryFact] = useState('');
   const [memoryWeight, setMemoryWeight] = useState(0.9);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [asyncStatus, setAsyncStatus] = useState<'idle' | 'waiting' | 'resumed'>('idle');
+  const [copyState, setCopyState] = useState<'idle' | 'success' | 'error'>('idle');
 
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState('');
+  const [loadingGroups, setLoadingGroups] = useState(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const [syncingGroups, setSyncingGroups] = useState(false);
+
+  const streamingMessageIdRef = useRef<string | null>(null);
+  const processedEventCountRef = useRef(0);
   const { events } = useSSE(activeRunId);
 
   useEffect(() => {
-    const preset = PRESETS.find(item => item.id === identityId);
-    if (!preset) return;
-    setTenantScope({
-      orgId: preset.orgId,
-      userId: preset.userId,
-      projectId: preset.projectId,
-    });
-  }, [identityId, setTenantScope]);
+    setOrgIdDraft(tenantScope.orgId);
+    setUserIdDraft(tenantScope.userId);
+    setProjectIdDraft(tenantScope.projectId ?? '');
+  }, [tenantScope.orgId, tenantScope.userId, tenantScope.projectId]);
+
+  const loadProjectGroups = useCallback(async () => {
+    setLoadingGroups(true);
+    setGroupError(null);
+    try {
+      const nextGroups = await apiClient.listGroups(tenantScope.projectId ?? undefined);
+      setGroups(nextGroups);
+      setSelectedGroupId(prev => {
+        if (prev && nextGroups.some(group => group.id === prev)) {
+          return prev;
+        }
+        return nextGroups[0]?.id ?? '';
+      });
+    } catch (err) {
+      setGroups([]);
+      setSelectedGroupId('');
+      setGroupError(err instanceof Error ? err.message : t('Failed to load groups', '加载群组失败'));
+    } finally {
+      setLoadingGroups(false);
+    }
+  }, [tenantScope.projectId, t]);
+
+  useEffect(() => {
+    void loadProjectGroups();
+  }, [loadProjectGroups]);
+
+  useEffect(() => {
+    processedEventCountRef.current = 0;
+    streamingMessageIdRef.current = null;
+  }, [activeRunId]);
 
   useEffect(() => {
     if (events.length === 0) return;
-    const lastEvent = events[events.length - 1];
-    if (!lastEvent) return;
 
     if (debugMode) {
       setEventLog(events);
     }
 
-    if (lastEvent.type === 'llm.token') {
-      const payload = lastEvent.payload as { token?: string };
-      const token = payload.token ?? '';
-      if (!streamingMessageId) {
-        const id = genId('assistant_stream');
-        setStreamingMessageId(id);
-        setMessages(prev => [...prev, {
-          id,
-          role: 'assistant',
-          content: token,
-          ts: lastEvent.ts,
-        }]);
-      } else {
-        setMessages(prev => prev.map(message => (
-          message.id === streamingMessageId
-            ? { ...message, content: `${message.content}${token}` }
-            : message
-        )));
+    const startIndex = Math.min(processedEventCountRef.current, events.length);
+    const pendingEvents = events.slice(startIndex);
+
+    for (const event of pendingEvents) {
+      if (event.type === 'llm.token') {
+        const payload = event.payload as { token?: string };
+        const token = payload.token ?? '';
+        if (!streamingMessageIdRef.current) {
+          const id = genId('assistant_stream');
+          streamingMessageIdRef.current = id;
+          setMessages(prev => [...prev, {
+            id,
+            role: 'assistant',
+            content: token,
+            ts: event.ts,
+          }]);
+        } else {
+          const streamId = streamingMessageIdRef.current;
+          setMessages(prev => prev.map(message => (
+            message.id === streamId
+              ? { ...message, content: `${message.content}${token}` }
+              : message
+          )));
+        }
+        continue;
       }
-      return;
-    }
 
-    if (lastEvent.type === 'run.suspended' || lastEvent.type === 'tool.requires_approval') {
-      setAsyncStatus('waiting');
-      setMessages(prev => [...prev, {
-        id: genId('status_wait'),
-        role: 'system',
-        content: t('PA is waiting for background swarm result...', 'PA 正在等待后台 Swarm 结果...'),
-        ts: new Date().toISOString(),
-      }]);
-      return;
-    }
-
-    if (lastEvent.type === 'run.resumed') {
-      setAsyncStatus('resumed');
-      setMessages(prev => [...prev, {
-        id: genId('status_resume'),
-        role: 'system',
-        content: t('PA resumed and is preparing final response.', 'PA 已恢复执行，正在准备最终回复。'),
-        ts: new Date().toISOString(),
-      }]);
-      return;
-    }
-
-    if (lastEvent.type === 'run.completed') {
-      const payload = lastEvent.payload as { output?: string };
-      const output = payload.output ?? '';
-      if (streamingMessageId) {
-        setMessages(prev => prev.map(message => (
-          message.id === streamingMessageId
-            ? { ...message, content: output, ts: lastEvent.ts }
-            : message
-        )));
-      } else {
+      if (event.type === 'run.suspended' || event.type === 'tool.requires_approval') {
+        setAsyncStatus('waiting');
         setMessages(prev => [...prev, {
-          id: genId('assistant_final'),
-          role: 'assistant',
-          content: output,
-          ts: lastEvent.ts,
+          id: genId('status_wait'),
+          role: 'system',
+          content: t('PA is waiting for background swarm result...', 'PA 正在等待后台 Swarm 结果...'),
+          ts: new Date().toISOString(),
         }]);
+        continue;
       }
-      setStreamingMessageId(null);
-      setSending(false);
-      setAsyncStatus('idle');
-      return;
+
+      if (event.type === 'run.resumed') {
+        setAsyncStatus('resumed');
+        setMessages(prev => [...prev, {
+          id: genId('status_resume'),
+          role: 'system',
+          content: t('PA resumed and is preparing final response.', 'PA 已恢复执行，正在准备最终回复。'),
+          ts: new Date().toISOString(),
+        }]);
+        continue;
+      }
+
+      if (event.type === 'run.completed') {
+        const payload = event.payload as { output?: string };
+        const output = payload.output ?? '';
+        const streamId = streamingMessageIdRef.current;
+
+        if (streamId) {
+          setMessages(prev => prev.map(message => (
+            message.id === streamId
+              ? { ...message, content: output, ts: event.ts }
+              : message
+          )));
+        } else {
+          setMessages(prev => [...prev, {
+            id: genId('assistant_final'),
+            role: 'assistant',
+            content: output,
+            ts: event.ts,
+          }]);
+        }
+        streamingMessageIdRef.current = null;
+        setSending(false);
+        setAsyncStatus('idle');
+        continue;
+      }
+
+      if (event.type === 'run.failed') {
+        const payload = event.payload as { error?: { message?: string } };
+        setMessages(prev => [...prev, {
+          id: genId('assistant_error'),
+          role: 'assistant',
+          content: `Error: ${payload.error?.message ?? 'run failed'}`,
+          ts: event.ts,
+        }]);
+        streamingMessageIdRef.current = null;
+        setSending(false);
+        setAsyncStatus('idle');
+      }
     }
 
-    if (lastEvent.type === 'run.failed') {
-      const payload = lastEvent.payload as { error?: { message?: string } };
-      setMessages(prev => [...prev, {
-        id: genId('assistant_error'),
-        role: 'assistant',
-        content: `Error: ${payload.error?.message ?? 'run failed'}`,
-        ts: lastEvent.ts,
-      }]);
-      setStreamingMessageId(null);
-      setSending(false);
-      setAsyncStatus('idle');
-    }
-  }, [debugMode, events, streamingMessageId, t]);
+    processedEventCountRef.current = events.length;
+  }, [debugMode, events, t]);
 
   const routeHint = useMemo(() => classifyRoute(eventLog), [eventLog]);
+  const debugLogText = useMemo(
+    () => (
+      eventLog.length === 0
+        ? t('No events yet.', '暂无事件流。')
+        : eventLog.map(event => `[${event.type}] ${JSON.stringify(event.payload)}`).join('\n')
+    ),
+    [eventLog, t],
+  );
+
+  const emulatorSessionKey = useMemo(
+    () => `s_emulator_${sanitizeSessionPart(tenantScope.userId)}`,
+    [tenantScope.userId],
+  );
+
+  const addMemory = useCallback(() => {
+    const fact = memoryFact.trim();
+    if (!fact) return;
+    setInjectedMemories(prev => [...prev, {
+      id: genId('mem'),
+      fact,
+      weight: memoryWeight,
+    }]);
+    setMemoryFact('');
+  }, [memoryFact, memoryWeight]);
+
+  const applyScope = useCallback(() => {
+    setTenantScope({
+      orgId: orgIdDraft,
+      userId: userIdDraft,
+      projectId: projectIdDraft || null,
+    });
+  }, [orgIdDraft, projectIdDraft, setTenantScope, userIdDraft]);
+
+  const bindUnscopedGroups = useCallback(async () => {
+    if (!tenantScope.projectId) {
+      setError(t('Set project_id first, then bind groups.', '请先设置 project_id，再执行绑定。'));
+      return;
+    }
+    setSyncingGroups(true);
+    setError(null);
+    try {
+      const result = await apiClient.assignGroupsProject(tenantScope.projectId, {
+        includeExisting: false,
+      });
+      await loadProjectGroups();
+      setMessages(prev => [...prev, {
+        id: genId('scope_sync'),
+        role: 'system',
+        content: t(
+          `Bound ${result.updated} group(s) to project ${result.project_id}.`,
+          `已将 ${result.updated} 个群组绑定到项目 ${result.project_id}。`,
+        ),
+        ts: new Date().toISOString(),
+      }]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('Failed to bind groups', '绑定群组失败'));
+    } finally {
+      setSyncingGroups(false);
+    }
+  }, [loadProjectGroups, t, tenantScope.projectId]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -194,9 +292,15 @@ export function EmulatorPage() {
           .join('\n')
       : '';
 
-    const prompt = memoryContext
+    const groupHint = selectedGroupId
+      ? `\n\n[Preferred Escalation Group]\nIf delegation is required, prefer group_id=${selectedGroupId}.`
+      : '';
+
+    const promptBody = memoryContext
       ? `${text}\n\n[Injected Episodic Memory]\n${memoryContext}\nPlease respect these user preferences if possible.`
       : text;
+
+    const prompt = `${promptBody}${groupHint}`;
 
     setMessages(prev => [...prev, {
       id: genId('user'),
@@ -206,11 +310,11 @@ export function EmulatorPage() {
     }]);
     setInput('');
     setEventLog([]);
-    setStreamingMessageId(null);
+    streamingMessageIdRef.current = null;
 
     try {
       const response = await apiClient.createRun(
-        `s_emulator_${identityId}`,
+        emulatorSessionKey,
         prompt,
       );
       recordRunScope(response.run_id, apiClient.getScope());
@@ -219,18 +323,35 @@ export function EmulatorPage() {
       setError(err instanceof Error ? err.message : t('Failed to send', '发送失败'));
       setSending(false);
     }
-  }, [identityId, injectedMemories, input, sending, t]);
+  }, [emulatorSessionKey, injectedMemories, input, selectedGroupId, sending, t]);
 
-  const addMemory = useCallback(() => {
-    const fact = memoryFact.trim();
-    if (!fact) return;
-    setInjectedMemories(prev => [...prev, {
-      id: genId('mem'),
-      fact,
-      weight: memoryWeight,
-    }]);
-    setMemoryFact('');
-  }, [memoryFact, memoryWeight]);
+  const handleCopyDebugLog = useCallback(async () => {
+    const text = debugLogText;
+    if (!text) return;
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'absolute';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setCopyState('success');
+    } catch {
+      setCopyState('error');
+    }
+
+    window.setTimeout(() => {
+      setCopyState('idle');
+    }, 1200);
+  }, [debugLogText]);
 
   return (
     <AppShell
@@ -243,24 +364,75 @@ export function EmulatorPage() {
       <div className={styles.layout}>
         <section className={styles.leftPane}>
           <header className={styles.toolbar}>
-            <label>
-              <span>{t('Identity', '身份')}</span>
-              <select value={identityId} onChange={event => setIdentityId(event.target.value)}>
-                {PRESETS.map(preset => (
-                  <option key={preset.id} value={preset.id}>{preset.label}</option>
-                ))}
-              </select>
-            </label>
+            <div className={styles.identityGrid}>
+              <label>
+                <span>org_id</span>
+                <input value={orgIdDraft} onChange={event => setOrgIdDraft(event.target.value)} />
+              </label>
+              <label>
+                <span>user_id</span>
+                <input value={userIdDraft} onChange={event => setUserIdDraft(event.target.value)} />
+              </label>
+              <label>
+                <span>project_id</span>
+                <input
+                  value={projectIdDraft}
+                  onChange={event => setProjectIdDraft(event.target.value)}
+                  placeholder={t('required for scoped groups', '群组按项目过滤时必填')}
+                />
+              </label>
+              <label>
+                <span>{t('Preferred Group', '优先群组')}</span>
+                <select
+                  value={selectedGroupId}
+                  onChange={event => setSelectedGroupId(event.target.value)}
+                  disabled={loadingGroups || groups.length === 0}
+                >
+                  {groups.length === 0 ? (
+                    <option value="">{t('No project group', '当前项目无群组')}</option>
+                  ) : (
+                    <>
+                      <option value="">{t('Auto-select by goal', '按目标自动选择')}</option>
+                      {groups.map(group => (
+                        <option key={group.id} value={group.id}>{group.name}</option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              </label>
+            </div>
+
+            <div className={styles.toolbarActions}>
+              <button className={styles.applyButton} onClick={applyScope}>
+                {t('Apply Scope', '应用 Scope')}
+              </button>
+              <button
+                className={styles.secondaryAction}
+                onClick={() => void bindUnscopedGroups()}
+                disabled={!tenantScope.projectId || syncingGroups}
+              >
+                {syncingGroups
+                  ? t('Binding...', '绑定中...')
+                  : t('Bind Null project_id Groups', '将空 project_id 群组绑定到当前项目')}
+              </button>
+            </div>
+
             <div className={styles.tenantChip}>
               <strong>{tenantScope.orgId}</strong>
-              <span>{tenantScope.projectId ?? 'default'}</span>
+              <span>{tenantScope.projectId ?? 'null'}</span>
               <em>{tenantScope.userId}</em>
             </div>
           </header>
 
+          {groupError && <p className={styles.error}>{groupError}</p>}
+
           <div className={styles.chatFrame}>
             <div className={styles.chatHeader}>
               <h3>{t('IM Environment Simulator', 'IM 沉浸式模拟器')}</h3>
+              <div className={styles.chatMeta}>
+                <span>{t('Session', '会话')}: {emulatorSessionKey}</span>
+                <span>{t('Groups', '群组')}: {groups.length}</span>
+              </div>
               {asyncStatus === 'waiting' && (
                 <span className={styles.waitingHint}>
                   {t('Gathering experts...', '正在召集专家团队...')}
@@ -327,11 +499,22 @@ export function EmulatorPage() {
               </div>
             </div>
             {debugMode && (
-              <pre className={styles.eventLog}>
-                {eventLog.length === 0
-                  ? t('No events yet.', '暂无事件流。')
-                  : eventLog.map(event => `[${event.type}] ${JSON.stringify(event.payload)}`).join('\n')}
-              </pre>
+              <>
+                <div className={styles.debugActions}>
+                  <button
+                    className={styles.copyButton}
+                    onClick={() => void handleCopyDebugLog()}
+                    disabled={eventLog.length === 0}
+                  >
+                    {copyState === 'success'
+                      ? t('Copied', '已复制')
+                      : copyState === 'error'
+                        ? t('Copy Failed', '复制失败')
+                        : t('Copy Log', '复制日志')}
+                  </button>
+                </div>
+                <pre className={styles.eventLog}>{debugLogText}</pre>
+              </>
             )}
           </article>
 
