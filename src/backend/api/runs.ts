@@ -8,6 +8,7 @@
  * - GET /api/runs/:run_id/events?cursor&limit
  * - GET /api/runs/:run_id/stream
  * - GET /api/runs/:run_id/children
+ * - GET /api/runs/:run_id/swarm
  * - POST /api/runs/:run_id/inject
  * - POST /api/runs/:run_id/cancel
  */
@@ -301,6 +302,72 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           await runRepository.requireRun(runId, scope);
           const children = await runRepository.getChildRuns(runId);
           res.json({ children });
+        } catch (error) {
+          next(error);
+        }
+      })();
+    }
+  );
+
+  router.get(
+    '/runs/:run_id/swarm',
+    (req: Request, res: Response, next: NextFunction) => {
+      void (async () => {
+        try {
+          const { run_id: runId } = req.params;
+          if (!runId) {
+            throw new ValidationError('run_id is required', 'run_id');
+          }
+
+          const scope = resolveRequestScope(req);
+          const requestedRun = await runRepository.requireRun(runId, scope);
+          const parentRunId = requestedRun.parentRunId ?? requestedRun.id;
+          const parentRun = requestedRun.parentRunId
+            ? await runRepository.requireRun(parentRunId, scope)
+            : requestedRun;
+
+          const dependencies = await runRepository.listDependenciesByParent(parentRunId);
+          const depWithChild = await Promise.all(
+            dependencies.map(async (dep) => {
+              const child = await runRepository.getRun(dep.childRunId, scope);
+              return {
+                id: dep.id,
+                tool_call_id: dep.toolCallId,
+                role_id: dep.roleId,
+                goal: dep.goal,
+                status: dep.status,
+                result: dep.result,
+                error: dep.error,
+                child_run_id: dep.childRunId,
+                child_status: child?.status ?? null,
+                child_agent_id: child?.agentId ?? null,
+                child_started_at: child?.startedAt ?? null,
+                child_ended_at: child?.endedAt ?? null,
+                created_at: dep.createdAt,
+                completed_at: dep.completedAt,
+              };
+            })
+          );
+
+          const summary = depWithChild.reduce(
+            (acc, dep) => {
+              acc.total += 1;
+              if (dep.status === 'pending') acc.pending += 1;
+              if (dep.status === 'completed') acc.completed += 1;
+              if (dep.status === 'failed') acc.failed += 1;
+              return acc;
+            },
+            { total: 0, pending: 0, completed: 0, failed: 0 }
+          );
+
+          res.json({
+            requested_run_id: requestedRun.id,
+            parent_run_id: parentRunId,
+            parent_status: parentRun.status,
+            parent_agent_id: parentRun.agentId,
+            summary,
+            dependencies: depWithChild,
+          });
         } catch (error) {
           next(error);
         }

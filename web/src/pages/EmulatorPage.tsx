@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../components/Layout/AppShell';
 import { apiClient } from '../api/client';
+import type { SwarmStatusSnapshot } from '../api/client';
 import { useSSE } from '../hooks/useSSE';
 import { useLocaleText } from '../i18n/useLocaleText';
 import { useAppPreferences } from '../context/AppPreferencesContext';
@@ -72,6 +73,9 @@ export function EmulatorPage() {
   const [error, setError] = useState<string | null>(null);
   const [asyncStatus, setAsyncStatus] = useState<'idle' | 'waiting' | 'resumed'>('idle');
   const [copyState, setCopyState] = useState<'idle' | 'success' | 'error'>('idle');
+  const [swarmSnapshot, setSwarmSnapshot] = useState<SwarmStatusSnapshot | null>(null);
+  const [swarmError, setSwarmError] = useState<string | null>(null);
+  const [swarmUpdatedAt, setSwarmUpdatedAt] = useState<string | null>(null);
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState('');
@@ -118,6 +122,53 @@ export function EmulatorPage() {
     processedEventCountRef.current = 0;
     streamingMessageIdRef.current = null;
   }, [activeRunId]);
+
+  useEffect(() => {
+    if (!activeRunId) {
+      setSwarmSnapshot(null);
+      setSwarmError(null);
+      setSwarmUpdatedAt(null);
+      return;
+    }
+
+    let cancelled = false;
+    let timerId: number | null = null;
+
+    const loadSwarmStatus = async () => {
+      try {
+        const snapshot = await apiClient.getSwarmStatus(activeRunId);
+        if (cancelled) return;
+        setSwarmSnapshot(snapshot);
+        setSwarmError(null);
+        setSwarmUpdatedAt(new Date().toISOString());
+        if (
+          timerId !== null &&
+          snapshot.summary.pending === 0 &&
+          (snapshot.parent_status === 'completed'
+            || snapshot.parent_status === 'failed'
+            || snapshot.parent_status === 'cancelled')
+        ) {
+          window.clearInterval(timerId);
+          timerId = null;
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setSwarmError(err instanceof Error ? err.message : t('Failed to load swarm status', '加载 Swarm 状态失败'));
+      }
+    };
+
+    void loadSwarmStatus();
+    timerId = window.setInterval(() => {
+      void loadSwarmStatus();
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearInterval(timerId);
+      }
+    };
+  }, [activeRunId, t]);
 
   useEffect(() => {
     if (events.length === 0) return;
@@ -218,6 +269,11 @@ export function EmulatorPage() {
   }, [debugMode, events, t]);
 
   const routeHint = useMemo(() => classifyRoute(eventLog), [eventLog]);
+  const swarmProgress = useMemo(() => {
+    if (!swarmSnapshot || swarmSnapshot.summary.total === 0) return 0;
+    const done = swarmSnapshot.summary.completed + swarmSnapshot.summary.failed;
+    return Math.round((done / swarmSnapshot.summary.total) * 100);
+  }, [swarmSnapshot]);
   const debugLogText = useMemo(
     () => (
       eventLog.length === 0
@@ -514,6 +570,99 @@ export function EmulatorPage() {
                   </button>
                 </div>
                 <pre className={styles.eventLog}>{debugLogText}</pre>
+              </>
+            )}
+          </article>
+
+          <article className={styles.panel}>
+            <div className={styles.panelHeader}>
+              <h3>{t('Swarm Monitor', 'Swarm 运行看板')}</h3>
+              {activeRunId ? (
+                <a
+                  className={styles.traceLink}
+                  href={`/trace/${activeRunId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t('Open Trace', '打开 Trace')}
+                </a>
+              ) : null}
+            </div>
+            {!activeRunId && (
+              <p className={styles.placeholder}>
+                {t('Send a request to inspect swarm execution details.', '发送一条请求后可查看 Swarm 执行细节。')}
+              </p>
+            )}
+            {activeRunId && (
+              <>
+                <div className={styles.swarmHeader}>
+                  <span>
+                    {t('Parent Run', '父 Run')}: <strong>{swarmSnapshot?.parent_run_id ?? activeRunId}</strong>
+                  </span>
+                  {swarmSnapshot && (
+                    <span className={`${styles.swarmBadge} ${styles[`status_${swarmSnapshot.parent_status}`] ?? ''}`}>
+                      {swarmSnapshot.parent_status}
+                    </span>
+                  )}
+                </div>
+                {swarmUpdatedAt && (
+                  <p className={styles.swarmMeta}>
+                    {t('Updated', '更新时间')}: {new Date(swarmUpdatedAt).toLocaleTimeString()}
+                  </p>
+                )}
+                {swarmError && <p className={styles.error}>{swarmError}</p>}
+                {swarmSnapshot && (
+                  <>
+                    <div className={styles.swarmStats}>
+                      <div>
+                        <strong>{swarmSnapshot.summary.total}</strong>
+                        <span>{t('Subtasks', '子任务')}</span>
+                      </div>
+                      <div>
+                        <strong>{swarmSnapshot.summary.pending}</strong>
+                        <span>{t('Pending', '待完成')}</span>
+                      </div>
+                      <div>
+                        <strong>{swarmSnapshot.summary.completed}</strong>
+                        <span>{t('Completed', '已完成')}</span>
+                      </div>
+                      <div>
+                        <strong>{swarmSnapshot.summary.failed}</strong>
+                        <span>{t('Failed', '失败')}</span>
+                      </div>
+                    </div>
+                    <div className={styles.progressTrack}>
+                      <div
+                        className={styles.progressFill}
+                        style={{ width: `${swarmProgress}%` }}
+                      />
+                    </div>
+                    {swarmSnapshot.summary.total === 0 ? (
+                      <p className={styles.placeholder}>
+                        {t('No subtasks dispatched yet.', '当前还没有分发子任务。')}
+                      </p>
+                    ) : (
+                      <div className={styles.depList}>
+                        {swarmSnapshot.dependencies.map(dep => (
+                          <article key={dep.id} className={styles.depCard}>
+                            <div className={styles.depTop}>
+                              <code>{dep.role_id ?? dep.child_agent_id ?? 'unknown'}</code>
+                              <span className={`${styles.swarmBadge} ${styles[`status_${dep.status}`] ?? ''}`}>
+                                {dep.status}
+                              </span>
+                            </div>
+                            <p>{dep.goal}</p>
+                            <div className={styles.depMeta}>
+                              <span>{t('child', '子 Run')}: {dep.child_run_id}</span>
+                              <span>{t('tool', '工具调用')}: {dep.tool_call_id}</span>
+                              <span>{t('child status', '子 Run 状态')}: {dep.child_status ?? 'unknown'}</span>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
               </>
             )}
           </article>

@@ -4,6 +4,7 @@
 
 import type {
   RunMeta,
+  RunStatus,
   BlackboardMemory,
   Group,
   Role,
@@ -55,6 +56,37 @@ export interface FeishuSyncJob {
   started_at: string | null;
   ended_at: string | null;
   error_message: string | null;
+}
+
+export interface SwarmDependencySnapshot {
+  id: number;
+  tool_call_id: string;
+  role_id: string | null;
+  goal: string;
+  status: 'pending' | 'completed' | 'failed';
+  result: string | null;
+  error: string | null;
+  child_run_id: string;
+  child_status: RunStatus | null;
+  child_agent_id: string | null;
+  child_started_at: string | null;
+  child_ended_at: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface SwarmStatusSnapshot {
+  requested_run_id: string;
+  parent_run_id: string;
+  parent_status: RunStatus;
+  parent_agent_id: string;
+  summary: {
+    total: number;
+    pending: number;
+    completed: number;
+    failed: number;
+  };
+  dependencies: SwarmDependencySnapshot[];
 }
 
 export class APIClient {
@@ -631,6 +663,24 @@ export class APIClient {
 
     const data = (await response.json()) as { children: RunMeta[] };
     return data.children;
+  }
+
+  /**
+   * Get swarm execution snapshot for a run (parent/child dependencies).
+   */
+  async getSwarmStatus(runId: string): Promise<SwarmStatusSnapshot> {
+    const response = await fetch(`${this.baseURL}/api/runs/${runId}/swarm`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get swarm status'),
+        response.status
+      );
+    }
+
+    return response.json();
   }
 
   /**
