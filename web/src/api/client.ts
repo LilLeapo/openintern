@@ -788,6 +788,7 @@ export class APIClient {
   async updateGroup(groupId: string, data: {
     name?: string;
     description?: string;
+    project_id?: string | null;
   }): Promise<Group> {
     const response = await fetch(`${this.baseURL}/api/groups/${groupId}`, {
       method: 'PUT',
@@ -801,6 +802,38 @@ export class APIClient {
     if (!response.ok) {
       throw new APIError(
         await this.parseErrorMessage(response, 'Failed to update group'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Assign one project_id to groups.
+   * By default it only updates groups where project_id is null.
+   */
+  async assignGroupsProject(
+    projectId: string,
+    options?: { includeExisting?: boolean }
+  ): Promise<{ project_id: string; include_existing: boolean; updated: number }> {
+    const response = await fetch(`${this.baseURL}/api/groups/assign-project`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({
+        project_id: projectId,
+        ...(options?.includeExisting !== undefined
+          ? { include_existing: options.includeExisting }
+          : {}),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to assign group project'),
         response.status,
       );
     }

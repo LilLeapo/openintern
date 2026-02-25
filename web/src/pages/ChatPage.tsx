@@ -84,18 +84,22 @@ export function ChatPage() {
       try {
         const [nextRoles, nextGroups] = await Promise.all([
           apiClient.listRoles(),
-          apiClient.listGroups(),
+          apiClient.listGroups(tenantScope.projectId ?? undefined),
         ]);
         setRoles(nextRoles);
         setGroups(nextGroups);
         setSelectedRoleId(prev => prev || nextRoles[0]?.id || '');
-        setSelectedGroupId(prev => prev || nextGroups[0]?.id || '');
+        setSelectedGroupId(prev => (
+          prev && nextGroups.some(group => group.id === prev)
+            ? prev
+            : (nextGroups[0]?.id || '')
+        ));
       } catch (err) {
         setCatalogError(err instanceof Error ? err.message : t('Failed to load catalog', '加载目录失败'));
       }
     };
     void loadCatalog();
-  }, [t]);
+  }, [t, tenantScope.projectId]);
 
   useEffect(() => {
     setOrgIdDraft(tenantScope.orgId);

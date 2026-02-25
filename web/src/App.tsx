@@ -11,7 +11,7 @@ import {
   BlackboardPage,
   SkillsPage,
   GroupRunPage,
-  TeamManagementPage,
+  OrchestratorPage,
   InboxPage,
   EmulatorPage,
 } from './pages';
@@ -30,7 +30,7 @@ export function App() {
           <Route path="/trace/:runId" element={<TracePage />} />
           <Route path="/blackboard" element={<BlackboardPage />} />
           <Route path="/blackboard/:groupId" element={<BlackboardPage />} />
-          <Route path="/orchestrator" element={<TeamManagementPage />} />
+          <Route path="/orchestrator" element={<OrchestratorPage />} />
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/group-run/:runId" element={<GroupRunPage />} />
         </Routes>
