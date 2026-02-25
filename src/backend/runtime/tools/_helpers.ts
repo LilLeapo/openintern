@@ -59,11 +59,11 @@ export function extractNumber(value: unknown): number | null {
   return null;
 }
 
-export function resolveWithinWorkDir(workDir: string, requestedPath: string): string {
+export function resolveWithinWorkDir(workDir: string, requestedPath: string, toolName = 'file'): string {
   const absoluteWorkDir = path.resolve(workDir);
   const resolvedPath = path.resolve(absoluteWorkDir, requestedPath);
   if (!resolvedPath.startsWith(`${absoluteWorkDir}${path.sep}`) && resolvedPath !== absoluteWorkDir) {
-    throw new ToolError('Path escapes working directory', 'read_file');
+    throw new ToolError('Path escapes working directory', toolName);
   }
   return resolvedPath;
 }
