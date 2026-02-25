@@ -15,6 +15,7 @@
  * - DELETE /api/groups/:group_id/members/:member_id
  * - POST /api/groups/:group_id/runs (create run)
  * - POST /api/groups/batch-delete
+ * - POST /api/groups/assign-project
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -42,6 +43,11 @@ const GroupRunRequestSchema = z.object({
   input: z.string().min(1),
   session_key: z.string().regex(/^s_[a-zA-Z0-9_]+$/).optional(),
   llm_config: LLMConfigRequestSchema,
+});
+
+const AssignProjectRequestSchema = z.object({
+  project_id: z.string().min(1),
+  include_existing: z.boolean().optional(),
 });
 
 export function createGroupsRouter(config: GroupsRouterConfig): Router {
@@ -76,6 +82,29 @@ export function createGroupsRouter(config: GroupsRouterConfig): Router {
         const projectId = req.query.project_id as string | undefined;
         const groups = await groupRepository.listGroups(projectId);
         res.json({ groups });
+      } catch (err) {
+        handleError(res, err);
+      }
+    })();
+  });
+
+  // POST /api/groups/assign-project
+  router.post('/groups/assign-project', (req: Request, res: Response) => {
+    void (async () => {
+      try {
+        const parseResult = AssignProjectRequestSchema.safeParse(req.body);
+        if (!parseResult.success) {
+          const firstError = parseResult.error.errors[0];
+          throw new ValidationError(
+            firstError?.message ?? 'Invalid request',
+            firstError?.path.join('.') ?? 'body'
+          );
+        }
+        const projectId = parseResult.data.project_id.trim();
+        const includeExisting = parseResult.data.include_existing ?? false;
+        const updated = await groupRepository.assignProjectId(projectId, includeExisting);
+        logger.info('Group project assigned', { projectId, includeExisting, updated });
+        res.json({ project_id: projectId, include_existing: includeExisting, updated });
       } catch (err) {
         handleError(res, err);
       }

@@ -362,6 +362,38 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
     END IF;
   END $$`,
 
+  // ─── Self-heal: enforce canonical runs.status CHECK constraint ─────────
+  // Some environments may carry legacy/mismatched constraint definitions
+  // (e.g. runs_status_check_v2 with unexpected allowed values). Rebuild to v4.
+  `DO $$ DECLARE
+    constraint_name TEXT;
+  BEGIN
+    FOR constraint_name IN
+      SELECT c.conname
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      WHERE t.relname = 'runs'
+        AND c.contype = 'c'
+        AND (
+          c.conname LIKE 'runs_status_check%'
+          OR pg_get_constraintdef(c.oid) ILIKE '%status%'
+        )
+        AND c.conname <> 'runs_status_check_v4'
+    LOOP
+      EXECUTE format('ALTER TABLE runs DROP CONSTRAINT IF EXISTS %I', constraint_name);
+    END LOOP;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_constraint
+      WHERE conname = 'runs_status_check_v4'
+        AND conrelid = 'runs'::regclass
+    ) THEN
+      ALTER TABLE runs ADD CONSTRAINT runs_status_check_v4
+        CHECK (status IN ('pending', 'running', 'waiting', 'suspended', 'completed', 'failed', 'cancelled'));
+    END IF;
+  END $$`,
+
   // ─── Phase 3: Event-Driven Dynamic Swarm ─────────────────
   `CREATE TABLE IF NOT EXISTS run_dependencies (
     id            BIGSERIAL PRIMARY KEY,

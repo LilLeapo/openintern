@@ -229,6 +229,27 @@ export class GroupRepository {
     return mapGroupRow(row);
   }
 
+  async assignProjectId(projectId: string, includeExisting: boolean = false): Promise<number> {
+    const normalized = projectId.trim();
+    if (!normalized) {
+      throw new Error('projectId is required');
+    }
+    const result = includeExisting
+      ? await this.pool.query(
+          `UPDATE groups
+           SET project_id = $1, updated_at = NOW()
+           WHERE project_id IS DISTINCT FROM $1`,
+          [normalized]
+        )
+      : await this.pool.query(
+          `UPDATE groups
+           SET project_id = $1, updated_at = NOW()
+           WHERE project_id IS NULL`,
+          [normalized]
+        );
+    return result.rowCount ?? 0;
+  }
+
   async deleteGroup(id: string): Promise<boolean> {
     // Delete members first
     await this.pool.query(`DELETE FROM group_members WHERE group_id = $1`, [id]);

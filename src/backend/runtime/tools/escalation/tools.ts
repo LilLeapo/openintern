@@ -103,6 +103,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
             name: g.name,
             description: g.description,
             members: g.members.map((m) => ({
+              role_id: m.role_id,
               role: m.role_name,
               description: m.role_description,
             })),

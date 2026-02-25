@@ -34,7 +34,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
     {
       name: 'dispatch_subtasks',
       description:
-        'Fan out subtasks to multiple agent roles in parallel. Current run suspends until all complete.',
+        'Fan out subtasks to multiple agent roles in parallel. Current run suspends until all complete. Use role_id values (not role display names).',
       parameters: {
         type: 'object',
         properties: {

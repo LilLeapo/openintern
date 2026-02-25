@@ -184,7 +184,9 @@ export class PromptComposer {
 
     for (let i = 0; i < displayed.length; i++) {
       const group = displayed[i]!;
-      const memberNames = group.members.map((m) => m.role_name).join(', ') || '(none)';
+      const memberNames = group.members
+        .map((m) => `${m.role_name}(${m.role_id})`)
+        .join(', ') || '(none)';
       lines.push(`${i + 1}. ${group.name} (${group.id})`);
       if (group.description) {
         lines.push(`   Description: ${group.description}`);
