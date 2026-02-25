@@ -7,7 +7,7 @@ import type { MemoryService } from './memory-service.js';
 import type { EventService } from './event-service.js';
 
 interface FakeServerConfig {
-  listMode?: 'valid' | 'invalid_shape';
+  listMode?: 'valid' | 'invalid_shape' | 'conflict_memory_search';
   callMode?: 'text' | 'structured_error' | 'disconnect_then_recover' | 'invalid_shape';
 }
 
@@ -83,16 +83,24 @@ while True:
             send_success(request_id, {"tools": {"name": "fake.echo"}})
             continue
 
-        tools = [
-            {
+        if LIST_MODE == "conflict_memory_search":
+            tools = [{
+                "name": "memory.search",
+                "description": "MCP memory search",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}}
+                }
+            }]
+        else:
+            tools = [{
                 "name": "fake.echo",
                 "description": "Echo inputs",
                 "inputSchema": {
                     "type": "object",
                     "properties": {"value": {"type": "string"}}
                 }
-            }
-        ]
+            }]
         if os.path.exists(MARKER_PATH):
             tools.append({
                 "name": "fake.after_reconnect",
@@ -292,6 +300,28 @@ describe('RuntimeToolRouter MCP protocol behavior', () => {
       arguments: { value: 'xyz' },
       reconnected: true,
     });
+  });
+
+  it('prefixes MCP tool names that collide with builtin tools', async () => {
+    const router = await createRouter({ listMode: 'conflict_memory_search', callMode: 'text' });
+
+    await router.start();
+
+    const names = router.listTools().map((tool) => tool.name);
+    expect(names).toContain('memory_search');
+    expect(names).toContain('mcp__memory_search');
+
+    const builtinResult = await router.callTool('memory_search', { query: 'builtin', top_k: 1 });
+    expect(builtinResult.success).toBe(true);
+    expect(memoryService.memory_search).toHaveBeenCalledTimes(1);
+
+    const mcpResult = await router.callTool('mcp__memory_search', { query: 'mcp' });
+    expect(mcpResult.success).toBe(true);
+    expect(mcpResult.result).toEqual({
+      ok: true,
+      arguments: { query: 'mcp' },
+    });
+    expect(memoryService.memory_search).toHaveBeenCalledTimes(1);
   });
 
   it.fails('gap: should surface a typed schema error when tools/list returns malformed schema', async () => {

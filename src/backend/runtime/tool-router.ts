@@ -375,8 +375,16 @@ export class RuntimeToolRouter {
     if (!this.mcpClient) return;
     const tools = (await this.mcpClient.listTools()) as MCPToolDefinition[];
     const seen = new Set<string>();
+    const builtinOrLocalNames = new Set(
+      [...this.tools.entries()]
+        .filter(([, tool]) => tool.source !== 'mcp')
+        .map(([name]) => name)
+    );
     for (const tool of tools) {
-      const sanitizedName = tool.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const sanitizedBaseName = tool.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const sanitizedName = builtinOrLocalNames.has(sanitizedBaseName)
+        ? `mcp__${sanitizedBaseName}`
+        : sanitizedBaseName;
       seen.add(sanitizedName);
       this.tools.set(sanitizedName, {
         name: sanitizedName,
