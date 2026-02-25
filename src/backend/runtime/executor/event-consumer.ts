@@ -102,7 +102,33 @@ async function processEvent(
   }
 
   if (event.type === 'run.suspended') {
-    // Run already set to suspended by onSuspend callback — just return status
+    // For delegated child runs, approval-based suspension can otherwise block
+    // the parent fan-in indefinitely. Convert this into a terminal child failure
+    // so the parent can continue with partial results.
+    if (config.swarmCoordinator) {
+      try {
+        const run = await config.runRepository.getRunById(runId);
+        if (run?.parentRunId) {
+          const payload = event.payload as { reason?: string };
+          const reason = payload.reason ?? 'Child run suspended';
+          await config.swarmCoordinator.onChildTerminal(
+            runId,
+            'failed',
+            undefined,
+            `Child run suspended: ${reason}`
+          );
+          await config.runRepository.setRunCancelled(runId);
+          return 'cancelled';
+        }
+      } catch (err) {
+        logger.error('Failed to reconcile child suspension for swarm fan-in', {
+          runId,
+          error: String(err),
+        });
+      }
+    }
+
+    // Non-child runs stay suspended and wait for approval/resume.
     return 'suspended';
   }
 

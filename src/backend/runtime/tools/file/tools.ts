@@ -5,11 +5,79 @@ import type { RuntimeTool, ToolContext } from '../_helpers.js';
 import { extractString, resolveWithinWorkDir } from '../_helpers.js';
 import { ToolError } from '../../../../utils/errors.js';
 
+const READ_FILE_MAX_CHARS = 120_000;
+
+function truncateContent(content: string): { content: string; truncated: boolean; originalLength: number } {
+  if (content.length <= READ_FILE_MAX_CHARS) {
+    return { content, truncated: false, originalLength: content.length };
+  }
+  return {
+    content: `${content.slice(0, READ_FILE_MAX_CHARS)}\n\n[truncated: original_length=${content.length}]`,
+    truncated: true,
+    originalLength: content.length,
+  };
+}
+
+async function tryExtractPdfWithPdftotext(resolvedPath: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'pdftotext',
+      ['-enc', 'UTF-8', '-layout', resolvedPath, '-'],
+      { timeout: 20_000, maxBuffer: 1024 * 1024 * 10 },
+      (err, stdout) => {
+        if (err) {
+          resolve(null);
+          return;
+        }
+        const text = stdout.trim();
+        resolve(text.length > 0 ? text : null);
+      },
+    );
+  });
+}
+
+async function tryExtractPdfWithStrings(resolvedPath: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'strings',
+      ['-n', '6', resolvedPath],
+      { timeout: 20_000, maxBuffer: 1024 * 1024 * 10 },
+      (err, stdout) => {
+        if (err) {
+          resolve(null);
+          return;
+        }
+        const lines = stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+        const text = lines.join('\n');
+        resolve(text.length > 0 ? text : null);
+      },
+    );
+  });
+}
+
+async function extractPdfText(resolvedPath: string): Promise<{ content: string; method: 'pdftotext' | 'strings' }> {
+  const byPdftotext = await tryExtractPdfWithPdftotext(resolvedPath);
+  if (byPdftotext) {
+    return { content: byPdftotext, method: 'pdftotext' };
+  }
+  const byStrings = await tryExtractPdfWithStrings(resolvedPath);
+  if (byStrings) {
+    return { content: byStrings, method: 'strings' };
+  }
+  throw new ToolError(
+    'Failed to extract readable text from PDF. Try mineru_ingest_pdf for structured PDF parsing.',
+    'read_file'
+  );
+}
+
 export function register(ctx: ToolContext): RuntimeTool[] {
   return [
     {
       name: 'read_file',
-      description: 'Read a UTF-8 file from the workspace',
+      description: 'Read a file from the workspace. Text files are returned as UTF-8; PDF files are text-extracted.',
       parameters: {
         type: 'object',
         properties: { path: { type: 'string' } },
@@ -20,8 +88,37 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         const filePath = extractString(params['path']);
         if (!filePath) throw new ToolError('path is required', 'read_file');
         const resolved = resolveWithinWorkDir(ctx.workDir, filePath);
+        const ext = path.extname(resolved).toLowerCase();
+
+        if (ext === '.pdf') {
+          const extracted = await extractPdfText(resolved);
+          const clipped = truncateContent(extracted.content);
+          return {
+            path: filePath,
+            content: clipped.content,
+            extracted_from: 'pdf',
+            extraction_method: extracted.method,
+            ...(clipped.truncated
+              ? {
+                  truncated: true,
+                  original_length: clipped.originalLength,
+                }
+              : {}),
+          };
+        }
+
         const content = await fs.promises.readFile(resolved, 'utf-8');
-        return { path: filePath, content };
+        const clipped = truncateContent(content);
+        return {
+          path: filePath,
+          content: clipped.content,
+          ...(clipped.truncated
+            ? {
+                truncated: true,
+                original_length: clipped.originalLength,
+              }
+            : {}),
+        };
       },
     },
     {
