@@ -358,6 +358,77 @@ export class MemoryService {
     };
   }
 
+  async memory_delete(id: string, scope: MemoryScope): Promise<{ deleted: boolean }> {
+    const scopeContext = toScopeContext(scope);
+    const predicates: string[] = ['id = $1::uuid'];
+    const params: unknown[] = [id];
+    appendScopePredicate(predicates, params, scopeContext);
+
+    // Delete chunks first (foreign key), then memory
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `DELETE FROM memory_chunks WHERE memory_id = $1::uuid`,
+        [id]
+      );
+      const result = await client.query(
+        `DELETE FROM memories WHERE ${predicates.join(' AND ')}`,
+        params
+      );
+      await client.query('COMMIT');
+      return { deleted: (result.rowCount ?? 0) > 0 };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async memory_list(
+    scope: MemoryScope,
+    opts?: { type?: string; limit?: number; offset?: number }
+  ): Promise<{ items: Array<{ id: string; type: string; text: string; created_at: string }>; total: number }> {
+    const scopeContext = toScopeContext(scope);
+    const predicates: string[] = [];
+    const params: unknown[] = [];
+    appendScopePredicate(predicates, params, scopeContext);
+
+    if (opts?.type && ['core', 'episodic', 'archival'].includes(opts.type)) {
+      params.push(opts.type);
+      predicates.push(`type = $${params.length}`);
+    }
+
+    const limit = Math.min(opts?.limit ?? 20, 100);
+    const offset = opts?.offset ?? 0;
+
+    const countResult = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM memories WHERE ${predicates.join(' AND ')}`,
+      params
+    );
+    const total = parseInt(countResult.rows[0]?.count ?? '0', 10);
+
+    params.push(limit, offset);
+    const rows = await this.pool.query<{ id: string; type: string; text: string; created_at: string | Date }>(
+      `SELECT id::text AS id, type, LEFT(text, 200) AS text, created_at
+       FROM memories WHERE ${predicates.join(' AND ')}
+       ORDER BY created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+
+    return {
+      items: rows.rows.map((r) => ({
+        id: r.id,
+        type: r.type,
+        text: r.text,
+        created_at: toIso(r.created_at),
+      })),
+      total,
+    };
+  }
+
   async memory_search(input: MemorySearchInput): Promise<MemorySearchResult[]> {
     const scope = toMemoryScopeContext(input.scope);
     const topK = Math.max(1, Math.min(input.top_k, 50));

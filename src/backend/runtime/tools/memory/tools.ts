@@ -17,6 +17,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         required: ['query'],
       },
       source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
       handler: async (params) => {
         const query = extractString(params['query']);
         if (!query) throw new ToolError('query is required', 'memory_search');
@@ -46,6 +47,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         required: ['id'],
       },
       source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
       handler: async (params) => {
         const id = extractString(params['id']);
         if (!id) throw new ToolError('id is required', 'memory_get');
@@ -70,6 +72,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         required: ['type', 'text'],
       },
       source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
       handler: async (params) => {
         const type = extractString(params['type']);
         const text = extractString(params['text']);
@@ -92,6 +95,57 @@ export function register(ctx: ToolContext): RuntimeTool[] {
             : undefined,
           importance: typeof importance === 'number' ? importance : undefined,
         });
+      },
+    },
+    {
+      name: 'memory_delete',
+      description: 'Delete a memory entry by id',
+      parameters: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
+      handler: async (params) => {
+        const id = extractString(params['id']);
+        if (!id) throw new ToolError('id is required', 'memory_delete');
+        return ctx.memoryService.memory_delete(id, {
+          org_id: ctx.scope.orgId,
+          user_id: ctx.scope.userId,
+          ...(ctx.scope.projectId ? { project_id: ctx.scope.projectId } : {}),
+        });
+      },
+    },
+    {
+      name: 'memory_list',
+      description: 'List memory entries with optional type filter and pagination',
+      parameters: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['core', 'episodic', 'archival'] },
+          limit: { type: 'number', description: 'Max items (default: 20, max: 100)' },
+          offset: { type: 'number', description: 'Pagination offset (default: 0)' },
+        },
+      },
+      source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
+      handler: async (params) => {
+        const type = extractString(params['type']);
+        const limit = typeof params['limit'] === 'number' ? params['limit'] : undefined;
+        const offset = typeof params['offset'] === 'number' ? params['offset'] : undefined;
+        const opts: { type?: string; limit?: number; offset?: number } = {};
+        if (type) opts.type = type;
+        if (limit !== undefined) opts.limit = limit;
+        if (offset !== undefined) opts.offset = offset;
+        return ctx.memoryService.memory_list(
+          {
+            org_id: ctx.scope.orgId,
+            user_id: ctx.scope.userId,
+            ...(ctx.scope.projectId ? { project_id: ctx.scope.projectId } : {}),
+          },
+          opts,
+        );
       },
     },
   ];
