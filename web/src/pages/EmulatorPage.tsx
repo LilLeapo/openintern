@@ -23,6 +23,15 @@ interface InjectedMemory {
   weight: number;
 }
 
+interface PendingApprovalItem {
+  runId: string;
+  toolCallId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  reason: string;
+  riskLevel: string;
+}
+
 function genId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -61,6 +70,44 @@ function isSwarmToolName(toolName: string): boolean {
   );
 }
 
+function extractPendingApproval(runId: string, events: Event[]): PendingApprovalItem | null {
+  const resolvedToolCalls = new Set<string>();
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event) continue;
+    if (event.type === 'tool.approved' || event.type === 'tool.rejected') {
+      const payload = event.payload as { tool_call_id?: string };
+      if (payload.tool_call_id) {
+        resolvedToolCalls.add(payload.tool_call_id);
+      }
+      continue;
+    }
+    if (event.type !== 'tool.requires_approval') continue;
+    const payload = event.payload as {
+      tool_call_id?: string;
+      toolName?: string;
+      args?: Record<string, unknown>;
+      reason?: string;
+      risk_level?: string;
+    };
+    if (!payload.tool_call_id || !payload.toolName) {
+      continue;
+    }
+    if (resolvedToolCalls.has(payload.tool_call_id)) {
+      continue;
+    }
+    return {
+      runId,
+      toolCallId: payload.tool_call_id,
+      toolName: payload.toolName,
+      args: payload.args ?? {},
+      reason: payload.reason ?? '',
+      riskLevel: payload.risk_level ?? 'high',
+    };
+  }
+  return null;
+}
+
 export function EmulatorPage() {
   const { t } = useLocaleText();
   const { tenantScope, setTenantScope } = useAppPreferences();
@@ -86,12 +133,18 @@ export function EmulatorPage() {
   const [swarmUpdatedAt, setSwarmUpdatedAt] = useState<string | null>(null);
   const [swarmMonitorEnabled, setSwarmMonitorEnabled] = useState(false);
   const [swarmApiUnsupported, setSwarmApiUnsupported] = useState(false);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalItem[]>([]);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [approvalReasonByKey, setApprovalReasonByKey] = useState<Record<string, string>>({});
+  const [approvalBusyKey, setApprovalBusyKey] = useState<string | null>(null);
+  const [approvalReloadTick, setApprovalReloadTick] = useState(0);
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState('');
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [groupError, setGroupError] = useState<string | null>(null);
   const [syncingGroups, setSyncingGroups] = useState(false);
+  const showSwarmMonitor = swarmMonitorEnabled && !swarmApiUnsupported;
 
   const streamingMessageIdRef = useRef<string | null>(null);
   const processedEventCountRef = useRef(0);
@@ -135,6 +188,10 @@ export function EmulatorPage() {
     setSwarmError(null);
     setSwarmUpdatedAt(null);
     setSwarmMonitorEnabled(false);
+    setPendingApprovals([]);
+    setApprovalError(null);
+    setApprovalReasonByKey({});
+    setApprovalBusyKey(null);
   }, [activeRunId]);
 
   useEffect(() => {
@@ -186,6 +243,69 @@ export function EmulatorPage() {
       }
     };
   }, [activeRunId, swarmMonitorEnabled, swarmApiUnsupported, t]);
+
+  useEffect(() => {
+    if (!activeRunId || !showSwarmMonitor) {
+      setPendingApprovals([]);
+      setApprovalError(null);
+      return;
+    }
+
+    const candidateRunIds = new Set<string>();
+    candidateRunIds.add(activeRunId);
+    if (swarmSnapshot) {
+      if (swarmSnapshot.parent_status === 'suspended' || swarmSnapshot.parent_status === 'waiting') {
+        candidateRunIds.add(swarmSnapshot.parent_run_id);
+      }
+      for (const dep of swarmSnapshot.dependencies) {
+        if (dep.child_status === 'suspended' || dep.child_status === 'waiting') {
+          candidateRunIds.add(dep.child_run_id);
+        }
+      }
+    }
+
+    if (candidateRunIds.size === 0) {
+      setPendingApprovals([]);
+      setApprovalError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadPendingApprovals = async () => {
+      try {
+        const ids = [...candidateRunIds];
+        const items = await Promise.all(
+          ids.map(async (runId) => {
+            try {
+              const events = await apiClient.getEvents(runId, undefined, {
+                includeTokens: false,
+                pageLimit: 400,
+              });
+              return extractPendingApproval(runId, events);
+            } catch {
+              return null;
+            }
+          })
+        );
+        if (cancelled) return;
+        const approvals = items.filter((item): item is PendingApprovalItem => item !== null);
+        setPendingApprovals(approvals);
+        setApprovalError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setApprovalError(
+          err instanceof Error
+            ? err.message
+            : t('Failed to load pending approvals', '加载待审批项失败')
+        );
+      }
+    };
+
+    void loadPendingApprovals();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRunId, showSwarmMonitor, swarmSnapshot, approvalReloadTick, t]);
 
   useEffect(() => {
     if (events.length === 0) return;
@@ -297,7 +417,6 @@ export function EmulatorPage() {
   }, [events, t]);
 
   const routeHint = useMemo(() => classifyRoute(eventLog), [eventLog]);
-  const showSwarmMonitor = swarmMonitorEnabled && !swarmApiUnsupported;
   const swarmProgress = useMemo(() => {
     if (!swarmSnapshot || swarmSnapshot.summary.total === 0) return 0;
     const done = swarmSnapshot.summary.completed + swarmSnapshot.summary.failed;
@@ -316,6 +435,78 @@ export function EmulatorPage() {
     () => `s_emulator_${sanitizeSessionPart(tenantScope.userId)}`,
     [tenantScope.userId],
   );
+
+  const refreshSwarmSnapshot = useCallback(async () => {
+    if (!activeRunId || !showSwarmMonitor || swarmApiUnsupported) {
+      return;
+    }
+    try {
+      const snapshot = await apiClient.getSwarmStatus(activeRunId);
+      setSwarmSnapshot(snapshot);
+      setSwarmError(null);
+      setSwarmUpdatedAt(new Date().toISOString());
+    } catch (err) {
+      if (err instanceof APIError && err.statusCode === 404) {
+        setSwarmApiUnsupported(true);
+        setSwarmMonitorEnabled(false);
+        setSwarmError(null);
+        return;
+      }
+      setSwarmError(err instanceof Error ? err.message : t('Failed to load swarm status', '加载 Swarm 状态失败'));
+    }
+  }, [activeRunId, showSwarmMonitor, swarmApiUnsupported, t]);
+
+  const approvePending = useCallback(async (item: PendingApprovalItem) => {
+    const key = `${item.runId}:${item.toolCallId}`;
+    setApprovalBusyKey(key);
+    setApprovalError(null);
+    try {
+      await apiClient.approveToolCall(item.runId, item.toolCallId);
+      setMessages(prev => [...prev, {
+        id: genId('approval_ok'),
+        role: 'system',
+        content: t(
+          `Approved ${item.toolName} for ${item.runId}.`,
+          `已同意 ${item.runId} 的 ${item.toolName} 调用。`
+        ),
+        ts: new Date().toISOString(),
+      }]);
+      setApprovalReloadTick(prev => prev + 1);
+      await refreshSwarmSnapshot();
+    } catch (err) {
+      setApprovalError(err instanceof Error ? err.message : t('Approve failed', '审批失败'));
+    } finally {
+      setApprovalBusyKey(null);
+    }
+  }, [refreshSwarmSnapshot, t]);
+
+  const rejectPending = useCallback(async (item: PendingApprovalItem) => {
+    const key = `${item.runId}:${item.toolCallId}`;
+    setApprovalBusyKey(key);
+    setApprovalError(null);
+    try {
+      await apiClient.rejectToolCall(
+        item.runId,
+        item.toolCallId,
+        approvalReasonByKey[key],
+      );
+      setMessages(prev => [...prev, {
+        id: genId('approval_no'),
+        role: 'system',
+        content: t(
+          `Rejected ${item.toolName} for ${item.runId}.`,
+          `已拒绝 ${item.runId} 的 ${item.toolName} 调用。`
+        ),
+        ts: new Date().toISOString(),
+      }]);
+      setApprovalReloadTick(prev => prev + 1);
+      await refreshSwarmSnapshot();
+    } catch (err) {
+      setApprovalError(err instanceof Error ? err.message : t('Reject failed', '拒绝失败'));
+    } finally {
+      setApprovalBusyKey(null);
+    }
+  }, [approvalReasonByKey, refreshSwarmSnapshot, t]);
 
   const addMemory = useCallback(() => {
     const fact = memoryFact.trim();
@@ -401,6 +592,11 @@ export function EmulatorPage() {
     setSwarmUpdatedAt(null);
     setSwarmMonitorEnabled(false);
     setSwarmApiUnsupported(false);
+    setPendingApprovals([]);
+    setApprovalError(null);
+    setApprovalReasonByKey({});
+    setApprovalBusyKey(null);
+    setApprovalReloadTick(0);
 
     try {
       const response = await apiClient.createRun(
@@ -658,6 +854,7 @@ export function EmulatorPage() {
                   </p>
                 )}
                 {swarmError && <p className={styles.error}>{swarmError}</p>}
+                {approvalError && <p className={styles.error}>{approvalError}</p>}
                 {swarmSnapshot && (
                   <>
                     <div className={styles.swarmStats}>
@@ -706,6 +903,60 @@ export function EmulatorPage() {
                             </div>
                           </article>
                         ))}
+                      </div>
+                    )}
+                    {pendingApprovals.length > 0 && (
+                      <div className={styles.approvalBlock}>
+                        <h4>{t('Pending Approvals', '待审批工具调用')}</h4>
+                        {pendingApprovals.map(item => {
+                          const key = `${item.runId}:${item.toolCallId}`;
+                          const busy = approvalBusyKey === key;
+                          return (
+                            <article key={key} className={styles.approvalItem}>
+                              <div className={styles.approvalHead}>
+                                <strong>{item.toolName}</strong>
+                                <span className={`${styles.swarmBadge} ${styles[`status_suspended`]}`}>
+                                  {item.riskLevel}
+                                </span>
+                              </div>
+                              <p>{item.reason || t('No reason provided', '未提供原因')}</p>
+                              <div className={styles.depMeta}>
+                                <span>{t('run', '运行')}: {item.runId}</span>
+                                <span>{t('tool_call', '工具调用 ID')}: {item.toolCallId}</span>
+                              </div>
+                              <pre className={styles.argsPreview}>
+                                {JSON.stringify(item.args, null, 2)}
+                              </pre>
+                              <label className={styles.inlineField}>
+                                <span>{t('Reject reason (optional)', '拒绝理由（可选）')}</span>
+                                <input
+                                  value={approvalReasonByKey[key] ?? ''}
+                                  onChange={event => setApprovalReasonByKey(prev => ({
+                                    ...prev,
+                                    [key]: event.target.value,
+                                  }))}
+                                  placeholder={t('Why reject?', '为何拒绝？')}
+                                />
+                              </label>
+                              <div className={styles.approvalActions}>
+                                <button
+                                  className={styles.rejectAction}
+                                  onClick={() => void rejectPending(item)}
+                                  disabled={busy}
+                                >
+                                  {t('Reject', '拒绝')}
+                                </button>
+                                <button
+                                  className={styles.approveAction}
+                                  onClick={() => void approvePending(item)}
+                                  disabled={busy}
+                                >
+                                  {busy ? t('Processing...', '处理中...') : t('Approve', '同意')}
+                                </button>
+                              </div>
+                            </article>
+                          );
+                        })}
                       </div>
                     )}
                   </>

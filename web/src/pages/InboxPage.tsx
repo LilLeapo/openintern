@@ -18,6 +18,11 @@ interface ApprovalCandidate {
   trace: string[];
 }
 
+function sanitizeSessionPart(value: string): string {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9_]/g, '_');
+  return normalized || 'default';
+}
+
 function extractApproval(run: RunMeta, events: Event[]): ApprovalCandidate | null {
   const approvalEvents = events
     .filter(event => event.type === 'tool.requires_approval')
@@ -57,7 +62,7 @@ function extractApproval(run: RunMeta, events: Event[]): ApprovalCandidate | nul
 export function InboxPage() {
   const { t } = useLocaleText();
   const navigate = useNavigate();
-  const { sessionHistory } = useAppPreferences();
+  const { sessionHistory, tenantScope } = useAppPreferences();
   const [items, setItems] = useState<ApprovalCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +76,10 @@ export function InboxPage() {
     setError(null);
     setInfo(null);
     try {
-      const sessions = sessionHistory.slice(0, 12);
+      const emulatorSession = `s_emulator_${sanitizeSessionPart(tenantScope.userId)}`;
+      const sessions = [emulatorSession, ...sessionHistory]
+        .filter((value, index, list) => list.indexOf(value) === index)
+        .slice(0, 12);
       const runResults = await Promise.all(
         sessions.map(async (sessionKey) => {
           try {
@@ -119,7 +127,7 @@ export function InboxPage() {
     } finally {
       setLoading(false);
     }
-  }, [sessionHistory, t]);
+  }, [sessionHistory, t, tenantScope.userId]);
 
   useEffect(() => {
     void loadInbox();
