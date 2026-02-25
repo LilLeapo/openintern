@@ -1,4 +1,7 @@
 export { ChatPage } from './ChatPage';
+export { DashboardPage } from './DashboardPage';
+export { InboxPage } from './InboxPage';
+export { EmulatorPage } from './EmulatorPage';
 export { TracePage } from './TracePage';
 export { RunsPage } from './RunsPage';
 export { BlackboardPage } from './BlackboardPage';

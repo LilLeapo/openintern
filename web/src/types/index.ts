@@ -3,7 +3,14 @@
  */
 
 // Run status
-export type RunStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+export type RunStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting'
+  | 'suspended'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
 // Run metadata
 export interface RunMeta {
@@ -23,15 +30,26 @@ export type EventType =
   | 'run.started'
   | 'run.completed'
   | 'run.failed'
+  | 'run.resumed'
+  | 'run.suspended'
   | 'step.started'
   | 'step.completed'
+  | 'step.retried'
   | 'llm.called'
   | 'llm.token'
   | 'tool.called'
   | 'tool.result'
+  | 'tool.blocked'
   | 'tool.requires_approval'
   | 'tool.approved'
-  | 'tool.rejected';
+  | 'tool.rejected'
+  | 'tool.batch.started'
+  | 'tool.batch.completed'
+  | 'message.task'
+  | 'message.proposal'
+  | 'message.decision'
+  | 'message.evidence'
+  | 'message.status';
 
 // Base event structure
 export interface BaseEvent {
@@ -67,6 +85,17 @@ export interface RunFailedPayload {
   };
 }
 
+export interface RunSuspendedPayload {
+  toolCallId: string;
+  toolName: string;
+  reason: string;
+}
+
+export interface RunResumedPayload {
+  checkpoint_step_id: string;
+  orphaned_tool_calls: number;
+}
+
 export interface ToolCalledPayload {
   toolName: string;
   args: Record<string, unknown>;
@@ -80,6 +109,14 @@ export interface ToolResultPayload {
     code: string;
     message: string;
   };
+}
+
+export interface ToolBlockedPayload {
+  toolName: string;
+  args: Record<string, unknown>;
+  reason: string;
+  role_id?: string;
+  risk_level?: string;
 }
 
 export interface ToolRequiresApprovalPayload {
@@ -122,6 +159,39 @@ export interface LLMCalledPayload {
 export interface LLMTokenPayload {
   token: string;
   tokenIndex: number;
+}
+
+export interface MessageTaskPayload {
+  goal?: string;
+  inputs?: Record<string, unknown>;
+  expected_output?: string;
+  constraints?: string[];
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface MessageProposalPayload {
+  plan?: string;
+  risks?: string[];
+  dependencies?: string[];
+  evidence_refs?: Array<{ type: string; id: string }>;
+}
+
+export interface MessageDecisionPayload {
+  decision?: string;
+  rationale?: string;
+  next_actions?: string[];
+  evidence_refs?: Array<{ type: string; id: string }>;
+}
+
+export interface MessageEvidencePayload {
+  refs?: Array<{ type: string; id: string }>;
+  summary?: string;
+}
+
+export interface MessageStatusPayload {
+  state?: 'working' | 'blocked' | 'done' | 'error';
+  progress?: number;
+  blockers?: string[];
 }
 
 // Blackboard memory types

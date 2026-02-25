@@ -21,6 +21,8 @@ export function GroupRunHeader({ run, parentRun, onBack }: GroupRunHeaderProps) 
         return t('Running', '运行中');
       case 'waiting':
         return t('Waiting', '等待中');
+      case 'suspended':
+        return t('Suspended', '已挂起');
       case 'completed':
         return t('Completed', '已完成');
       case 'failed':

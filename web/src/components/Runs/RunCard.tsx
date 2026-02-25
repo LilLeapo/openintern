@@ -23,7 +23,11 @@ export function RunCard({ run, onOpenTrace, onCancel, isCancelling = false }: Ru
   const { t, isZh } = useLocaleText();
   const startTime = new Date(run.started_at).toLocaleString();
   const duration = formatDuration(run.duration_ms, t);
-  const canCancel = run.status === 'pending' || run.status === 'running' || run.status === 'waiting';
+  const canCancel =
+    run.status === 'pending'
+    || run.status === 'running'
+    || run.status === 'waiting'
+    || run.status === 'suspended';
   const statusLabel = (() => {
     if (!isZh) {
       return run.status;
@@ -39,6 +43,8 @@ export function RunCard({ run, onOpenTrace, onCancel, isCancelling = false }: Ru
         return '失败';
       case 'waiting':
         return '等待中';
+      case 'suspended':
+        return '已挂起';
       case 'cancelled':
         return '已取消';
       default:

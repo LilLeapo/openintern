@@ -1,40 +1,47 @@
 .layout {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
-  gap: 0.78rem;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 0.74rem;
+}
+
+.formCard,
+.kanbanPanel,
+.labPanel {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  padding: 0.72rem;
 }
 
 .formCard {
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: var(--surface);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-  padding: 0.78rem;
   display: flex;
   flex-direction: column;
-  gap: 0.62rem;
+  gap: 0.56rem;
   height: fit-content;
 }
 
-.formCard h3 {
+.formCard h3,
+.kanbanPanel h3,
+.labPanel h3 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.96rem;
 }
 
 .formGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.52rem;
+  gap: 0.42rem;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.22rem;
 }
 
 .field span {
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -46,20 +53,26 @@
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   background: #ffffff;
-  padding: 0.46rem 0.58rem;
-}
-
-.field input:focus,
-.field select:focus,
-.textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+  padding: 0.44rem 0.54rem;
 }
 
 .textarea {
-  min-height: 96px;
+  min-height: 90px;
   resize: vertical;
+}
+
+.submitButton,
+.pageAction,
+.searchRow button,
+.connectorItem button {
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #0f766e, #0d9488);
+  color: white;
+  font-weight: 600;
+  font-size: 0.8rem;
+  padding: 0.48rem 0.7rem;
+  cursor: pointer;
 }
 
 .errorText {
@@ -68,50 +81,164 @@
   font-size: 0.82rem;
 }
 
-.submitButton {
-  border: none;
-  border-radius: 10px;
-  background: linear-gradient(145deg, #0f766e, #0d9488);
-  color: white;
-  font-weight: 600;
-  font-size: 0.82rem;
-  padding: 0.56rem 0.74rem;
-  cursor: pointer;
-}
-
-.submitButton:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.panelSection {
-  min-width: 0;
+.liveCard {
   border: 1px solid var(--border);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.75);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
-  padding: 0.65rem;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.55rem;
 }
 
-.pageAction {
-  border: none;
-  border-radius: 11px;
-  background: linear-gradient(145deg, #0f766e, #0d9488);
-  color: white;
-  font-weight: 600;
+.liveCard h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.mainPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.68rem;
+}
+
+.kanbanGrid {
+  margin-top: 0.52rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.48rem;
+}
+
+.column {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 0.42rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.32rem;
+  min-height: 180px;
+}
+
+.column h4 {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #f8fafc;
+  padding: 0.36rem 0.42rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.searchRow {
+  margin-top: 0.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem;
+}
+
+.searchRow input {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.45rem 0.54rem;
+}
+
+.resultList {
+  margin-top: 0.52rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.36rem;
+}
+
+.resultCard {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.44rem 0.5rem;
+}
+
+.resultCard header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.resultCard header strong {
+  font-size: 0.8rem;
+}
+
+.resultCard header span {
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.74rem;
+  color: var(--accent-strong);
+}
+
+.resultCard p {
+  margin: 0.24rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.connectorList {
+  margin-top: 0.46rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.38rem;
+}
+
+.connectorItem {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.42rem 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.connectorItem strong {
   font-size: 0.82rem;
-  padding: 0.55rem 0.78rem;
-  cursor: pointer;
 }
 
-@media (max-width: 1050px) {
+.connectorItem p {
+  margin: 0.12rem 0 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.placeholder,
+.syncStatus {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+@media (max-width: 1120px) {
   .layout {
     grid-template-columns: 1fr;
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 760px) {
   .formGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .kanbanGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .searchRow {
     grid-template-columns: 1fr;
   }
 }

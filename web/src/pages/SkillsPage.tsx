@@ -5,6 +5,8 @@ import type { Skill, SkillProvider, SkillRiskLevel } from '../types';
 import { useLocaleText } from '../i18n/useLocaleText';
 import styles from './SkillsPage.module.css';
 
+const SKILL_ENABLED_STORAGE = 'openintern.skill_enabled_map.v1';
+
 function parseToolsInput(input: string): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
   return input
     .split('\n')
@@ -17,10 +19,32 @@ function parseToolsInput(input: string): Array<{ name: string; description: stri
       return {
         name,
         description,
-        parameters: {},
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
       };
     })
     .filter((tool) => tool.name.length > 0);
+}
+
+function readEnabledMap(): Record<string, boolean> {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(SKILL_ENABLED_STORAGE);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') {
+      return {};
+    }
+    return parsed as Record<string, boolean>;
+  } catch {
+    return {};
+  }
 }
 
 export function SkillsPage() {
@@ -30,6 +54,8 @@ export function SkillsPage() {
   const [saving, setSaving] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [successText, setSuccessText] = useState<string | null>(null);
+  const [providerFilter, setProviderFilter] = useState<'all' | SkillProvider>('all');
+  const [enabledMap, setEnabledMap] = useState<Record<string, boolean>>(readEnabledMap);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -43,6 +69,15 @@ export function SkillsPage() {
     try {
       const data = await apiClient.listSkills();
       setSkills(data);
+      setEnabledMap(prev => {
+        const next = { ...prev };
+        data.forEach((skill) => {
+          if (next[skill.id] === undefined) {
+            next[skill.id] = true;
+          }
+        });
+        return next;
+      });
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : t('Failed to load skills', '加载技能失败'));
     } finally {
@@ -53,6 +88,11 @@ export function SkillsPage() {
   useEffect(() => {
     void loadSkills();
   }, [loadSkills]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SKILL_ENABLED_STORAGE, JSON.stringify(enabledMap));
+  }, [enabledMap]);
 
   const clearMessages = () => {
     setErrorText(null);
@@ -76,6 +116,7 @@ export function SkillsPage() {
         tools,
       });
       setSkills((prev) => [created, ...prev.filter((skill) => skill.id !== created.id)]);
+      setEnabledMap(prev => ({ ...prev, [created.id]: true }));
       setName('');
       setDescription('');
       setToolsDraft('');
@@ -98,25 +139,38 @@ export function SkillsPage() {
     }
   };
 
+  const visibleSkills = useMemo(() => {
+    if (providerFilter === 'all') return skills;
+    return skills.filter(skill => skill.provider === providerFilter);
+  }, [providerFilter, skills]);
+
   const totalTools = useMemo(
     () => skills.reduce((count, skill) => count + skill.tools.length, 0),
-    [skills]
+    [skills],
+  );
+
+  const enabledCount = useMemo(
+    () => skills.filter(skill => enabledMap[skill.id] !== false).length,
+    [enabledMap, skills],
   );
 
   return (
     <AppShell
-      title={t('Skills Catalog', '技能目录')}
-      subtitle={t('Register reusable skill metadata for tool discovery and policy', '注册可复用技能元数据，用于工具发现与策略配置')}
+      title={t('Skill / Plugin Registry', 'Skill / Plugin 注册表')}
+      subtitle={t(
+        'Inspect schemas, manage health toggles, and maintain MCP/builtin catalog',
+        '查看参数 Schema、管理启停开关、维护 MCP/内置能力目录',
+      )}
       actions={
         <button className={styles.refreshButton} onClick={() => void loadSkills()}>
-          {t('Reload Skills', '重新加载技能')}
+          {t('Reload Registry', '刷新注册表')}
         </button>
       }
     >
       <div className={styles.layout}>
         <section className={styles.editorColumn}>
           <article className={styles.card}>
-            <h3>{t('Create Skill', '创建技能')}</h3>
+            <h3>{t('Register Skill', '注册技能')}</h3>
             <label className={styles.field}>
               <span>{t('Name', '名称')}</span>
               <input
@@ -161,7 +215,7 @@ export function SkillsPage() {
               </label>
             </div>
             <label className={styles.field}>
-              <span>{t('Tools (one per line, optional `name|description`)', '工具（每行一个，可选 `name|description`）')}</span>
+              <span>{t('Tools (name|description)', '工具（name|description）')}</span>
               <textarea
                 aria-label={t('Tools', '工具')}
                 className={styles.textarea}
@@ -187,49 +241,80 @@ export function SkillsPage() {
 
         <section className={styles.listColumn}>
           <article className={styles.card}>
-            <h3>{t('Catalog Snapshot', '目录概览')}</h3>
+            <h3>{t('Registry Snapshot', '注册表概览')}</h3>
             <p>{t(`Total skills: ${skills.length}`, `技能总数：${skills.length}`)}</p>
+            <p>{t(`Enabled: ${enabledCount}`, `启用中：${enabledCount}`)}</p>
             <p>{t(`Total tool refs: ${totalTools}`, `工具引用总数：${totalTools}`)}</p>
+            <div className={styles.inlineFields}>
+              <label className={styles.field}>
+                <span>{t('Provider filter', 'Provider 筛选')}</span>
+                <select
+                  value={providerFilter}
+                  onChange={event => setProviderFilter(event.target.value as 'all' | SkillProvider)}
+                >
+                  <option value="all">all</option>
+                  <option value="builtin">builtin</option>
+                  <option value="mcp">mcp</option>
+                </select>
+              </label>
+            </div>
             {loading && <p>{t('Loading skills...', '加载技能中...')}</p>}
           </article>
-          {skills.map((skill) => (
-            <article key={skill.id} className={styles.card}>
-              <header className={styles.skillHeader}>
+
+          {visibleSkills.map((skill) => {
+            const enabled = enabledMap[skill.id] !== false;
+            return (
+              <article key={skill.id} className={styles.card}>
+                <header className={styles.skillHeader}>
+                  <div>
+                    <h4>{skill.name}</h4>
+                    <p className={styles.skillId}>{skill.id}</p>
+                  </div>
+                  <div className={styles.skillActions}>
+                    <label className={styles.toggle}>
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={event => setEnabledMap(prev => ({ ...prev, [skill.id]: event.target.checked }))}
+                      />
+                      <span>{enabled ? t('Enabled', '已启用') : t('Disabled', '已禁用')}</span>
+                    </label>
+                    <button
+                      className={styles.deleteButton}
+                      onClick={() => void handleDeleteSkill(skill.id)}
+                    >
+                      {t('Delete', '删除')}
+                    </button>
+                  </div>
+                </header>
+                <p className={styles.metaLine}>
+                  {t(
+                    `provider=${skill.provider} · risk=${skill.risk_level} · health=${skill.health_status}`,
+                    `provider=${skill.provider} · 风险=${skill.risk_level} · 健康=${skill.health_status}`,
+                  )}
+                </p>
+                {skill.description && <p className={styles.description}>{skill.description}</p>}
                 <div>
-                  <h4>{skill.name}</h4>
-                  <p className={styles.skillId}>{skill.id}</p>
+                  <p className={styles.metaLabel}>{t('Schema Preview', 'Schema 预览')}</p>
+                  {skill.tools.length === 0 ? (
+                    <p className={styles.emptyTools}>{t('No tools bound', '没有绑定工具')}</p>
+                  ) : (
+                    <div className={styles.schemaList}>
+                      {skill.tools.map((tool) => (
+                        <article key={`${skill.id}_${tool.name}`} className={styles.schemaCard}>
+                          <header>
+                            <strong>{tool.name}</strong>
+                            <span>{tool.description || '-'}</span>
+                          </header>
+                          <pre>{JSON.stringify(tool.parameters ?? {}, null, 2)}</pre>
+                        </article>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <button
-                  className={styles.deleteButton}
-                  onClick={() => void handleDeleteSkill(skill.id)}
-                >
-                  {t('Delete', '删除')}
-                </button>
-              </header>
-              <p className={styles.metaLine}>
-                {t(
-                  `provider=${skill.provider} · risk=${skill.risk_level} · health=${skill.health_status}`,
-                  `provider=${skill.provider} · 风险=${skill.risk_level} · 健康=${skill.health_status}`,
-                )}
-              </p>
-              {skill.description && <p className={styles.description}>{skill.description}</p>}
-              <div>
-                <p className={styles.metaLabel}>{t('Tools', '工具')}</p>
-                {skill.tools.length === 0 ? (
-                  <p className={styles.emptyTools}>{t('No tools bound', '没有绑定工具')}</p>
-                ) : (
-                  <ul className={styles.toolList}>
-                    {skill.tools.map((tool) => (
-                      <li key={`${skill.id}-${tool.name}`}>
-                        <strong>{tool.name}</strong>
-                        {tool.description ? ` - ${tool.description}` : ''}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </section>
       </div>
     </AppShell>

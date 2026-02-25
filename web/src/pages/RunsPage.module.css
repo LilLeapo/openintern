@@ -6,7 +6,7 @@
 
 .statsGrid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.58rem;
 }
 
@@ -71,6 +71,21 @@
   gap: 0.4rem;
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+.selectWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.select {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.36rem 0.5rem;
 }
 
 .filters {

@@ -19,10 +19,10 @@ import type {
   Event,
 } from '../types/events';
 
-interface ScopeConfig {
+export interface ScopeConfig {
   orgId: string;
   userId: string;
-  projectId?: string;
+  projectId?: string | null;
 }
 
 export interface RunLLMConfig {
@@ -38,6 +38,25 @@ export interface GetEventsOptions {
   pageLimit?: number;
 }
 
+export interface FeishuConnector {
+  id: string;
+  name: string;
+  status: 'active' | 'paused';
+  last_sync_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+}
+
+export interface FeishuSyncJob {
+  id: string;
+  connector_id: string;
+  trigger: 'manual' | 'poll';
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  started_at: string | null;
+  ended_at: string | null;
+  error_message: string | null;
+}
+
 export class APIClient {
   private baseURL: string;
   private scope: ScopeConfig;
@@ -48,12 +67,32 @@ export class APIClient {
       orgId: import.meta.env.VITE_ORG_ID ?? 'org_default',
       userId: import.meta.env.VITE_USER_ID ?? 'user_default',
       ...(import.meta.env.VITE_PROJECT_ID
-        ? { projectId: import.meta.env.VITE_PROJECT_ID }
+        ? { projectId: import.meta.env.VITE_PROJECT_ID as string }
         : {}),
     }
   ) {
     this.baseURL = baseURL;
-    this.scope = scope;
+    this.scope = {
+      orgId: scope.orgId,
+      userId: scope.userId,
+      projectId: scope.projectId ?? null,
+    };
+  }
+
+  getScope(): ScopeConfig {
+    return {
+      orgId: this.scope.orgId,
+      userId: this.scope.userId,
+      projectId: this.scope.projectId ?? null,
+    };
+  }
+
+  setScope(scope: ScopeConfig): void {
+    this.scope = {
+      orgId: scope.orgId,
+      userId: scope.userId,
+      projectId: scope.projectId ?? null,
+    };
   }
 
   private buildScopeHeaders(): Record<string, string> {
@@ -83,7 +122,8 @@ export class APIClient {
     sessionKey: string,
     input: string,
     llmConfig?: RunLLMConfig,
-    attachments?: Array<{ upload_id: string }>
+    attachments?: Array<{ upload_id: string }>,
+    options?: { agentId?: string },
   ): Promise<CreateRunResponse> {
     const response = await fetch(`${this.baseURL}/api/runs`, {
       method: 'POST',
@@ -97,6 +137,7 @@ export class APIClient {
         ...(this.scope.projectId ? { project_id: this.scope.projectId } : {}),
         session_key: sessionKey,
         input,
+        ...(options?.agentId ? { agent_id: options.agentId } : {}),
         ...(llmConfig ? { llm_config: llmConfig } : {}),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       }),
@@ -659,6 +700,7 @@ export class APIClient {
     is_lead?: boolean;
     allowed_tools?: string[];
     denied_tools?: string[];
+    style_constraints?: Record<string, unknown>;
   }): Promise<Role> {
     const response = await fetch(`${this.baseURL}/api/roles/${roleId}`, {
       method: 'PUT',
@@ -951,6 +993,48 @@ export class APIClient {
     if (!response.ok) {
       throw new APIError(
         await this.parseErrorMessage(response, 'Failed to reject tool call'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * List Feishu connectors for current tenant/project
+   */
+  async listFeishuConnectors(): Promise<FeishuConnector[]> {
+    const response = await fetch(`${this.baseURL}/api/feishu/connectors`, {
+      headers: this.buildScopeHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to list Feishu connectors'),
+        response.status,
+      );
+    }
+
+    const data = (await response.json()) as { connectors: FeishuConnector[] };
+    return data.connectors;
+  }
+
+  /**
+   * Trigger Feishu connector sync
+   */
+  async triggerFeishuConnectorSync(connectorId: string, wait = true): Promise<FeishuSyncJob> {
+    const response = await fetch(`${this.baseURL}/api/feishu/connectors/${connectorId}/sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.buildScopeHeaders(),
+      },
+      body: JSON.stringify({ wait }),
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to trigger Feishu sync'),
         response.status,
       );
     }

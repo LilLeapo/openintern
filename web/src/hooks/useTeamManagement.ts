@@ -154,6 +154,7 @@ export function useTeamManagement() {
     is_lead?: boolean;
     allowed_tools?: string[];
     denied_tools?: string[];
+    style_constraints?: Record<string, unknown>;
   }) => {
     const created = await apiClient.createRole(data);
     setRoles(prev => [created, ...prev]);
@@ -169,6 +170,7 @@ export function useTeamManagement() {
     is_lead?: boolean;
     allowed_tools?: string[];
     denied_tools?: string[];
+    style_constraints?: Record<string, unknown>;
   }) => {
     const updated = await apiClient.updateRole(roleId, data);
     setRoles(prev => prev.map(r => r.id === roleId ? updated : r));

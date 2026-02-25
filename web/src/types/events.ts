@@ -7,8 +7,11 @@ import type {
   RunStartedPayload,
   RunCompletedPayload,
   RunFailedPayload,
+  RunResumedPayload,
+  RunSuspendedPayload,
   ToolCalledPayload,
   ToolResultPayload,
+  ToolBlockedPayload,
   ToolRequiresApprovalPayload,
   ToolApprovedPayload,
   ToolRejectedPayload,
@@ -16,6 +19,11 @@ import type {
   StepCompletedPayload,
   LLMCalledPayload,
   LLMTokenPayload,
+  MessageTaskPayload,
+  MessageProposalPayload,
+  MessageDecisionPayload,
+  MessageEvidencePayload,
+  MessageStatusPayload,
 } from './index';
 
 // Specific event types
@@ -34,6 +42,16 @@ export interface RunFailedEvent extends BaseEvent {
   payload: RunFailedPayload;
 }
 
+export interface RunResumedEvent extends BaseEvent {
+  type: 'run.resumed';
+  payload: RunResumedPayload;
+}
+
+export interface RunSuspendedEvent extends BaseEvent {
+  type: 'run.suspended';
+  payload: RunSuspendedPayload;
+}
+
 export interface ToolCalledEvent extends BaseEvent {
   type: 'tool.called';
   payload: ToolCalledPayload;
@@ -42,6 +60,11 @@ export interface ToolCalledEvent extends BaseEvent {
 export interface ToolResultEvent extends BaseEvent {
   type: 'tool.result';
   payload: ToolResultPayload;
+}
+
+export interface ToolBlockedEvent extends BaseEvent {
+  type: 'tool.blocked';
+  payload: ToolBlockedPayload;
 }
 
 export interface ToolRequiresApprovalEvent extends BaseEvent {
@@ -79,25 +102,65 @@ export interface LLMTokenEvent extends BaseEvent {
   payload: LLMTokenPayload;
 }
 
+export interface MessageTaskEvent extends BaseEvent {
+  type: 'message.task';
+  payload: MessageTaskPayload;
+}
+
+export interface MessageProposalEvent extends BaseEvent {
+  type: 'message.proposal';
+  payload: MessageProposalPayload;
+}
+
+export interface MessageDecisionEvent extends BaseEvent {
+  type: 'message.decision';
+  payload: MessageDecisionPayload;
+}
+
+export interface MessageEvidenceEvent extends BaseEvent {
+  type: 'message.evidence';
+  payload: MessageEvidencePayload;
+}
+
+export interface MessageStatusEvent extends BaseEvent {
+  type: 'message.status';
+  payload: MessageStatusPayload;
+}
+
 // Union type for all events
 export type Event =
   | RunStartedEvent
   | RunCompletedEvent
   | RunFailedEvent
+  | RunResumedEvent
+  | RunSuspendedEvent
   | ToolCalledEvent
   | ToolResultEvent
+  | ToolBlockedEvent
   | ToolRequiresApprovalEvent
   | ToolApprovedEvent
   | ToolRejectedEvent
   | StepStartedEvent
   | StepCompletedEvent
   | LLMCalledEvent
-  | LLMTokenEvent;
+  | LLMTokenEvent
+  | MessageTaskEvent
+  | MessageProposalEvent
+  | MessageDecisionEvent
+  | MessageEvidenceEvent
+  | MessageStatusEvent;
 
 // API response types
 export interface CreateRunResponse {
   run_id: string;
-  status: 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+  status:
+    | 'pending'
+    | 'running'
+    | 'waiting'
+    | 'suspended'
+    | 'completed'
+    | 'failed'
+    | 'cancelled';
   created_at: string;
 }
 

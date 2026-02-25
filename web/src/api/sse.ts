@@ -15,6 +15,50 @@ export interface SSEClientOptions {
   onDisconnected?: () => void;
 }
 
+interface ScopeQuery {
+  orgId: string;
+  userId: string;
+  projectId: string | null;
+}
+
+const TENANT_SCOPE_STORAGE_KEY = 'openintern.tenant_scope';
+
+function readScopeForSSE(): ScopeQuery {
+  const fallback: ScopeQuery = {
+    orgId: import.meta.env.VITE_ORG_ID ?? 'org_default',
+    userId: import.meta.env.VITE_USER_ID ?? 'user_default',
+    projectId: import.meta.env.VITE_PROJECT_ID ?? null,
+  };
+
+  if (typeof window === 'undefined') {
+    return fallback;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(TENANT_SCOPE_STORAGE_KEY);
+    if (!raw) {
+      return fallback;
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') {
+      return fallback;
+    }
+    const record = parsed as Record<string, unknown>;
+    const orgId = typeof record['orgId'] === 'string' && record['orgId'].trim().length > 0
+      ? record['orgId'].trim()
+      : fallback.orgId;
+    const userId = typeof record['userId'] === 'string' && record['userId'].trim().length > 0
+      ? record['userId'].trim()
+      : fallback.userId;
+    const projectId = typeof record['projectId'] === 'string'
+      ? (record['projectId'].trim() || null)
+      : fallback.projectId;
+    return { orgId, userId, projectId };
+  } catch {
+    return fallback;
+  }
+}
+
 export class SSEClient {
   private eventSource: EventSource | null = null;
   private options: SSEClientOptions;
@@ -33,12 +77,13 @@ export class SSEClient {
       this.disconnect();
     }
 
+    const scope = readScopeForSSE();
     const params = new URLSearchParams({
-      org_id: import.meta.env.VITE_ORG_ID ?? 'org_default',
-      user_id: import.meta.env.VITE_USER_ID ?? 'user_default',
+      org_id: scope.orgId,
+      user_id: scope.userId,
     });
-    if (import.meta.env.VITE_PROJECT_ID) {
-      params.set('project_id', import.meta.env.VITE_PROJECT_ID);
+    if (scope.projectId) {
+      params.set('project_id', scope.projectId);
     }
     const url = `${this.baseURL}/api/runs/${runId}/stream?${params.toString()}`;
     this.eventSource = new EventSource(url);

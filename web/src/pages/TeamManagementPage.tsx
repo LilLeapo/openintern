@@ -1,479 +1,466 @@
-/**
- * TeamManagementPage - Modern team management console
- * Master-Detail pattern with roles and groups management
- */
-
-import { useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
 import { AppShell } from '../components/Layout/AppShell';
+import { apiClient } from '../api/client';
 import { useLocaleText } from '../i18n/useLocaleText';
 import { useTeamManagement } from '../hooks/useTeamManagement';
-import type { Role } from '../types';
+import type { Skill } from '../types';
 import styles from './TeamManagementPage.module.css';
+
+const BUILTIN_CAPABILITIES = [
+  'read_file',
+  'write_file',
+  'glob_files',
+  'grep_files',
+  'memory_search',
+  'memory_write',
+  'handoff_to',
+  'dispatch_subtasks',
+  'exec_shell',
+];
+
+type StudioTab = 'roles' | 'groups';
 
 export function TeamManagementPage() {
   const { t } = useLocaleText();
-  const navigate = useNavigate();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const {
-    // Data
-    filteredRoles,
-    filteredGroups,
+    roles,
+    groups,
+    selected,
+    setSelected,
     selectedRole,
     selectedGroup,
     selectedGroupMembers,
-    roleStats,
-    groupStats,
-    groupRuns,
-    loading,
-    error,
-    // UI state
-    activeTab,
-    setActiveTab,
-    searchQuery,
-    setSearchQuery,
-    roleFilter,
-    setRoleFilter,
-    selected,
-    setSelected,
-    checkedIds,
-    toggleChecked,
-    clearChecked,
-    toast,
-    // Operations
+    createRole,
+    updateRole,
     deleteRole,
+    createGroup,
     deleteGroup,
-    batchDelete,
-    exportConfig,
-    importConfig,
+    addMember,
+    removeMember,
+    updateMember,
+    toast,
     showToast,
   } = useTeamManagement();
 
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [tab, setTab] = useState<StudioTab>('roles');
+  const [roleForm, setRoleForm] = useState({
+    name: '',
+    description: '',
+    systemPrompt: '',
+    provider: 'openai',
+    model: 'gpt-4o-mini',
+    temperature: 0.4,
+    isLead: false,
+  });
+  const [assignedCapabilities, setAssignedCapabilities] = useState<string[]>([]);
+  const [groupFormName, setGroupFormName] = useState('');
+  const [groupFormDesc, setGroupFormDesc] = useState('');
+  const [memberRoleId, setMemberRoleId] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const handleImport = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const data = JSON.parse(text) as { roles?: unknown[]; groups?: unknown[] };
-      await importConfig(data);
-    } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Import failed');
-    }
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const handleDelete = async () => {
-    if (!selected) return;
-    try {
-      if (selected.type === 'role') {
-        await deleteRole(selected.id);
-      } else {
-        await deleteGroup(selected.id);
+  useEffect(() => {
+    const loadSkills = async () => {
+      try {
+        const data = await apiClient.listSkills();
+        setSkills(data);
+      } catch {
+        setSkills([]);
       }
-      setShowDeleteConfirm(false);
+    };
+    void loadSkills();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedRole) {
+      return;
+    }
+    const llmConfig = (selectedRole.style_constraints?.['llm'] ?? {}) as Record<string, unknown>;
+    setRoleForm({
+      name: selectedRole.name,
+      description: selectedRole.description,
+      systemPrompt: selectedRole.system_prompt,
+      provider: String(llmConfig['provider'] ?? 'openai'),
+      model: String(llmConfig['model'] ?? 'gpt-4o-mini'),
+      temperature: Number(llmConfig['temperature'] ?? 0.4),
+      isLead: selectedRole.is_lead,
+    });
+    setAssignedCapabilities(selectedRole.allowed_tools ?? []);
+  }, [selectedRole]);
+
+  useEffect(() => {
+    setMemberRoleId(prev => prev || roles[0]?.id || '');
+  }, [roles]);
+
+  const capabilityCatalog = useMemo(() => {
+    const skillCapabilities = skills.map(skill => `skill:${skill.id}`);
+    return [...BUILTIN_CAPABILITIES, ...skillCapabilities];
+  }, [skills]);
+
+  const availableCapabilities = useMemo(
+    () => capabilityCatalog.filter(item => !assignedCapabilities.includes(item)),
+    [assignedCapabilities, capabilityCatalog],
+  );
+
+  const roleNameById = useMemo(
+    () => Object.fromEntries(roles.map(role => [role.id, role.name])),
+    [roles],
+  );
+
+  const normalizedMembers = useMemo(
+    () => [...selectedGroupMembers].sort((a, b) => a.ordinal - b.ordinal),
+    [selectedGroupMembers],
+  );
+
+  const resetRoleForm = () => {
+    setRoleForm({
+      name: '',
+      description: '',
+      systemPrompt: '',
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      temperature: 0.4,
+      isLead: false,
+    });
+    setAssignedCapabilities([]);
+  };
+
+  const saveRole = async () => {
+    if (!roleForm.name.trim() || !roleForm.systemPrompt.trim()) {
+      showToast('error', t('Role name and system prompt are required.', '角色名称与系统提示词必填。'));
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const payload = {
+        name: roleForm.name.trim(),
+        description: roleForm.description.trim(),
+        system_prompt: roleForm.systemPrompt.trim(),
+        is_lead: roleForm.isLead,
+        allowed_tools: assignedCapabilities,
+        style_constraints: {
+          llm: {
+            provider: roleForm.provider,
+            model: roleForm.model,
+            temperature: roleForm.temperature,
+          },
+        },
+      };
+
+      if (selectedRole) {
+        await updateRole(selectedRole.id, payload);
+      } else {
+        await createRole(payload);
+      }
+      showToast('success', t('Role saved', '角色已保存'));
+      if (!selectedRole) {
+        resetRoleForm();
+      }
     } catch (err) {
-      showToast('error', err instanceof Error ? err.message : 'Delete failed');
+      showToast('error', err instanceof Error ? err.message : t('Failed to save role', '保存角色失败'));
+    } finally {
+      setSaving(false);
     }
   };
 
-  const currentList = activeTab === 'roles' ? filteredRoles : filteredGroups;
-  const hasSelection = selected !== null;
-  const hasChecked = checkedIds.size > 0;
+  const createNewGroup = async () => {
+    if (!groupFormName.trim()) {
+      showToast('error', t('Group name is required.', '群组名称必填。'));
+      return;
+    }
+    try {
+      await createGroup({
+        name: groupFormName.trim(),
+        description: groupFormDesc.trim() || undefined,
+      });
+      setGroupFormName('');
+      setGroupFormDesc('');
+      setTab('groups');
+    } catch (err) {
+      showToast('error', err instanceof Error ? err.message : t('Failed to create group', '创建群组失败'));
+    }
+  };
+
+  const assignMember = async () => {
+    if (!selectedGroup || !memberRoleId) {
+      showToast('error', t('Select group and role first.', '请先选择群组与角色。'));
+      return;
+    }
+    try {
+      const nextOrdinal = normalizedMembers.length === 0
+        ? 0
+        : Math.max(...normalizedMembers.map(member => member.ordinal)) + 1;
+      await addMember(selectedGroup.id, memberRoleId, nextOrdinal);
+    } catch (err) {
+      showToast('error', err instanceof Error ? err.message : t('Failed to add member', '添加成员失败'));
+    }
+  };
+
+  const moveMember = async (memberId: string, direction: 'up' | 'down') => {
+    const index = normalizedMembers.findIndex(member => member.id === memberId);
+    if (index < 0) return;
+    const swapIndex = direction === 'up' ? index - 1 : index + 1;
+    if (swapIndex < 0 || swapIndex >= normalizedMembers.length) return;
+
+    const current = normalizedMembers[index]!;
+    const target = normalizedMembers[swapIndex]!;
+    await Promise.all([
+      updateMember(current.group_id, current.id, target.ordinal),
+      updateMember(target.group_id, target.id, current.ordinal),
+    ]);
+  };
+
+  const setDispatcher = async (memberId: string) => {
+    const target = normalizedMembers.find(member => member.id === memberId);
+    if (!target) return;
+    await Promise.all(
+      normalizedMembers.map((member, index) => updateMember(
+        member.group_id,
+        member.id,
+        member.id === memberId ? 0 : index + 1,
+      )),
+    );
+  };
+
+  const selectedRoleId = selected?.type === 'role' ? selected.id : null;
+  const selectedGroupId = selected?.type === 'group' ? selected.id : null;
 
   return (
     <AppShell
-      title={t('Team Management', '团队管理')}
-      subtitle={t('Manage expert profiles and assistant teams', '管理专家画像和助手团队')}
+      title={t('Swarm & Skill Orchestration', '团队与能力编排')}
+      subtitle={t(
+        'Define roles, mount capabilities, and orchestrate group topology',
+        '定义角色基因、能力挂载与群组拓扑',
+      )}
     >
-      <>
-        {/* Header Toolbar */}
-        <div className={styles.toolbar}>
-          <button
-            className={styles.toolbarBtnPrimary}
-            onClick={() => showToast('error', t('Not implemented yet', '尚未实现'))}
-          >
-            {t('Create Role', '创建角色')}
-          </button>
-          <button
-            className={styles.toolbarBtnPrimary}
-            onClick={() => showToast('error', t('Not implemented yet', '尚未实现'))}
-          >
-            {t('Create Group', '创建团队')}
-          </button>
-          {hasChecked && (
-            <>
-              <button className={styles.toolbarBtnDanger} onClick={() => void batchDelete()}>
-                {t(`Delete ${checkedIds.size}`, `删除 ${checkedIds.size} 项`)}
-              </button>
-              <button className={styles.toolbarBtn} onClick={clearChecked}>
-                {t('Clear', '清除')}
-              </button>
-            </>
-          )}
-          <button className={styles.toolbarBtn} onClick={() => exportConfig('roles')}>
-            {t('Export Roles', '导出角色')}
-          </button>
-          <button className={styles.toolbarBtn} onClick={() => exportConfig('groups')}>
-            {t('Export Groups', '导出团队')}
-          </button>
-          <button className={styles.toolbarBtn} onClick={() => exportConfig('all')}>
-            {t('Export All', '导出全部')}
-          </button>
-          <button className={styles.toolbarBtn} onClick={handleImport}>
-            {t('Import', '导入')}
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json"
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
-          />
-        </div>
-
-        {/* Main Content */}
-        <div className={styles.layout}>
-          {/* Left Panel - Resource List */}
-          <div className={styles.listPanel}>
-            {/* Search Bar */}
-            <div className={styles.searchRow}>
-              <input
-                type="text"
-                placeholder={t('Search...', '搜索...')}
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className={styles.searchInput}
-              />
-            </div>
-
-            {/* Tabs */}
-            <div className={styles.tabs}>
-              <button
-                className={activeTab === 'roles' ? styles.tabActive : styles.tab}
-                onClick={() => setActiveTab('roles')}
-              >
-                {t('Roles', '角色')} ({filteredRoles.length})
-              </button>
-              <button
-                className={activeTab === 'groups' ? styles.tabActive : styles.tab}
-                onClick={() => setActiveTab('groups')}
-              >
-                {t('Groups', '团队')} ({filteredGroups.length})
-              </button>
-            </div>
-
-            {/* Role Filter */}
-            {activeTab === 'roles' && (
-              <div className={styles.filterRow}>
-                <button
-                  className={roleFilter === 'all' ? styles.filterChipActive : styles.filterChip}
-                  onClick={() => setRoleFilter('all')}
-                >
-                  {t('All Roles', '所有角色')}
-                </button>
-                <button
-                  className={roleFilter === 'lead' ? styles.filterChipActive : styles.filterChip}
-                  onClick={() => setRoleFilter('lead')}
-                >
-                  {t('Lead Only', '仅负责人')}
-                </button>
-                <button
-                  className={roleFilter === 'non-lead' ? styles.filterChipActive : styles.filterChip}
-                  onClick={() => setRoleFilter('non-lead')}
-                >
-                  {t('Non-Lead Only', '仅非负责人')}
-                </button>
-              </div>
-            )}
-
-            {/* Resource List */}
-            <div className={styles.cardList}>
-              {loading && <div className={styles.emptyState}>{t('Loading...', '加载中...')}</div>}
-              {error && <div className={styles.emptyState}>{error.message}</div>}
-              {!loading && !error && currentList.length === 0 && (
-                <div className={styles.emptyState}>
-                  {t('No items found', '未找到项目')}
-                </div>
-              )}
-              {!loading && !error && currentList.map(item => {
-                const isRole = 'system_prompt' in item;
-                const isSelected = selected?.id === item.id;
-                const isChecked = checkedIds.has(item.id);
-                return (
-                  <div
-                    key={item.id}
-                    className={isSelected ? styles.resourceCardSelected : styles.resourceCard}
-                    onClick={() => setSelected({ type: isRole ? 'role' : 'group', id: item.id })}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={() => toggleChecked(item.id)}
-                      onClick={e => e.stopPropagation()}
-                      className={styles.cardCheckbox}
-                    />
-                    <div className={styles.cardBody}>
-                      <div className={styles.cardTitle}>
-                        {item.name}
-                        {isRole && (item as Role).is_lead && (
-                          <span className={styles.leadBadge}>{t('Lead', '负责人')}</span>
-                        )}
-                      </div>
-                      {item.description && (
-                        <div className={styles.cardMeta}>{item.description}</div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+      <div className={styles.layout}>
+        <section className={styles.listPanel}>
+          <div className={styles.tabs}>
+            <button
+              className={tab === 'roles' ? styles.tabActive : styles.tab}
+              onClick={() => setTab('roles')}
+            >
+              {t('Roles', '角色')} ({roles.length})
+            </button>
+            <button
+              className={tab === 'groups' ? styles.tabActive : styles.tab}
+              onClick={() => setTab('groups')}
+            >
+              {t('Groups', '群组')} ({groups.length})
+            </button>
           </div>
+          <div className={styles.list}>
+            {tab === 'roles' && roles.map(role => (
+              <button
+                key={role.id}
+                className={selectedRoleId === role.id ? styles.itemActive : styles.item}
+                onClick={() => setSelected({ type: 'role', id: role.id })}
+              >
+                <strong>{role.name}</strong>
+                <span>{role.is_lead ? t('Dispatcher candidate', '可做调度员') : role.id}</span>
+              </button>
+            ))}
+            {tab === 'groups' && groups.map(group => (
+              <button
+                key={group.id}
+                className={selectedGroupId === group.id ? styles.itemActive : styles.item}
+                onClick={() => setSelected({ type: 'group', id: group.id })}
+              >
+                <strong>{group.name}</strong>
+                <span>{group.description || group.id}</span>
+              </button>
+            ))}
+          </div>
+        </section>
 
-          {/* Right Panel - Detail View */}
-          <div className={styles.detailPanel}>
-            {!hasSelection && (
-              <div className={styles.detailEmpty}>
-                {t('Select an item to view details', '选择一个项目查看详情')}
+        <section className={styles.mainPanel}>
+          <article className={styles.card}>
+            <header className={styles.cardHeader}>
+              <h3>{t('Role Management', '角色管理')}</h3>
+              <div className={styles.rowActions}>
+                {selectedRole && (
+                  <button className={styles.dangerButton} onClick={() => void deleteRole(selectedRole.id)}>
+                    {t('Delete Role', '删除角色')}
+                  </button>
+                )}
+                <button className={styles.secondaryButton} onClick={resetRoleForm}>
+                  {t('New Role', '新建角色')}
+                </button>
               </div>
-            )}
+            </header>
 
-            {/* Role Detail */}
-            {selectedRole && (
-              <>
-                <div className={styles.detailHeader}>
-                  <h2>{selectedRole.name}</h2>
-                  <div className={styles.detailActions}>
+            <div className={styles.formGrid}>
+              <label>
+                <span>{t('Name', '名称')}</span>
+                <input
+                  value={roleForm.name}
+                  onChange={event => setRoleForm(prev => ({ ...prev, name: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>{t('Model Provider', '模型 Provider')}</span>
+                <select
+                  value={roleForm.provider}
+                  onChange={event => setRoleForm(prev => ({ ...prev, provider: event.target.value }))}
+                >
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Claude</option>
+                  <option value="gemini">Gemini</option>
+                </select>
+              </label>
+              <label>
+                <span>{t('Model', '模型')}</span>
+                <input
+                  value={roleForm.model}
+                  onChange={event => setRoleForm(prev => ({ ...prev, model: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>{t('Temperature', '温度')}</span>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  max={2}
+                  value={roleForm.temperature}
+                  onChange={event => setRoleForm(prev => ({ ...prev, temperature: Number.parseFloat(event.target.value) || 0 }))}
+                />
+              </label>
+            </div>
+
+            <label className={styles.fullWidth}>
+              <span>{t('Description', '描述')}</span>
+              <input
+                value={roleForm.description}
+                onChange={event => setRoleForm(prev => ({ ...prev, description: event.target.value }))}
+              />
+            </label>
+
+            <label className={styles.fullWidth}>
+              <span>{t('System Prompt', '系统提示词')}</span>
+              <textarea
+                value={roleForm.systemPrompt}
+                onChange={event => setRoleForm(prev => ({ ...prev, systemPrompt: event.target.value }))}
+              />
+            </label>
+
+            <label className={styles.checkbox}>
+              <input
+                type="checkbox"
+                checked={roleForm.isLead}
+                onChange={event => setRoleForm(prev => ({ ...prev, isLead: event.target.checked }))}
+              />
+              <span>{t('Mark as Dispatcher/Leader', '设为调度员 / Leader')}</span>
+            </label>
+
+            <div className={styles.transferSection}>
+              <h4>{t('Capability Mount (Tools + Skills)', '能力挂载（工具 + 技能）')}</h4>
+              <div className={styles.transferGrid}>
+                <div className={styles.transferList}>
+                  <header>{t('Available', '可选')}</header>
+                  {availableCapabilities.map(cap => (
                     <button
-                      className={styles.toolbarBtn}
-                      onClick={() => showToast('error', t('Not implemented yet', '尚未实现'))}
+                      key={cap}
+                      className={styles.transferItem}
+                      onClick={() => setAssignedCapabilities(prev => [...prev, cap])}
                     >
-                      {t('Edit', '编辑')}
+                      + {cap}
                     </button>
+                  ))}
+                </div>
+                <div className={styles.transferList}>
+                  <header>{t('Assigned', '已挂载')}</header>
+                  {assignedCapabilities.map(cap => (
                     <button
-                      className={styles.toolbarBtnDanger}
-                      onClick={() => setShowDeleteConfirm(true)}
+                      key={cap}
+                      className={styles.transferItemActive}
+                      onClick={() => setAssignedCapabilities(prev => prev.filter(item => item !== cap))}
                     >
-                      {t('Delete', '删除')}
+                      - {cap}
                     </button>
-                  </div>
+                  ))}
                 </div>
+              </div>
+            </div>
 
-                <div className={styles.detailSection}>
-                  <h3>{t('Basic Information', '基本信息')}</h3>
-                  <p>{t('Name', '名称')}: {selectedRole.name}</p>
-                  <p>{t('Type', '类型')}: {selectedRole.is_lead ? t('Team Lead', '团队负责人') : t('Member', '成员')}</p>
-                  {selectedRole.description && (
-                    <p>{t('Description', '描述')}: {selectedRole.description}</p>
-                  )}
-                </div>
+            <button className={styles.primaryButton} onClick={() => void saveRole()} disabled={saving}>
+              {saving ? t('Saving...', '保存中...') : t('Save Role', '保存角色')}
+            </button>
+          </article>
 
-                <div className={styles.detailSection}>
-                  <h3>{t('System Prompt', '系统提示')}</h3>
-                  <pre className={styles.promptBlock}>{selectedRole.system_prompt}</pre>
-                </div>
+          <article className={styles.card}>
+            <header className={styles.cardHeader}>
+              <h3>{t('Group Management', '群组管理')}</h3>
+              {selectedGroup && (
+                <button className={styles.dangerButton} onClick={() => void deleteGroup(selectedGroup.id)}>
+                  {t('Delete Group', '删除群组')}
+                </button>
+              )}
+            </header>
 
-                {(selectedRole.allowed_tools || selectedRole.denied_tools) && (
-                  <div className={styles.detailSection}>
-                    <h3>{t('Tool Permissions', '工具权限')}</h3>
-                    {selectedRole.allowed_tools && selectedRole.allowed_tools.length > 0 && (
-                      <div>
-                        <span>{t('Allowed:', '允许：')}</span>
-                        <div className={styles.tagList}>
-                          {selectedRole.allowed_tools.map((tool: string) => (
-                            <span key={tool} className={styles.tag}>{tool}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {selectedRole.denied_tools && selectedRole.denied_tools.length > 0 && (
-                      <div>
-                        <span>{t('Denied:', '禁止：')}</span>
-                        <div className={styles.tagList}>
-                          {selectedRole.denied_tools.map((tool: string) => (
-                            <span key={tool} className={styles.tagDenied}>{tool}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+            <div className={styles.formGrid}>
+              <label>
+                <span>{t('Group Name', '群组名称')}</span>
+                <input value={groupFormName} onChange={event => setGroupFormName(event.target.value)} />
+              </label>
+              <label>
+                <span>{t('Description', '描述')}</span>
+                <input value={groupFormDesc} onChange={event => setGroupFormDesc(event.target.value)} />
+              </label>
+            </div>
+            <button className={styles.secondaryButton} onClick={() => void createNewGroup()}>
+              {t('Create Group', '创建群组')}
+            </button>
 
-                {roleStats && (
-                  <div className={styles.detailSection}>
-                    <h3>{t('Usage Statistics', '使用统计')}</h3>
-                    <div className={styles.statsGrid}>
-                      <div className={styles.statCard}>
-                        <div className={styles.statValue}>{roleStats.group_count}</div>
-                        <div className={styles.statLabel}>{t('Groups Using', '使用的团队')}</div>
-                      </div>
-                    </div>
-                    {roleStats.groups.length > 0 && (
-                      <div>
-                        {roleStats.groups.map(g => (
-                          <button
-                            key={g.id}
-                            className={styles.toolbarBtn}
-                            onClick={() => {
-                              setActiveTab('groups');
-                              setSelected({ type: 'group', id: g.id });
-                            }}
-                          >
-                            {g.name}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Group Detail */}
             {selectedGroup && (
               <>
-                <div className={styles.detailHeader}>
-                  <h2>{selectedGroup.name}</h2>
-                  <div className={styles.detailActions}>
-                    <button
-                      className={styles.toolbarBtn}
-                      onClick={() => showToast('error', t('Not implemented yet', '尚未实现'))}
-                    >
-                      {t('Manage Members', '管理成员')}
-                    </button>
-                    <button
-                      className={styles.toolbarBtn}
-                      onClick={() => showToast('error', t('Not implemented yet', '尚未实现'))}
-                    >
-                      {t('Edit', '编辑')}
-                    </button>
-                    <button
-                      className={styles.toolbarBtnDanger}
-                      onClick={() => setShowDeleteConfirm(true)}
-                    >
-                      {t('Delete', '删除')}
-                    </button>
-                  </div>
+                <div className={styles.memberToolbar}>
+                  <select value={memberRoleId} onChange={event => setMemberRoleId(event.target.value)}>
+                    {roles.map(role => (
+                      <option key={role.id} value={role.id}>{role.name}</option>
+                    ))}
+                  </select>
+                  <button className={styles.primaryButton} onClick={() => void assignMember()}>
+                    {t('Add Member', '添加成员')}
+                  </button>
                 </div>
 
-                <div className={styles.detailSection}>
-                  <h3>{t('Basic Information', '基本信息')}</h3>
-                  <p>{t('Name', '名称')}: {selectedGroup.name}</p>
-                  {selectedGroup.description && (
-                    <p>{t('Description', '描述')}: {selectedGroup.description}</p>
-                  )}
-                  <p>{t('Members', '成员')}: {selectedGroupMembers.length}</p>
+                <div className={styles.memberList}>
+                  {normalizedMembers.map((member, index) => (
+                    <article key={member.id} className={styles.memberCard}>
+                      <div>
+                        <strong>{roleNameById[member.role_id] ?? member.role_id}</strong>
+                        <p>
+                          {index === 0
+                            ? t('Dispatcher', '调度员')
+                            : t(`Ordinal ${member.ordinal}`, `顺位 ${member.ordinal}`)}
+                        </p>
+                      </div>
+                      <div className={styles.rowActions}>
+                        <button onClick={() => void moveMember(member.id, 'up')}>↑</button>
+                        <button onClick={() => void moveMember(member.id, 'down')}>↓</button>
+                        <button onClick={() => void setDispatcher(member.id)}>
+                          {t('Set Dispatcher', '设为调度')}
+                        </button>
+                        <button onClick={() => void removeMember(member.group_id, member.id)}>
+                          {t('Remove', '移除')}
+                        </button>
+                      </div>
+                    </article>
+                  ))}
                 </div>
-
-                {selectedGroupMembers.length > 0 && (
-                  <div className={styles.detailSection}>
-                    <h3>{t('Team Members', '团队成员')}</h3>
-                    <table className={styles.membersTable}>
-                      <thead>
-                        <tr>
-                          <th>{t('Order', '顺序')}</th>
-                          <th>{t('Role', '角色')}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedGroupMembers.map(member => (
-                          <tr key={member.id}>
-                            <td>#{member.ordinal}</td>
-                            <td>{member.role_id}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {groupStats && (
-                  <div className={styles.detailSection}>
-                    <h3>{t('Usage Statistics', '使用统计')}</h3>
-                    <div className={styles.statsGrid}>
-                      <div className={styles.statCard}>
-                        <div className={styles.statValue}>{groupStats.run_count}</div>
-                        <div className={styles.statLabel}>{t('Total Runs', '总运行次数')}</div>
-                      </div>
-                      <div className={styles.statCard}>
-                        <div className={styles.statValue}>{groupStats.completed_count}</div>
-                        <div className={styles.statLabel}>{t('Completed', '已完成')}</div>
-                      </div>
-                      <div className={styles.statCard}>
-                        <div className={styles.statValue}>{groupStats.failed_count}</div>
-                        <div className={styles.statLabel}>{t('Failed', '失败')}</div>
-                      </div>
-                      <div className={styles.statCard}>
-                        <div className={styles.statValue}>
-                          {(groupStats.success_rate * 100).toFixed(1)}%
-                        </div>
-                        <div className={styles.statLabel}>{t('Success Rate', '成功率')}</div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {groupRuns.length > 0 && (
-                  <div className={styles.detailSection}>
-                    <h3>{t('Recent Runs', '最近运行')}</h3>
-                    <div>
-                      {groupRuns.slice(0, 10).map(run => (
-                        <div key={run.run_id} className={styles.runItem}>
-                          <span className={styles[`status${run.status}`] || styles.runStatus}>
-                            {run.status}
-                          </span>
-                          <span className={styles.runInput}>{run.input}</span>
-                          <span className={styles.runTime}>
-                            {new Date(run.created_at).toLocaleString()}
-                            {run.duration_ms && ` · ${(run.duration_ms / 1000).toFixed(1)}s`}
-                          </span>
-                          <button
-                            className={styles.toolbarBtn}
-                            onClick={() => navigate(`/trace/${run.run_id}`)}
-                          >
-                            {t('View', '查看')}
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </>
             )}
-          </div>
+          </article>
+        </section>
+      </div>
+
+      {toast && (
+        <div className={toast.type === 'success' ? styles.toastSuccess : styles.toastError}>
+          {toast.message}
         </div>
-
-        {/* Toast Notification */}
-        {toast && (
-          <div className={toast.type === 'success' ? styles.toastSuccess : styles.toastError}>
-            {toast.message}
-          </div>
-        )}
-
-        {/* Modals - Simplified placeholders for now */}
-        {showDeleteConfirm && (
-          <div className={styles.modalOverlay} onClick={() => setShowDeleteConfirm(false)}>
-            <div className={styles.modal} onClick={e => e.stopPropagation()}>
-              <h3 className={styles.modalTitle}>{t('Confirm Delete', '确认删除')}</h3>
-              <p className={styles.confirmText}>{t('Are you sure you want to delete this item?', '确定要删除此项吗？')}</p>
-              <div className={styles.modalFooter}>
-                <button className={styles.btnCancel} onClick={() => setShowDeleteConfirm(false)}>
-                  {t('Cancel', '取消')}
-                </button>
-                <button className={styles.btnDanger} onClick={() => void handleDelete()}>
-                  {t('Delete', '删除')}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </>
+      )}
     </AppShell>
   );
 }

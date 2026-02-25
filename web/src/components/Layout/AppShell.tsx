@@ -1,7 +1,8 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAppPreferences } from '../../context/AppPreferencesContext';
 import { useLocaleText } from '../../i18n/useLocaleText';
+import { apiClient } from '../../api/client';
 import styles from './AppShell.module.css';
 
 export interface AppShellProps {
@@ -22,41 +23,62 @@ interface NavItem {
 const userNavItems: NavItem[] = [
   {
     to: '/',
-    labelEn: 'Chat',
-    labelZh: '对话',
-    descriptionEn: 'Talk to your PA',
-    descriptionZh: '和你的助理对话',
+    labelEn: 'Playground',
+    labelZh: '游乐场',
+    descriptionEn: 'Debug chat with tenant headers',
+    descriptionZh: '带租户头的调试对话',
+  },
+  {
+    to: '/emulator',
+    labelEn: 'PA Emulator',
+    labelZh: 'PA 模拟器',
+    descriptionEn: 'IM simulation and routing x-ray',
+    descriptionZh: 'IM 模拟与路由透视',
+  },
+  {
+    to: '/dashboard',
+    labelEn: 'Dashboard',
+    labelZh: '监控大盘',
+    descriptionEn: 'Runtime health and alerts',
+    descriptionZh: 'Runtime 健康与告警',
   },
   {
     to: '/runs',
-    labelEn: 'History',
-    labelZh: '历史',
-    descriptionEn: 'Past tasks & traces',
-    descriptionZh: '历史任务与追踪',
+    labelEn: 'Runs',
+    labelZh: '运行列表',
+    descriptionEn: 'Filters, status, and queue ops',
+    descriptionZh: '筛选状态与队列操作',
+  },
+  {
+    to: '/inbox',
+    labelEn: 'Approvals',
+    labelZh: '审批中心',
+    descriptionEn: 'Human-in-the-loop inbox',
+    descriptionZh: '人工审批待办',
   },
 ];
 
 const adminNavItems: NavItem[] = [
   {
     to: '/orchestrator',
-    labelEn: 'Team Studio',
-    labelZh: '团队工作台',
-    descriptionEn: 'Build Experts & Teams',
-    descriptionZh: '构建专家与团队',
+    labelEn: 'Swarm Studio',
+    labelZh: '编排中心',
+    descriptionEn: 'Role and group orchestration',
+    descriptionZh: 'Role 与 Group 编排',
   },
   {
     to: '/skills',
-    labelEn: 'Skills',
-    labelZh: '技能',
-    descriptionEn: 'Capability Catalog',
-    descriptionZh: '能力目录',
+    labelEn: 'Plugin Registry',
+    labelZh: '插件注册表',
+    descriptionEn: 'Skills, schemas, and toggles',
+    descriptionZh: '技能、Schema 与开关',
   },
   {
     to: '/blackboard',
-    labelEn: 'Team Notes',
-    labelZh: '团队笔记',
-    descriptionEn: 'Shared Decisions & Evidence',
-    descriptionZh: '共享决策与证据',
+    labelEn: 'Blackboard',
+    labelZh: '黑板记忆',
+    descriptionEn: 'Three-tier memory control',
+    descriptionZh: '三层记忆透视与控制',
   },
 ];
 
@@ -71,7 +93,7 @@ function isPathActive(pathname: string, navPath: string): boolean {
 
 export function AppShell({ title, subtitle, actions, children }: AppShellProps) {
   const location = useLocation();
-  const { locale, setLocale } = useAppPreferences();
+  const { locale, setLocale, tenantScope } = useAppPreferences();
   const { t } = useLocaleText();
   const [adminOpen, setAdminOpen] = useState(() =>
     adminNavItems.some(item => isPathActive(location.pathname, item.to)),
@@ -84,6 +106,10 @@ export function AppShell({ title, subtitle, actions, children }: AppShellProps) 
     }
     return t(activeItem.labelEn, activeItem.labelZh);
   }, [location.pathname, t]);
+
+  useEffect(() => {
+    apiClient.setScope(tenantScope);
+  }, [tenantScope]);
 
   return (
     <div className={styles.shell}>

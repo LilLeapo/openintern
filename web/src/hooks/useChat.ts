@@ -3,9 +3,10 @@
  */
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { apiClient } from '../api/client';
+import { apiClient, type RunLLMConfig } from '../api/client';
 import { useSSE } from './useSSE';
 import type { ChatMessage, ChatMessageAttachment } from '../types/events';
+import { recordRunScope } from '../utils/runScopeRegistry';
 
 interface ActiveRunState {
   runId: string;
@@ -40,10 +41,17 @@ export interface UseChatResult {
   error: Error | null;
   escalation: EscalationInfo | null;
   pendingApproval: PendingApproval | null;
-  sendMessage: (input: string, files?: File[]) => Promise<void>;
+  sendMessage: (input: string, files?: File[], options?: SendMessageOptions) => Promise<void>;
   clearMessages: () => void;
   approveToolCall: () => Promise<void>;
   rejectToolCall: (reason?: string) => Promise<void>;
+}
+
+export interface SendMessageOptions {
+  mode?: 'pa' | 'role' | 'group';
+  roleId?: string;
+  groupId?: string;
+  llmConfig?: RunLLMConfig;
 }
 
 function generateId(): string {
@@ -331,7 +339,7 @@ export function useChat(sessionKey: string): UseChatResult {
   }, [events, clearEvents]);
 
   const sendMessage = useCallback(
-    async (input: string, files?: File[]) => {
+    async (input: string, files?: File[], options: SendMessageOptions = {}) => {
       if (!input.trim() || activeRunRef.current) return;
 
       // Upload files first if any
@@ -367,10 +375,32 @@ export function useChat(sessionKey: string): UseChatResult {
         const attachmentRefs = attachments.length > 0
           ? attachments.map((a) => ({ upload_id: a.upload_id }))
           : undefined;
-        const response = await apiClient.createRun(sessionKey, input, undefined, attachmentRefs);
-        const nextRun = { runId: response.run_id, sessionKey };
-        setActiveRun(nextRun);
-        setLatestRunBySession(prev => ({ ...prev, [sessionKey]: response.run_id }));
+        if (options.mode === 'group' && options.groupId) {
+          const groupRun = await apiClient.createGroupRun(options.groupId, {
+            input,
+            session_key: sessionKey,
+            ...(options.llmConfig ? { llm_config: options.llmConfig } : {}),
+          });
+          recordRunScope(groupRun.run_id, apiClient.getScope(), { groupId: options.groupId });
+          const nextRun = { runId: groupRun.run_id, sessionKey };
+          setActiveRun(nextRun);
+          setLatestRunBySession(prev => ({ ...prev, [sessionKey]: groupRun.run_id }));
+        } else {
+          const agentId = options.mode === 'role' && options.roleId
+            ? options.roleId
+            : undefined;
+          const response = await apiClient.createRun(
+            sessionKey,
+            input,
+            options.llmConfig,
+            attachmentRefs,
+            agentId ? { agentId } : undefined,
+          );
+          recordRunScope(response.run_id, apiClient.getScope());
+          const nextRun = { runId: response.run_id, sessionKey };
+          setActiveRun(nextRun);
+          setLatestRunBySession(prev => ({ ...prev, [sessionKey]: response.run_id }));
+        }
       } catch (err) {
         setErrorBySession(prev => ({
           ...prev,

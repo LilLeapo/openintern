@@ -3,7 +3,18 @@
  */
 
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { ChatPage, TracePage, RunsPage, BlackboardPage, SkillsPage, GroupRunPage, TeamManagementPage } from './pages';
+import {
+  ChatPage,
+  DashboardPage,
+  TracePage,
+  RunsPage,
+  BlackboardPage,
+  SkillsPage,
+  GroupRunPage,
+  TeamManagementPage,
+  InboxPage,
+  EmulatorPage,
+} from './pages';
 import { AppPreferencesProvider } from './context/AppPreferencesContext';
 
 export function App() {
@@ -12,6 +23,9 @@ export function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<ChatPage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/inbox" element={<InboxPage />} />
+          <Route path="/emulator" element={<EmulatorPage />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/trace/:runId" element={<TracePage />} />
           <Route path="/blackboard" element={<BlackboardPage />} />

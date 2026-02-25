@@ -45,14 +45,14 @@ export function ApprovalCard({ approval, onApprove, onReject }: ApprovalCardProp
     }
   };
 
-  const getRiskLevelClass = (level: string): string => {
+const getRiskLevelClass = (level: string): string => {
     switch (level.toLowerCase()) {
       case 'high':
-        return styles.riskHigh;
+        return styles.riskHigh ?? '';
       case 'medium':
-        return styles.riskMedium;
+        return styles.riskMedium ?? '';
       case 'low':
-        return styles.riskLow;
+        return styles.riskLow ?? '';
       default:
         return '';
     }

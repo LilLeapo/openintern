@@ -86,6 +86,11 @@
   color: #6d28d9;
 }
 
+.status.suspended {
+  background: #ffe4e6;
+  color: #be123c;
+}
+
 .status.failed,
 .status.cancelled {
   background: var(--danger-soft);
