@@ -16,6 +16,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         },
       },
       source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
       handler: (params) => {
         const includeTools = params['include_tools'] !== false;
         const provider = extractString(params['provider']);
@@ -46,6 +47,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         required: ['skill_id'],
       },
       source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
       handler: (params) => {
         const skillId = extractString(params['skill_id']);
         if (!skillId) throw new ToolError('skill_id is required', 'skills_get');

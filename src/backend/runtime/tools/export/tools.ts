@@ -16,6 +16,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         required: ['run_id'],
       },
       source: 'builtin',
+      metadata: { risk_level: 'low', mutating: false, supports_parallel: true },
       handler: async (params) => {
         const runId = extractString(params['run_id']);
         if (!runId) throw new ToolError('run_id is required', 'export_trace');
