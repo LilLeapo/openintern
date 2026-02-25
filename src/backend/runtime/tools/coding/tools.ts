@@ -25,15 +25,22 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         if (!command) throw new ToolError('command is required', 'exec_command');
         const timeoutMs = typeof params['timeout_ms'] === 'number' ? params['timeout_ms'] : 30000;
         const cwdRel = extractString(params['cwd']);
-        const cwd = cwdRel ? resolveWithinWorkDir(ctx.workDir, cwdRel) : ctx.workDir;
+        const cwd = cwdRel ? resolveWithinWorkDir(ctx.workDir, cwdRel, 'exec_command') : ctx.workDir;
         return new Promise((resolve) => {
           execFile('sh', ['-c', command], {
             cwd,
             timeout: Math.min(timeoutMs, 120000),
             maxBuffer: 1024 * 1024,
           }, (err, stdout, stderr) => {
+            let exitCode = 0;
+            if (err) {
+              // child_process error: status holds the numeric exit code,
+              // code may be a string error code like 'ERR_CHILD_PROCESS_STDIO_FINAL_CLOSE'
+              const status = (err as NodeJS.ErrnoException & { status?: number }).status;
+              exitCode = typeof status === 'number' ? status : 1;
+            }
             resolve({
-              exit_code: err ? (err as NodeJS.ErrnoException & { code?: number }).code ?? 1 : 0,
+              exit_code: exitCode,
               stdout: stdout.slice(0, 50000),
               stderr: stderr.slice(0, 10000),
             });
@@ -58,21 +65,34 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         const filePath = extractString(params['path']);
         const patch = extractString(params['patch']);
         if (!filePath || !patch) throw new ToolError('path and patch are required', 'apply_patch');
-        const resolved = resolveWithinWorkDir(ctx.workDir, filePath);
+        const resolved = resolveWithinWorkDir(ctx.workDir, filePath, 'apply_patch');
         const original = await fs.promises.readFile(resolved, 'utf-8');
         const lines = original.split('\n');
         const patchLines = patch.split('\n');
+        // Track cumulative shift from previous hunks (insertions - deletions)
+        let cumulativeShift = 0;
         let offset = 0;
         for (const pl of patchLines) {
           if (pl.startsWith('@@')) {
             const match = pl.match(/@@ -(\d+)/);
-            if (match?.[1] !== undefined) offset = parseInt(match[1], 10) - 1;
-          } else if (pl.startsWith('-') && !pl.startsWith('---')) {
-            if (offset < lines.length) lines.splice(offset, 1);
-          } else if (pl.startsWith('+') && !pl.startsWith('+++')) {
+            if (match?.[1] !== undefined) {
+              // Apply cumulative shift from prior hunks to the new hunk start
+              offset = parseInt(match[1], 10) - 1 + cumulativeShift;
+            }
+          } else if (pl.startsWith('---') || pl.startsWith('+++')) {
+            // Skip file header lines
+          } else if (pl.startsWith('-')) {
+            if (offset < lines.length) {
+              lines.splice(offset, 1);
+              cumulativeShift--;
+            }
+            // Don't advance offset — next line is now at same index
+          } else if (pl.startsWith('+')) {
             lines.splice(offset, 0, pl.slice(1));
             offset++;
+            cumulativeShift++;
           } else if (!pl.startsWith('\\')) {
+            // Context line — just advance
             offset++;
           }
         }
