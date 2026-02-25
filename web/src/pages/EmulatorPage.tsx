@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from '../components/Layout/AppShell';
-import { apiClient } from '../api/client';
+import { apiClient, APIError } from '../api/client';
 import type { SwarmStatusSnapshot } from '../api/client';
 import { useSSE } from '../hooks/useSSE';
 import { useLocaleText } from '../i18n/useLocaleText';
@@ -53,6 +53,14 @@ function sanitizeSessionPart(value: string): string {
   return normalized || 'default';
 }
 
+function isSwarmToolName(toolName: string): boolean {
+  return (
+    toolName === 'dispatch_subtasks'
+    || toolName === 'handoff_to'
+    || toolName === 'escalate_to_group'
+  );
+}
+
 export function EmulatorPage() {
   const { t } = useLocaleText();
   const { tenantScope, setTenantScope } = useAppPreferences();
@@ -76,6 +84,8 @@ export function EmulatorPage() {
   const [swarmSnapshot, setSwarmSnapshot] = useState<SwarmStatusSnapshot | null>(null);
   const [swarmError, setSwarmError] = useState<string | null>(null);
   const [swarmUpdatedAt, setSwarmUpdatedAt] = useState<string | null>(null);
+  const [swarmMonitorEnabled, setSwarmMonitorEnabled] = useState(false);
+  const [swarmApiUnsupported, setSwarmApiUnsupported] = useState(false);
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState('');
@@ -121,13 +131,14 @@ export function EmulatorPage() {
   useEffect(() => {
     processedEventCountRef.current = 0;
     streamingMessageIdRef.current = null;
+    setSwarmSnapshot(null);
+    setSwarmError(null);
+    setSwarmUpdatedAt(null);
+    setSwarmMonitorEnabled(false);
   }, [activeRunId]);
 
   useEffect(() => {
-    if (!activeRunId) {
-      setSwarmSnapshot(null);
-      setSwarmError(null);
-      setSwarmUpdatedAt(null);
+    if (!activeRunId || !swarmMonitorEnabled || swarmApiUnsupported) {
       return;
     }
 
@@ -153,6 +164,12 @@ export function EmulatorPage() {
         }
       } catch (err) {
         if (cancelled) return;
+        if (err instanceof APIError && err.statusCode === 404) {
+          setSwarmApiUnsupported(true);
+          setSwarmMonitorEnabled(false);
+          setSwarmError(null);
+          return;
+        }
         setSwarmError(err instanceof Error ? err.message : t('Failed to load swarm status', '加载 Swarm 状态失败'));
       }
     };
@@ -168,14 +185,12 @@ export function EmulatorPage() {
         window.clearInterval(timerId);
       }
     };
-  }, [activeRunId, t]);
+  }, [activeRunId, swarmMonitorEnabled, swarmApiUnsupported, t]);
 
   useEffect(() => {
     if (events.length === 0) return;
 
-    if (debugMode) {
-      setEventLog(events);
-    }
+    setEventLog(events);
 
     const startIndex = Math.min(processedEventCountRef.current, events.length);
     const pendingEvents = events.slice(startIndex);
@@ -205,6 +220,12 @@ export function EmulatorPage() {
       }
 
       if (event.type === 'run.suspended' || event.type === 'tool.requires_approval') {
+        if (event.type === 'run.suspended') {
+          const payload = event.payload as { toolName?: string };
+          if (payload.toolName && isSwarmToolName(payload.toolName)) {
+            setSwarmMonitorEnabled(true);
+          }
+        }
         setAsyncStatus('waiting');
         setMessages(prev => [...prev, {
           id: genId('status_wait'),
@@ -224,6 +245,13 @@ export function EmulatorPage() {
           ts: new Date().toISOString(),
         }]);
         continue;
+      }
+
+      if (event.type === 'tool.called') {
+        const payload = event.payload as { toolName?: string };
+        if (payload.toolName && isSwarmToolName(payload.toolName)) {
+          setSwarmMonitorEnabled(true);
+        }
       }
 
       if (event.type === 'run.completed') {
@@ -266,9 +294,10 @@ export function EmulatorPage() {
     }
 
     processedEventCountRef.current = events.length;
-  }, [debugMode, events, t]);
+  }, [events, t]);
 
   const routeHint = useMemo(() => classifyRoute(eventLog), [eventLog]);
+  const showSwarmMonitor = swarmMonitorEnabled && !swarmApiUnsupported;
   const swarmProgress = useMemo(() => {
     if (!swarmSnapshot || swarmSnapshot.summary.total === 0) return 0;
     const done = swarmSnapshot.summary.completed + swarmSnapshot.summary.failed;
@@ -367,6 +396,11 @@ export function EmulatorPage() {
     setInput('');
     setEventLog([]);
     streamingMessageIdRef.current = null;
+    setSwarmSnapshot(null);
+    setSwarmError(null);
+    setSwarmUpdatedAt(null);
+    setSwarmMonitorEnabled(false);
+    setSwarmApiUnsupported(false);
 
     try {
       const response = await apiClient.createRun(
@@ -577,7 +611,7 @@ export function EmulatorPage() {
           <article className={styles.panel}>
             <div className={styles.panelHeader}>
               <h3>{t('Swarm Monitor', 'Swarm 运行看板')}</h3>
-              {activeRunId ? (
+              {activeRunId && showSwarmMonitor ? (
                 <a
                   className={styles.traceLink}
                   href={`/trace/${activeRunId}`}
@@ -593,7 +627,20 @@ export function EmulatorPage() {
                 {t('Send a request to inspect swarm execution details.', '发送一条请求后可查看 Swarm 执行细节。')}
               </p>
             )}
-            {activeRunId && (
+            {activeRunId && !showSwarmMonitor && (
+              <p className={styles.placeholder}>
+                {swarmApiUnsupported
+                  ? t(
+                      'Current backend does not support /swarm endpoint. Monitor is disabled.',
+                      '当前后端不支持 /swarm 接口，运行看板已自动关闭。',
+                    )
+                  : t(
+                      'Monitor will start when swarm delegation is triggered.',
+                      '仅在触发 Swarm 委派后启动运行看板。',
+                    )}
+              </p>
+            )}
+            {activeRunId && showSwarmMonitor && (
               <>
                 <div className={styles.swarmHeader}>
                   <span>
