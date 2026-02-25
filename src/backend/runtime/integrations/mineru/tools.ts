@@ -1,6 +1,6 @@
 import type { MineruExtractOptions } from '../../../../types/mineru.js';
 import type { RuntimeTool, ToolContext } from '../../tools/_helpers.js';
-import { extractString, extractBoolean, extractNumber } from '../../tools/_helpers.js';
+import { extractString, extractBoolean, extractNumber, resolveWithinWorkDir } from '../../tools/_helpers.js';
 import { ToolError } from '../../../../utils/errors.js';
 
 export function register(ctx: ToolContext): RuntimeTool[] {
@@ -48,6 +48,8 @@ export function register(ctx: ToolContext): RuntimeTool[] {
         if (fileUrl && filePath) {
           throw new ToolError('file_url and file_path cannot both be set', 'mineru_ingest_pdf');
         }
+        const resolvedFilePath = filePath ? resolveWithinWorkDir(ctx.workDir, filePath) : null;
+
         const title = extractString(params['title']);
         const sourceKey = extractString(params['source_key']);
         const projectShared = extractBoolean(params['project_shared']);
@@ -65,7 +67,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
             projectId: ctx.scope.projectId,
           },
           ...(fileUrl ? { file_url: fileUrl } : {}),
-          ...(filePath ? { file_path: filePath } : {}),
+          ...(resolvedFilePath ? { file_path: resolvedFilePath } : {}),
           ...(title ? { title } : {}),
           ...(sourceKey ? { source_key: sourceKey } : {}),
           ...(projectShared !== null ? { project_shared: projectShared } : {}),

@@ -262,8 +262,10 @@ describe('RuntimeToolRouter', () => {
 
   it('calls mineru_ingest_pdf with local file path', async () => {
     const router = createRouter();
+    await fs.promises.mkdir(path.join(workDir, 'docs'), { recursive: true });
+    await fs.promises.writeFile(path.join(workDir, 'docs', 'demo.pdf'), '%PDF-1.4\n', 'utf-8');
     const result = await router.callTool('mineru_ingest_pdf', {
-      file_path: '/tmp/demo.pdf',
+      file_path: 'docs/demo.pdf',
     });
 
     expect(result.success).toBe(true);
@@ -273,7 +275,7 @@ describe('RuntimeToolRouter', () => {
         userId: 'user_test',
         projectId: null,
       },
-      file_path: '/tmp/demo.pdf',
+      file_path: path.join(workDir, 'docs', 'demo.pdf'),
     });
   });
 
