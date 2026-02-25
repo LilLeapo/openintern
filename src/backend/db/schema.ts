@@ -304,6 +304,11 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
       ALTER TABLE runs ADD CONSTRAINT runs_status_check_v2
         CHECK (status IN ('pending', 'running', 'waiting', 'completed', 'failed', 'cancelled'));
     END IF;
+  EXCEPTION
+    WHEN check_violation THEN
+      -- Legacy databases may already contain values introduced by later schema versions
+      -- (e.g. 'suspended'). Skip v2 so v3/v4 reconciliation can continue.
+      NULL;
   END $$`,
 
   // ─── Phase C: Permission Passthrough ─────────────────────────
@@ -344,6 +349,10 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
       ALTER TABLE runs ADD CONSTRAINT runs_status_check_v3
         CHECK (status IN ('pending', 'running', 'waiting', 'suspended', 'completed', 'failed', 'cancelled'));
     END IF;
+  EXCEPTION
+    WHEN check_violation THEN
+      -- Keep migration moving; canonical v4 block below will rebuild safely.
+      NULL;
   END $$`,
   `DO $$ BEGIN
     IF NOT EXISTS (
@@ -389,8 +398,16 @@ export const POSTGRES_SCHEMA_STATEMENTS: string[] = [
       WHERE conname = 'runs_status_check_v4'
         AND conrelid = 'runs'::regclass
     ) THEN
-      ALTER TABLE runs ADD CONSTRAINT runs_status_check_v4
-        CHECK (status IN ('pending', 'running', 'waiting', 'suspended', 'completed', 'failed', 'cancelled'));
+      BEGIN
+        ALTER TABLE runs ADD CONSTRAINT runs_status_check_v4
+          CHECK (status IN ('pending', 'running', 'waiting', 'suspended', 'completed', 'failed', 'cancelled'));
+      EXCEPTION
+        WHEN check_violation THEN
+          -- Keep existing legacy rows untouched for now but enforce the rule on new writes.
+          ALTER TABLE runs ADD CONSTRAINT runs_status_check_v4
+            CHECK (status IN ('pending', 'running', 'waiting', 'suspended', 'completed', 'failed', 'cancelled'))
+            NOT VALID;
+      END;
     END IF;
   END $$`,
 
