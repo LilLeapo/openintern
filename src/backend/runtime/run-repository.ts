@@ -756,9 +756,16 @@ export class RunRepository {
         `UPDATE run_dependencies
         SET status = $2, result = $3, error = $4, completed_at = NOW()
         WHERE child_run_id = $1
+          AND status = 'pending'
         RETURNING *`,
         [childRunId, status, result ?? null, error ?? null]
       );
+
+      const updatedRow = updated.rows[0];
+      if (!updatedRow) {
+        await client.query('COMMIT');
+        return null;
+      }
 
       // Count remaining pending
       const countResult = await client.query<{ cnt: string }>(
@@ -768,9 +775,6 @@ export class RunRepository {
       );
 
       await client.query('COMMIT');
-
-      const updatedRow = updated.rows[0];
-      if (!updatedRow) return null;
 
       return {
         dep: mapDepRow(updatedRow),
