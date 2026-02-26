@@ -130,11 +130,14 @@ describe('RuntimeToolRouter', () => {
         'feishu_ingest_doc',
         'mineru_ingest_pdf',
         'read_file',
+        'replace_in_file',
         'export_trace',
         'skills_list',
         'skills_get',
       ])
     );
+    expect(names).not.toContain('apply_patch');
+    expect(names).not.toContain('search_replace');
   });
 
   it('validates tool args via JSON schema (Ajv)', () => {
@@ -311,6 +314,91 @@ describe('RuntimeToolRouter', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Path escapes working directory');
+  });
+
+  it('replaces one unique block with normalized line endings and trailing spaces', async () => {
+    const router = createRouter();
+    const filePath = 'scripts/demo.sh';
+    await fs.promises.mkdir(path.join(workDir, 'scripts'), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(workDir, filePath),
+      [
+        '#!/usr/bin/env bash',
+        'run() {',
+        '    local value="$HOME"   ',
+        '    echo "$value"',
+        '}',
+        '',
+      ].join('\r\n'),
+      'utf-8'
+    );
+
+    const result = await router.callTool('replace_in_file', {
+      path: filePath,
+      search_block: '    local value="$HOME"\n    echo "$value"',
+      replace_block: '    local value="$1:$&:$\'"\n    echo "${value}"',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.result).toEqual(
+      expect.objectContaining({ path: filePath, replacements: 1, matched_occurrences: 1 })
+    );
+    const updated = await fs.promises.readFile(path.join(workDir, filePath), 'utf-8');
+    expect(updated).toContain('    local value="$1:$&:$\'"');
+    expect(updated).toContain('    echo "${value}"');
+  });
+
+  it('fails replace_in_file when leading indentation differs', async () => {
+    const router = createRouter();
+    const filePath = 'src/example.ts';
+    await fs.promises.mkdir(path.join(workDir, 'src'), { recursive: true });
+    const original = [
+      'function example() {',
+      '        const value = 1;',
+      '        return value;',
+      '}',
+      '',
+    ].join('\n');
+    await fs.promises.writeFile(path.join(workDir, filePath), original, 'utf-8');
+
+    const result = await router.callTool('replace_in_file', {
+      path: filePath,
+      search_block: '    const value = 1;\n    return value;',
+      replace_block: '    const value = 2;\n    return value;',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('matches=0');
+    const after = await fs.promises.readFile(path.join(workDir, filePath), 'utf-8');
+    expect(after).toBe(original);
+  });
+
+  it('fails replace_in_file when search_block matches multiple locations', async () => {
+    const router = createRouter();
+    const filePath = 'src/multiple.ts';
+    await fs.promises.mkdir(path.join(workDir, 'src'), { recursive: true });
+    const original = [
+      'if (enabled) {',
+      '  runTask();',
+      '}',
+      '',
+      'if (enabled) {',
+      '  runTask();',
+      '}',
+      '',
+    ].join('\n');
+    await fs.promises.writeFile(path.join(workDir, filePath), original, 'utf-8');
+
+    const result = await router.callTool('replace_in_file', {
+      path: filePath,
+      search_block: 'if (enabled) {\n  runTask();\n}',
+      replace_block: 'if (enabled) {\n  runTask("once");\n}',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('matches=2');
+    const after = await fs.promises.readFile(path.join(workDir, filePath), 'utf-8');
+    expect(after).toBe(original);
   });
 
   it('calls memory_search with normalized scope and params', async () => {

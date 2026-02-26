@@ -39,8 +39,8 @@
 - **HITL 审批**：高风险工具调用走 `waiting` / `suspended` 审批流
 - **工具生态**：
   - memory（`memory_search/get/write/list/delete`）
-  - file（`read/write/list/glob/grep/delete/move/search_replace`）
-  - coding（`exec_command`、`apply_patch`）
+  - file（`read/write/list/glob/grep/delete/move/replace_in_file`）
+  - coding（`exec_command`）
   - export / routing / escalation / skill 工具
 - **集成能力**：Feishu 连接器、MinerU 批量 PDF 导入
 - **多模型支持**：OpenAI、Anthropic、Gemini 统一配置

@@ -15,7 +15,7 @@ export const BUILTIN_TOOL_RISK_LEVELS: Record<string, 'low' | 'medium' | 'high'>
   glob_files: 'low',
   grep_files: 'low',
   exec_command: 'high',
-  apply_patch: 'medium',
+  replace_in_file: 'medium',
   export_trace: 'low',
   skills_list: 'low',
   skills_get: 'low',

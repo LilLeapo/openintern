@@ -4,74 +4,15 @@ import { execFile } from 'node:child_process';
 import type { RuntimeTool, ToolContext } from '../_helpers.js';
 import { extractString, resolveWithinWorkDir } from '../_helpers.js';
 import { ToolError } from '../../../../utils/errors.js';
-
-const READ_FILE_MAX_CHARS = 120_000;
-
-function truncateContent(content: string): { content: string; truncated: boolean; originalLength: number } {
-  if (content.length <= READ_FILE_MAX_CHARS) {
-    return { content, truncated: false, originalLength: content.length };
-  }
-  return {
-    content: `${content.slice(0, READ_FILE_MAX_CHARS)}\n\n[truncated: original_length=${content.length}]`,
-    truncated: true,
-    originalLength: content.length,
-  };
-}
-
-async function tryExtractPdfWithPdftotext(resolvedPath: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(
-      'pdftotext',
-      ['-enc', 'UTF-8', '-layout', resolvedPath, '-'],
-      { timeout: 20_000, maxBuffer: 1024 * 1024 * 10 },
-      (err, stdout) => {
-        if (err) {
-          resolve(null);
-          return;
-        }
-        const text = stdout.trim();
-        resolve(text.length > 0 ? text : null);
-      },
-    );
-  });
-}
-
-async function tryExtractPdfWithStrings(resolvedPath: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(
-      'strings',
-      ['-n', '6', resolvedPath],
-      { timeout: 20_000, maxBuffer: 1024 * 1024 * 10 },
-      (err, stdout) => {
-        if (err) {
-          resolve(null);
-          return;
-        }
-        const lines = stdout
-          .split('\n')
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0);
-        const text = lines.join('\n');
-        resolve(text.length > 0 ? text : null);
-      },
-    );
-  });
-}
-
-async function extractPdfText(resolvedPath: string): Promise<{ content: string; method: 'pdftotext' | 'strings' }> {
-  const byPdftotext = await tryExtractPdfWithPdftotext(resolvedPath);
-  if (byPdftotext) {
-    return { content: byPdftotext, method: 'pdftotext' };
-  }
-  const byStrings = await tryExtractPdfWithStrings(resolvedPath);
-  if (byStrings) {
-    return { content: byStrings, method: 'strings' };
-  }
-  throw new ToolError(
-    'Failed to extract readable text from PDF. Try mineru_ingest_pdf for structured PDF parsing.',
-    'read_file'
-  );
-}
+import {
+  buildReplaceInFileError,
+  extractPdfText,
+  findMatchOffsets,
+  normalizeBlockForMatch,
+  normalizeFileForMatch,
+  resolveRawOffsets,
+  truncateContent,
+} from './helpers.js';
 
 export function register(ctx: ToolContext): RuntimeTool[] {
   return [
@@ -196,7 +137,7 @@ export function register(ctx: ToolContext): RuntimeTool[] {
           .replace(/\?/g, '[^/]');                   // ? matches single char
         const regex = new RegExp(`^${regexStr}$`);
 
-        const entries = (await fs.promises.readdir(resolved, { recursive: true })) as string[];
+        const entries = await fs.promises.readdir(resolved, { recursive: true });
         const matches = entries
           .filter((entry) => regex.test(entry))
           .map((entry) => cwd === '.' ? entry : path.join(cwd, entry));
@@ -299,41 +240,46 @@ export function register(ctx: ToolContext): RuntimeTool[] {
       },
     },
     {
-      name: 'search_replace',
-      description: 'Search and replace text in a file. Safer than apply_patch for targeted edits.',
+      name: 'replace_in_file',
+      description: 'Replace a unique exact code block with newline/trailing-space normalization for robust matching.',
       parameters: {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Relative file path' },
-          search: { type: 'string', description: 'Exact text to find' },
-          replace: { type: 'string', description: 'Replacement text' },
-          all: { type: 'boolean', description: 'Replace all occurrences (default: false)' },
+          search_block: { type: 'string', description: 'Exact code block to match (include context lines)' },
+          replace_block: { type: 'string', description: 'Replacement code block' },
         },
-        required: ['path', 'search', 'replace'],
+        required: ['path', 'search_block', 'replace_block'],
       },
       source: 'builtin',
       metadata: { risk_level: 'medium', mutating: true, supports_parallel: false },
       handler: async (params) => {
         const filePath = extractString(params['path']);
-        const search = params['search'];
-        const replace = params['replace'];
-        if (!filePath || typeof search !== 'string' || typeof replace !== 'string') {
-          throw new ToolError('path, search, and replace are required', 'search_replace');
+        const searchBlock = params['search_block'];
+        const replaceBlock = params['replace_block'];
+        if (!filePath || typeof searchBlock !== 'string' || typeof replaceBlock !== 'string') {
+          throw new ToolError('path, search_block, and replace_block are required', 'replace_in_file');
         }
-        const resolved = resolveWithinWorkDir(ctx.workDir, filePath, 'search_replace');
+        const resolved = resolveWithinWorkDir(ctx.workDir, filePath, 'replace_in_file');
         const content = await fs.promises.readFile(resolved, 'utf-8');
-        if (!content.includes(search)) {
-          throw new ToolError('Search string not found in file', 'search_replace');
+        const normalizedSearch = normalizeBlockForMatch(searchBlock);
+        if (normalizedSearch.length === 0) {
+          throw new ToolError('search_block is empty after normalization', 'replace_in_file');
         }
-        const replaceAll = params['all'] === true;
-        const updated = replaceAll
-          ? content.split(search).join(replace)
-          : content.replace(search, replace);
-        const count = replaceAll
-          ? (content.split(search).length - 1)
-          : 1;
+        const normalizedFile = normalizeFileForMatch(content);
+        const matchOffsets = findMatchOffsets(normalizedFile.text, normalizedSearch);
+        if (matchOffsets.length !== 1) {
+          throw new ToolError(buildReplaceInFileError(matchOffsets.length), 'replace_in_file');
+        }
+
+        const { start, end } = resolveRawOffsets(
+          normalizedFile.boundaries,
+          matchOffsets[0] ?? 0,
+          normalizedSearch.length
+        );
+        const updated = `${content.slice(0, start)}${replaceBlock}${content.slice(end)}`;
         await fs.promises.writeFile(resolved, updated, 'utf-8');
-        return { path: filePath, replacements: count };
+        return { path: filePath, replacements: 1, matched_occurrences: 1 };
       },
     },
   ];

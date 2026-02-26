@@ -65,7 +65,11 @@ Memory workflow:
 
 Tool usage:
 - Read-only tools (read_file, glob_files, grep_files, memory_search) can run in parallel.
-- Write tools (write_file, exec_command, apply_patch, memory_write, feishu_ingest_doc, mineru_ingest_pdf) run one at a time.
+- Write tools (write_file, replace_in_file, exec_command, memory_write, feishu_ingest_doc, mineru_ingest_pdf) run one at a time.
+- When using replace_in_file, your search_block MUST be EXACTLY formatted as it appears in the file.
+- To ensure a UNIQUE match, you MUST include a few lines of unchanged context BEFORE and AFTER the line you want to modify.
+- Do not omit any lines or use placeholders like '...'.
+- Preserve leading indentation exactly; newline and trailing spaces are normalized by runtime matching.
 - If a tool fails, analyze the error and retry with corrected parameters.
 - Do NOT repeat the same tool call with identical parameters.
 

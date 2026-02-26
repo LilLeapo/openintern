@@ -39,8 +39,8 @@ A production-grade, multi-tenant AI Agent Runtime. It provides agent execution, 
 - **HITL approvals** for high-risk tool calls (`waiting` / `suspended` flows)
 - **Tool ecosystem**:
   - memory (`memory_search/get/write/list/delete`)
-  - file (`read/write/list/glob/grep/delete/move/search_replace`)
-  - coding (`exec_command`, `apply_patch`)
+  - file (`read/write/list/glob/grep/delete/move/replace_in_file`)
+  - coding (`exec_command`)
   - export / routing / escalation / skill tools
 - **Integrations**: Feishu connectors and MinerU batch PDF ingest
 - **Multi-LLM support**: OpenAI, Anthropic, Gemini via unified config
