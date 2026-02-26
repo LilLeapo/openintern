@@ -1,7 +1,10 @@
 import type { QueuedRun } from '../../types/api.js';
+import type { Message, ToolCall, ToolResult } from '../../types/agent.js';
+import type { Event } from '../../types/events.js';
 import type { LLMConfig } from '../../types/agent.js';
 import type { SSEManager } from '../api/sse.js';
 import { logger } from '../../utils/logger.js';
+import { generateSpanId } from '../../utils/ids.js';
 import { McpConnectionManager, type McpServerConfig } from './mcp-connection-manager.js';
 import { SwarmCoordinator } from './swarm-coordinator.js';
 import type { MemoryService } from './memory-service.js';
@@ -20,6 +23,8 @@ import type { MineruIngestService } from './integrations/mineru/ingest-service.j
 import { refreshSkillRegistry } from './executor/skill-refresh.js';
 import { executeSingleRun } from './executor/single-run.js';
 import { executeGroupRun } from './executor/group-run.js';
+import { formatToolResultMessageContent } from './tool-result-content.js';
+import { buildHumanOverrideNote, hasHumanModifiedArgs } from './hitl-note.js';
 
 type Scope = { orgId: string; userId: string; projectId: string | null };
 type RunTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'suspended';
@@ -113,6 +118,91 @@ function mapRunRecordToQueuedRun(run: Awaited<ReturnType<RunRepository['getRunBy
     ...(run.groupId ? { group_id: run.groupId } : {}),
     ...(run.parentRunId ? { parent_run_id: run.parentRunId } : {}),
   };
+}
+
+function findToolCallById(messages: Message[], toolCallId: string): ToolCall | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (!message?.toolCalls || message.role !== 'assistant') continue;
+    const matched = message.toolCalls.find((call) => call.id === toolCallId);
+    if (matched) return matched;
+  }
+  return null;
+}
+
+function createHumanIntervenedToolCalledEvent(args: {
+  runId: string;
+  sessionKey: string;
+  agentId: string;
+  stepId: string;
+  toolName: string;
+  toolCallId: string;
+  effectiveArgs: Record<string, unknown>;
+}): Event {
+  return {
+    v: 1,
+    ts: new Date().toISOString(),
+    session_key: args.sessionKey,
+    run_id: args.runId,
+    agent_id: args.agentId,
+    step_id: args.stepId,
+    span_id: generateSpanId(),
+    parent_span_id: null,
+    redaction: { contains_secrets: false },
+    type: 'tool.called',
+    payload: {
+      toolName: args.toolName,
+      args: args.effectiveArgs,
+      tool_call_id: args.toolCallId,
+      human_intervened: true,
+      modified_args_applied: true,
+      effective_args: args.effectiveArgs,
+    },
+  };
+}
+
+function createToolApprovedEvent(args: {
+  runId: string;
+  sessionKey: string;
+  agentId: string;
+  stepId: string;
+  toolName: string;
+  toolCallId: string;
+  modifiedArgs?: Record<string, unknown>;
+  modifiedArgsApplied: boolean;
+}): Event {
+  return {
+    v: 1,
+    ts: new Date().toISOString(),
+    session_key: args.sessionKey,
+    run_id: args.runId,
+    agent_id: args.agentId,
+    step_id: args.stepId,
+    span_id: generateSpanId(),
+    parent_span_id: null,
+    redaction: { contains_secrets: false },
+    type: 'tool.approved',
+    payload: {
+      toolName: args.toolName,
+      tool_call_id: args.toolCallId,
+      modified_args_applied: args.modifiedArgsApplied,
+      ...(args.modifiedArgs ? { modified_args: args.modifiedArgs } : {}),
+    },
+  };
+}
+
+function withInternalToolCallId(
+  toolName: string,
+  toolCallId: string,
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  if (toolName !== 'handoff_to' && toolName !== 'dispatch_subtasks') {
+    return args;
+  }
+  if ('__tool_call_id' in args) {
+    return args;
+  }
+  return { ...args, __tool_call_id: toolCallId };
 }
 
 // ─── Factory ─────────────────────────────────────────────────
@@ -220,6 +310,96 @@ export function createRuntimeExecutor(config: RuntimeExecutorConfig): RuntimeExe
     await refreshSkillRegistry(router, config.skillRepository);
     return router;
   }
+
+  sharedApprovalManager.setSuspendedApprovalExecutor(async (request) => {
+    const toolRouter = await getSharedToolRouter(request.scope);
+    toolRouter.setRunContext(request.runId, request.sessionKey);
+
+    const checkpoint = await config.checkpointService.loadLatest(
+      request.runId,
+      request.agentId
+    );
+    if (!checkpoint) {
+      throw new Error(`No checkpoint found for suspended run ${request.runId}`);
+    }
+
+    const toolCall = findToolCallById(checkpoint.messages, request.toolCallId);
+    if (!toolCall) {
+      throw new Error(`Tool call ${request.toolCallId} not found in checkpoint`);
+    }
+
+    const effectiveArgs = request.modifiedArgs ?? toolCall.parameters;
+    const modifiedArgsApplied = hasHumanModifiedArgs(
+      toolCall.parameters,
+      request.modifiedArgs
+    );
+    const approvedEvent = createToolApprovedEvent({
+      runId: request.runId,
+      sessionKey: request.sessionKey,
+      agentId: request.agentId,
+      stepId: checkpoint.stepId,
+      toolName: toolCall.name,
+      toolCallId: request.toolCallId,
+      ...(request.modifiedArgs ? { modifiedArgs: request.modifiedArgs } : {}),
+      modifiedArgsApplied,
+    });
+    await config.eventService.write(approvedEvent);
+    config.sseManager.broadcastToRun(request.runId, approvedEvent);
+
+    const validation = toolRouter.validateToolArgs(toolCall.name, effectiveArgs);
+
+    let replayResult: ToolResult;
+    if (!validation.ok) {
+      replayResult = {
+        success: false,
+        error: `Invalid tool arguments: ${validation.message}`,
+        duration: 0,
+      };
+    } else {
+      const params = withInternalToolCallId(
+        toolCall.name,
+        request.toolCallId,
+        effectiveArgs
+      );
+      replayResult = await toolRouter.callTool(toolCall.name, params);
+    }
+
+    if (modifiedArgsApplied) {
+      replayResult = {
+        ...replayResult,
+        humanInterventionNote: buildHumanOverrideNote(effectiveArgs),
+      };
+      const modifiedEvent = createHumanIntervenedToolCalledEvent({
+        runId: request.runId,
+        sessionKey: request.sessionKey,
+        agentId: request.agentId,
+        stepId: checkpoint.stepId,
+        toolName: toolCall.name,
+        toolCallId: request.toolCallId,
+        effectiveArgs,
+      });
+      await config.eventService.write(modifiedEvent);
+      config.sseManager.broadcastToRun(request.runId, modifiedEvent);
+    }
+
+    await config.checkpointService.appendToolResults(
+      request.runId,
+      request.agentId,
+      [
+        {
+          role: 'tool',
+          toolCallId: request.toolCallId,
+          content: formatToolResultMessageContent(replayResult),
+        },
+      ]
+    );
+
+    return {
+      toolName: toolCall.name,
+      effectiveArgs,
+      modifiedArgsApplied,
+    };
+  });
 
   const execute = async (run: QueuedRun, signal: AbortSignal): Promise<{ status: RunTerminalStatus }> => {
     const scope: Scope = {

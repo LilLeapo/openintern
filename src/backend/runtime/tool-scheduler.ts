@@ -4,6 +4,7 @@ import type { RuntimeToolRouter } from './tool-router.js';
 import type { AgentContext } from './tool-policy.js';
 import { generateSpanId } from '../../utils/ids.js';
 import { logger } from '../../utils/logger.js';
+import { buildHumanOverrideNote, hasHumanModifiedArgs } from './hitl-note.js';
 
 /**
  * Tool metadata used for scheduling decisions.
@@ -56,7 +57,27 @@ export interface PendingApproval {
 export interface ApprovalDecision {
   approved: boolean;
   reason?: string;
+  modifiedArgs?: Record<string, unknown>;
 }
+
+export interface SuspendedApprovalRequest {
+  runId: string;
+  sessionKey: string;
+  agentId: string;
+  toolCallId: string;
+  modifiedArgs?: Record<string, unknown>;
+  scope: { orgId: string; userId: string; projectId: string | null };
+}
+
+export interface SuspendedApprovalResult {
+  toolName: string;
+  effectiveArgs: Record<string, unknown>;
+  modifiedArgsApplied: boolean;
+}
+
+type SuspendedApprovalExecutor = (
+  request: SuspendedApprovalRequest
+) => Promise<SuspendedApprovalResult>;
 
 /**
  * Thrown when a tool requires approval and the run should suspend to disk.
@@ -83,6 +104,7 @@ const DEFAULT_PARALLEL_LIMIT = 8;
  */
 export class ToolApprovalManager {
   private readonly pending = new Map<string, PendingApproval>();
+  private suspendedApprovalExecutor: SuspendedApprovalExecutor | null = null;
 
   /**
    * Register a pending approval and return a Promise that resolves when
@@ -119,10 +141,13 @@ export class ToolApprovalManager {
   /**
    * Approve a pending tool call. Returns true if the approval was found and resolved.
    */
-  approve(toolCallId: string): boolean {
+  approve(toolCallId: string, modifiedArgs?: Record<string, unknown>): boolean {
     const entry = this.pending.get(toolCallId);
     if (!entry) return false;
-    entry.resolve({ approved: true });
+    entry.resolve({
+      approved: true,
+      ...(modifiedArgs ? { modifiedArgs } : {}),
+    });
     this.pending.delete(toolCallId);
     return true;
   }
@@ -172,6 +197,17 @@ export class ToolApprovalManager {
         this.pending.delete(id);
       }
     }
+  }
+
+  setSuspendedApprovalExecutor(executor: SuspendedApprovalExecutor): void {
+    this.suspendedApprovalExecutor = executor;
+  }
+
+  async approveSuspended(request: SuspendedApprovalRequest): Promise<SuspendedApprovalResult> {
+    if (!this.suspendedApprovalExecutor) {
+      throw new Error('Suspended approval executor not configured');
+    }
+    return this.suspendedApprovalExecutor(request);
   }
 }
 
@@ -400,7 +436,11 @@ export class ToolCallScheduler {
     events: Event[]
   ): Promise<ToolResult> {
     const approvalStarted = Date.now();
-    const paramsWithInternalCallId = this.withInternalToolCallId(call);
+    const paramsWithInternalCallId = this.withInternalToolCallId(
+      call.name,
+      call.id,
+      call.parameters
+    );
     const result = await router.callTool(
       call.name, paramsWithInternalCallId, ctx.agentContext
     );
@@ -452,12 +492,56 @@ export class ToolCallScheduler {
     await ctx.onResumed?.();
 
     if (decision.approved) {
+      const effectiveArgs = decision.modifiedArgs ?? call.parameters;
+      const modifiedArgsApplied = hasHumanModifiedArgs(call.parameters, decision.modifiedArgs);
+      const validation = router.validateToolArgs(call.name, effectiveArgs);
+
+      if (modifiedArgsApplied) {
+        const modifiedCalled = this.createToolEvent(ctx, 'tool.called', {
+          toolName: call.name,
+          args: effectiveArgs,
+          tool_call_id: call.id,
+          human_intervened: true,
+          modified_args_applied: true,
+          effective_args: effectiveArgs,
+        });
+        events.push(modifiedCalled);
+        ctx.onEvent?.(modifiedCalled);
+      }
+
       const approvedEvent = this.createGenericEvent(ctx, 'tool.approved', {
-        toolName: call.name, tool_call_id: call.id,
+        toolName: call.name,
+        tool_call_id: call.id,
+        modified_args_applied: modifiedArgsApplied,
+        ...(decision.modifiedArgs ? { modified_args: decision.modifiedArgs } : {}),
       });
       events.push(approvedEvent);
       ctx.onEvent?.(approvedEvent);
-      return router.callTool(call.name, paramsWithInternalCallId);
+
+      if (!validation.ok) {
+        return {
+          success: false,
+          error: `Invalid tool arguments: ${validation.message}`,
+          duration: Date.now() - approvalStarted,
+          ...(modifiedArgsApplied
+            ? { humanInterventionNote: buildHumanOverrideNote(effectiveArgs) }
+            : {}),
+        };
+      }
+
+      const approvedParams = this.withInternalToolCallId(
+        call.name,
+        call.id,
+        effectiveArgs
+      );
+      const approvedResult = await router.callTool(call.name, approvedParams);
+      if (!modifiedArgsApplied) {
+        return approvedResult;
+      }
+      return {
+        ...approvedResult,
+        humanInterventionNote: buildHumanOverrideNote(effectiveArgs),
+      };
     }
 
     const rejectedEvent = this.createGenericEvent(ctx, 'tool.rejected', {
@@ -474,14 +558,18 @@ export class ToolCallScheduler {
     };
   }
 
-  private withInternalToolCallId(call: ToolCall): Record<string, unknown> {
-    if (call.name !== 'handoff_to' && call.name !== 'dispatch_subtasks') {
-      return call.parameters;
+  private withInternalToolCallId(
+    toolName: string,
+    toolCallId: string,
+    args: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (toolName !== 'handoff_to' && toolName !== 'dispatch_subtasks') {
+      return args;
     }
-    if ('__tool_call_id' in call.parameters) {
-      return call.parameters;
+    if ('__tool_call_id' in args) {
+      return args;
     }
-    return { ...call.parameters, __tool_call_id: call.id };
+    return { ...args, __tool_call_id: toolCallId };
   }
 
   private getToolMeta(toolName: string, router: RuntimeToolRouter): ToolScheduleMeta {
@@ -529,7 +617,14 @@ export class ToolCallScheduler {
   private createToolEvent(
     ctx: { runId: string; sessionKey: string; agentId: string; stepId: string; rootSpan: string },
     type: 'tool.called',
-    payload: { toolName: string; args: Record<string, unknown> }
+    payload: {
+      toolName: string;
+      args: Record<string, unknown>;
+      tool_call_id?: string;
+      human_intervened?: boolean;
+      modified_args_applied?: boolean;
+      effective_args?: Record<string, unknown>;
+    }
   ): Event {
     return {
       v: 1,

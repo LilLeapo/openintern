@@ -160,6 +160,7 @@ export const ToolResultSchema = z.object({
   requiresSuspension: z.boolean().optional(),
   policyReason: z.string().optional(),
   riskLevel: z.string().optional(),
+  humanInterventionNote: z.string().optional(),
 });
 
 export type ToolResult = z.infer<typeof ToolResultSchema>;

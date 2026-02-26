@@ -14,6 +14,7 @@
  */
 
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { isDeepStrictEqual } from 'node:util';
 import {
   CreateRunRequestSchema,
   type CreateRunResponse,
@@ -72,6 +73,14 @@ function parseBoolean(raw: string | undefined, fallback: boolean, field: string)
     return false;
   }
   throw new ValidationError(`${field} must be a boolean`, field);
+}
+
+function parseModifiedArgs(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ValidationError('modified_args must be an object', 'modified_args');
+  }
+  return value as Record<string, unknown>;
 }
 
 function mapRunToMeta(
@@ -497,32 +506,35 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
           if (!runId) {
             throw new ValidationError('run_id is required', 'run_id');
           }
-          const body = req.body as { tool_call_id?: string };
+          const body = req.body as { tool_call_id?: string; modified_args?: unknown };
           if (!body.tool_call_id || typeof body.tool_call_id !== 'string') {
             throw new ValidationError('tool_call_id is required', 'tool_call_id');
           }
+          const modifiedArgs = parseModifiedArgs(body.modified_args);
 
           const scope = resolveRequestScope(req);
           const run = await runRepository.requireRun(runId, scope);
 
           if (run.status === 'suspended') {
-            // Checkpoint-based: resume from disk
-            if (checkpointService) {
-              await checkpointService.appendToolResults(
-                runId,
-                run.agentId,
-                [
-                  {
-                    role: 'tool',
-                    toolCallId: body.tool_call_id,
-                    content: JSON.stringify({
-                      approved: true,
-                      tool_call_id: body.tool_call_id,
-                    }),
-                  },
-                ]
+            if (!approvalManager) {
+              throw new AgentError(
+                'Approval manager not available',
+                'APPROVAL_UNAVAILABLE',
+                500
               );
             }
+            const replay = await approvalManager.approveSuspended({
+              runId,
+              sessionKey: run.sessionKey,
+              agentId: run.agentId,
+              toolCallId: body.tool_call_id,
+              ...(modifiedArgs ? { modifiedArgs } : {}),
+              scope: {
+                orgId: run.orgId,
+                userId: run.userId,
+                projectId: run.projectId ?? null,
+              },
+            });
             await runRepository.setRunResumedFromSuspension(runId);
             // Re-enqueue the run so the executor picks it up
             const queuedRun: QueuedRun = {
@@ -538,8 +550,17 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
               ...(run.groupId ? { group_id: run.groupId } : {}),
             };
             runQueue.enqueue(queuedRun);
-            logger.info('Suspended run approved and re-enqueued', { runId, toolCallId: body.tool_call_id });
-            res.json({ success: true, run_id: runId, tool_call_id: body.tool_call_id });
+            logger.info('Suspended run approved and re-enqueued', {
+              runId,
+              toolCallId: body.tool_call_id,
+              modifiedArgsApplied: replay.modifiedArgsApplied,
+            });
+            res.json({
+              success: true,
+              run_id: runId,
+              tool_call_id: body.tool_call_id,
+              modified_args_applied: replay.modifiedArgsApplied,
+            });
             return;
           }
 
@@ -567,10 +588,18 @@ export function createRunsRouter(config: RunsRouterConfig): Router {
               404
             );
           }
-          approvalManager.approve(body.tool_call_id);
+          const modifiedArgsApplied = modifiedArgs
+            ? !isDeepStrictEqual(pendingEntry.args, modifiedArgs)
+            : false;
+          approvalManager.approve(body.tool_call_id, modifiedArgs);
 
           logger.info('Tool call approved', { runId, toolCallId: body.tool_call_id });
-          res.json({ success: true, run_id: runId, tool_call_id: body.tool_call_id });
+          res.json({
+            success: true,
+            run_id: runId,
+            tool_call_id: body.tool_call_id,
+            modified_args_applied: modifiedArgsApplied,
+          });
         } catch (error) {
           next(error);
         }

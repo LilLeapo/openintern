@@ -72,6 +72,10 @@ export const RunFailedPayloadSchema = z.object({
 export const ToolCalledPayloadSchema = z.object({
   toolName: z.string(),
   args: z.record(z.unknown()),
+  tool_call_id: z.string().optional(),
+  human_intervened: z.boolean().optional(),
+  modified_args_applied: z.boolean().optional(),
+  effective_args: z.record(z.unknown()).optional(),
 });
 
 /**
@@ -118,6 +122,8 @@ export const ToolRequiresApprovalPayloadSchema = z.object({
 export const ToolApprovedPayloadSchema = z.object({
   toolName: z.string(),
   tool_call_id: z.string(),
+  modified_args: z.record(z.unknown()).optional(),
+  modified_args_applied: z.boolean().optional(),
 });
 
 /**

@@ -4,6 +4,7 @@ import type { ScopeContext } from './scope.js';
 import { ToolError } from '../../utils/errors.js';
 import { logger } from '../../utils/logger.js';
 import { MCPClient } from '../agent/mcp-client.js';
+import Ajv, { type ErrorObject, type ValidateFunction } from 'ajv';
 import type { EventService } from './event-service.js';
 import type { FeishuSyncService } from './integrations/feishu/sync-service.js';
 import type { MineruIngestService } from './integrations/mineru/ingest-service.js';
@@ -128,6 +129,10 @@ export interface RuntimeToolRouterConfig {
 
 const DEFAULT_TIMEOUT_MS = 30000;
 
+export type ToolArgsValidationResult =
+  | { ok: true }
+  | { ok: false; message: string; errors: ErrorObject[] };
+
 // ─── Router class ────────────────────────────────────────
 
 export class RuntimeToolRouter {
@@ -135,11 +140,17 @@ export class RuntimeToolRouter {
   private readonly timeoutMs: number;
   private readonly mcpClient: MCPClient | null;
   private readonly toolPolicy: ToolPolicy;
+  private readonly ajv: Ajv;
+  private readonly validatorCache = new Map<string, ValidateFunction<Record<string, unknown>>>();
   private readonly ctx: ToolContext;
 
   constructor(private readonly config: RuntimeToolRouterConfig) {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.toolPolicy = new ToolPolicy();
+    this.ajv = new Ajv({
+      allErrors: true,
+      strict: false,
+    });
 
     // Build shared mutable context for tool modules
     this.ctx = {
@@ -293,6 +304,42 @@ export class RuntimeToolRouter {
     }
   }
 
+  validateToolArgs(
+    toolName: string,
+    args: Record<string, unknown>
+  ): ToolArgsValidationResult {
+    const tool = this.tools.get(toolName);
+    if (!tool) {
+      return {
+        ok: false,
+        message: `Tool not found: ${toolName}`,
+        errors: [],
+      };
+    }
+
+    let validator: ValidateFunction<Record<string, unknown>>;
+    try {
+      validator = this.getOrCompileValidator(toolName, tool);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        message: `Tool schema compile failed: ${message}`,
+        errors: [],
+      };
+    }
+
+    const valid = validator(args);
+    if (valid) return { ok: true };
+
+    const errors = validator.errors ?? [];
+    return {
+      ok: false,
+      message: this.formatValidationErrors(errors),
+      errors,
+    };
+  }
+
   // ─── Policy ──────────────────────────────────────────
 
   private checkPolicy(
@@ -317,6 +364,29 @@ export class RuntimeToolRouter {
     return tool.metadata?.risk_level ?? 'low';
   }
 
+  private getOrCompileValidator(
+    toolName: string,
+    tool: RuntimeTool
+  ): ValidateFunction<Record<string, unknown>> {
+    const cached = this.validatorCache.get(toolName);
+    if (cached) return cached;
+    const validator = this.ajv.compile<Record<string, unknown>>(tool.parameters);
+    this.validatorCache.set(toolName, validator);
+    return validator;
+  }
+
+  private formatValidationErrors(errors: ErrorObject[]): string {
+    if (errors.length === 0) return 'Invalid tool arguments';
+    return errors
+      .slice(0, 5)
+      .map((error) => {
+        const path = error.instancePath || '/';
+        const message = error.message ?? 'is invalid';
+        return `${path} ${message}`;
+      })
+      .join('; ');
+  }
+
   // ─── Builtin registration ───────────────────────────
 
   private registerBuiltinTools(): void {
@@ -334,6 +404,7 @@ export class RuntimeToolRouter {
     for (const register of registrars) {
       for (const tool of register(this.ctx)) {
         this.tools.set(tool.name, tool);
+        this.validatorCache.delete(tool.name);
       }
     }
   }
@@ -393,9 +464,13 @@ export class RuntimeToolRouter {
         source: 'mcp',
         handler: async (params) => this.callMcpTool(tool.name, params),
       });
+      this.validatorCache.delete(sanitizedName);
     }
     for (const [name, tool] of this.tools.entries()) {
-      if (tool.source === 'mcp' && !seen.has(name)) this.tools.delete(name);
+      if (tool.source === 'mcp' && !seen.has(name)) {
+        this.tools.delete(name);
+        this.validatorCache.delete(name);
+      }
     }
     logger.info('MCP tools registered', { count: tools.length });
   }

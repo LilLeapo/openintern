@@ -137,6 +137,30 @@ describe('RuntimeToolRouter', () => {
     );
   });
 
+  it('validates tool args via JSON schema (Ajv)', () => {
+    const router = createRouter();
+    const valid = router.validateToolArgs('read_file', { path: 'README.md' });
+    expect(valid.ok).toBe(true);
+
+    const invalid = router.validateToolArgs('read_file', {});
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.message).toContain('required property');
+    }
+  });
+
+  it('validates nested enum constraints via JSON schema', () => {
+    const router = createRouter();
+    const invalid = router.validateToolArgs('mineru_ingest_pdf', {
+      file_url: 'https://example.com/demo.pdf',
+      options: { model_version: 'unsupported' },
+    });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.message).toContain('must be equal to one of the allowed values');
+    }
+  });
+
   it('validates required params for memory_search', async () => {
     const router = createRouter();
     const result = await router.callTool('memory_search', {});

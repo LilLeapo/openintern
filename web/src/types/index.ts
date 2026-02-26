@@ -99,6 +99,10 @@ export interface RunResumedPayload {
 export interface ToolCalledPayload {
   toolName: string;
   args: Record<string, unknown>;
+  tool_call_id?: string;
+  human_intervened?: boolean;
+  modified_args_applied?: boolean;
+  effective_args?: Record<string, unknown>;
 }
 
 export interface ToolResultPayload {
@@ -130,6 +134,8 @@ export interface ToolRequiresApprovalPayload {
 export interface ToolApprovedPayload {
   toolName: string;
   tool_call_id: string;
+  modified_args?: Record<string, unknown>;
+  modified_args_applied?: boolean;
 }
 
 export interface ToolRejectedPayload {

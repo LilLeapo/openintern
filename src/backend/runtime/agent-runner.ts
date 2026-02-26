@@ -15,6 +15,7 @@ import { ToolCallScheduler, RunSuspendedError } from './tool-scheduler.js';
 import type { ToolResult } from '../../types/agent.js';
 import type { AgentContext } from './tool-policy.js';
 import type { GroupWithRoles } from './group-repository.js';
+import { formatToolResultMessageContent } from './tool-result-content.js';
 
 export interface RunnerContext {
   runId: string;
@@ -303,9 +304,7 @@ export class SingleAgentRunner implements AgentRunner {
             lastToolResult = r.success ? r.result : r.error;
             messages.push({
               role: 'tool',
-              content: r.success
-                ? JSON.stringify(r.result)
-                : `Error: ${r.error ?? 'Unknown tool error'}`,
+              content: formatToolResultMessageContent(r),
               toolCallId: execResult.toolCall.id,
             });
           }

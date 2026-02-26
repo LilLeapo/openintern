@@ -1054,14 +1054,21 @@ export class APIClient {
   /**
    * Approve a tool call that requires approval
    */
-  async approveToolCall(runId: string, toolCallId: string): Promise<{ success: boolean }> {
+  async approveToolCall(
+    runId: string,
+    toolCallId: string,
+    modifiedArgs?: Record<string, unknown>
+  ): Promise<{ success: boolean; modified_args_applied?: boolean }> {
     const response = await fetch(`${this.baseURL}/api/runs/${runId}/approve`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...this.buildScopeHeaders(),
       },
-      body: JSON.stringify({ tool_call_id: toolCallId }),
+      body: JSON.stringify({
+        tool_call_id: toolCallId,
+        ...(modifiedArgs ? { modified_args: modifiedArgs } : {}),
+      }),
     });
 
     if (!response.ok) {

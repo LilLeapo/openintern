@@ -137,8 +137,24 @@ export function InboxPage() {
     setBusyRunId(item.run.run_id);
     setInfo(null);
     try {
-      // Backend currently resumes with original tool args.
-      await apiClient.approveToolCall(item.run.run_id, item.toolCallId);
+      const raw = argsByRun[item.run.run_id] ?? JSON.stringify(item.args, null, 2);
+      let modifiedArgs: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error(t('Tool args must be a JSON object', '工具参数必须是 JSON 对象'));
+        }
+        modifiedArgs = parsed as Record<string, unknown>;
+      } catch (parseError) {
+        setError(
+          parseError instanceof Error
+            ? parseError.message
+            : t('Invalid JSON in tool args', '工具参数 JSON 格式无效')
+        );
+        return;
+      }
+
+      await apiClient.approveToolCall(item.run.run_id, item.toolCallId, modifiedArgs);
       setInfo(t('Approved. Run resumed in queue.', '已同意，Run 已重新进入队列。'));
       await loadInbox();
     } catch (err) {
@@ -146,7 +162,7 @@ export function InboxPage() {
     } finally {
       setBusyRunId(null);
     }
-  }, [loadInbox, t]);
+  }, [argsByRun, loadInbox, t]);
 
   const handleReject = useCallback(async (item: ApprovalCandidate) => {
     setBusyRunId(item.run.run_id);
@@ -215,12 +231,6 @@ export function InboxPage() {
                   value={argsByRun[runId] ?? JSON.stringify(item.args, null, 2)}
                   onChange={event => setArgsByRun(prev => ({ ...prev, [runId]: event.target.value }))}
                 />
-                <small>
-                  {t(
-                    'Current backend approves original args; edited args are for review context.',
-                    '当前后端审批仍使用原始参数；编辑值用于人工复核记录。',
-                  )}
-                </small>
               </label>
 
               {item.trace.length > 0 && (

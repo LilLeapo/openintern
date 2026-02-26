@@ -11,14 +11,14 @@ const describeIfDatabase = process.env['DATABASE_URL'] ? describe : describe.ski
 function createUnitFixture(): {
   service: CheckpointService;
   runs: {
-    appendMessages: Mock<unknown[], unknown>;
-    createCheckpoint: Mock<unknown[], unknown>;
-    getLatestCheckpoint: Mock<unknown[], unknown>;
-    loadMessages: Mock<unknown[], unknown>;
+    appendMessages: Mock;
+    createCheckpoint: Mock;
+    getLatestCheckpoint: Mock;
+    loadMessages: Mock;
   };
   client: {
-    query: Mock<unknown[], unknown>;
-    release: Mock<unknown[], unknown>;
+    query: Mock;
+    release: Mock;
   };
 } {
   const client = {
