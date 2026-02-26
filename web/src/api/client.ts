@@ -89,6 +89,23 @@ export interface SwarmStatusSnapshot {
   dependencies: SwarmDependencySnapshot[];
 }
 
+export interface IngestFileProgress {
+  file_index: number;
+  filename: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  memory_id?: string;
+  chunk_count?: number;
+  error?: string;
+}
+
+export interface IngestJobStatus {
+  job_id: string;
+  status: 'processing' | 'completed';
+  files: IngestFileProgress[];
+  created_at: string;
+  completed_at?: string;
+}
+
 export class APIClient {
   private baseURL: string;
   private scope: ScopeConfig;
@@ -1076,6 +1093,76 @@ export class APIClient {
     if (!response.ok) {
       throw new APIError(
         await this.parseErrorMessage(response, 'Failed to reject tool call'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Batch ingest PDFs via MinerU
+   */
+  async ingestBatchPdf(
+    files: File[],
+    options?: {
+      project_id?: string;
+      model_version?: string;
+      is_ocr?: boolean;
+      enable_formula?: boolean;
+      enable_table?: boolean;
+      language?: string;
+    },
+  ): Promise<{ job_id: string; file_count: number }> {
+    const formData = new FormData();
+    for (const file of files) {
+      formData.append('file', file);
+    }
+    if (options?.project_id) formData.append('project_id', options.project_id);
+    if (options?.model_version) formData.append('model_version', options.model_version);
+    if (options?.is_ocr) formData.append('is_ocr', 'true');
+    if (options?.enable_formula) formData.append('enable_formula', 'true');
+    if (options?.enable_table) formData.append('enable_table', 'true');
+    if (options?.language) formData.append('language', options.language);
+
+    const response = await fetch(`${this.baseURL}/api/mineru/ingest-batch`, {
+      method: 'POST',
+      headers: this.buildScopeHeaders(),
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to start batch ingest'),
+        response.status,
+      );
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Get SSE progress stream for a batch ingest job
+   */
+  createIngestProgressSource(jobId: string): EventSource {
+    const params = new URLSearchParams(this.buildScopeHeaders());
+    return new EventSource(
+      `${this.baseURL}/api/mineru/ingest-batch/${jobId}/progress?${params.toString()}`
+    );
+  }
+
+  /**
+   * Query batch ingest job status
+   */
+  async getIngestJobStatus(jobId: string): Promise<IngestJobStatus> {
+    const response = await fetch(
+      `${this.baseURL}/api/mineru/ingest-batch/${jobId}`,
+      { headers: this.buildScopeHeaders() },
+    );
+
+    if (!response.ok) {
+      throw new APIError(
+        await this.parseErrorMessage(response, 'Failed to get ingest job status'),
         response.status,
       );
     }

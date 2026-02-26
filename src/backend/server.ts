@@ -21,6 +21,7 @@ import { createBlackboardRouter } from './api/blackboard.js';
 import { createSkillsRouter } from './api/skills.js';
 import { createFeishuConnectorsRouter } from './api/feishu-connectors.js';
 import { createUploadsRouter } from './api/uploads.js';
+import { createMineruRouter } from './api/mineru.js';
 import { RunQueue } from './queue/run-queue.js';
 import { SSEManager } from './api/sse.js';
 import { AgentError } from '../utils/errors.js';
@@ -293,6 +294,10 @@ export function createApp(config: Partial<ServerConfig> = {}): {
   const uploadService = new UploadService(finalConfig.baseDir);
   const uploadsRouter = createUploadsRouter({ uploadService });
   app.use('/api', uploadsRouter);
+
+  // MinerU batch ingest API routes
+  const mineruRouter = createMineruRouter({ mineruIngestService });
+  app.use('/api', mineruRouter);
 
   // Error handling middleware
   app.use(errorHandler);

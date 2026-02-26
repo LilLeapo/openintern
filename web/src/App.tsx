@@ -14,6 +14,7 @@ import {
   OrchestratorPage,
   InboxPage,
   EmulatorPage,
+  IngestPage,
 } from './pages';
 import { AppPreferencesProvider } from './context/AppPreferencesContext';
 
@@ -33,6 +34,7 @@ export function App() {
           <Route path="/orchestrator" element={<OrchestratorPage />} />
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/group-run/:runId" element={<GroupRunPage />} />
+          <Route path="/ingest" element={<IngestPage />} />
         </Routes>
       </BrowserRouter>
     </AppPreferencesProvider>
