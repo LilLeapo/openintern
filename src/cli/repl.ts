@@ -40,6 +40,7 @@ async function main(): Promise<void> {
     webProxy: config.tools.web.proxy,
     cronService: cron,
     channelsConfig: config.channels,
+    mcpConfig: config.mcp,
   });
 
   cron.onJob = async (job) => {
@@ -89,6 +90,7 @@ Scheduled instruction: ${job.payload.message}`;
   });
 
   let running = true;
+  await agent.initMcp();
   const runTask = agent.run();
   await cron.start();
   await heartbeat.start();

@@ -18,6 +18,8 @@ import { SpawnTool } from "../tools/builtins/spawn.js";
 import { WebFetchTool, WebSearchTool } from "../tools/builtins/web.js";
 import { ToolRegistry } from "../tools/core/tool-registry.js";
 import { Mutex } from "../utils/mutex.js";
+import type { McpConfig } from "../config/schema.js";
+import { McpManager } from "../mcp/mcp-manager.js";
 
 const TOOL_RESULT_MAX_CHARS = 500;
 
@@ -54,6 +56,7 @@ export interface AgentLoopOptions {
     sendToolHints: boolean;
   };
   sessionStore?: SessionStore;
+  mcpConfig?: McpConfig;
 }
 
 export class AgentLoop {
@@ -89,6 +92,8 @@ export class AgentLoop {
   private readonly webSearchMaxResults: number;
   private readonly webProxy: string | null;
   private readonly subagents: SubagentManager;
+  private readonly mcpManager = new McpManager();
+  private readonly mcpConfig?: McpConfig;
 
   constructor(options: AgentLoopOptions) {
     this.bus = options.bus;
@@ -130,6 +135,7 @@ export class AgentLoop {
     });
 
     this.registerDefaultTools();
+    this.mcpConfig = options.mcpConfig;
   }
 
   private registerDefaultTools(): void {
@@ -158,6 +164,13 @@ export class AgentLoop {
 
   stop(): void {
     this.running = false;
+    void this.mcpManager.closeAll();
+  }
+
+  async initMcp(): Promise<void> {
+    if (this.mcpConfig && Object.keys(this.mcpConfig.servers).length > 0) {
+      await this.mcpManager.connectAll(this.mcpConfig, this.tools);
+    }
   }
 
   async run(): Promise<void> {
