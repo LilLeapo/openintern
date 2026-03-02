@@ -1,0 +1,52 @@
+import { Tool } from "../core/tool.js";
+import type { SubagentManager } from "../../agent/subagent/manager.js";
+
+export class SpawnTool extends Tool {
+  readonly name = "spawn";
+  readonly description =
+    "Spawn a subagent to handle a task in the background and report back on completion.";
+  readonly parameters = {
+    type: "object",
+    properties: {
+      task: {
+        type: "string",
+        description: "The task for the subagent to complete",
+      },
+      label: {
+        type: "string",
+        description: "Optional short label for the task",
+      },
+    },
+    required: ["task"],
+  } as const;
+
+  private originChannel = "cli";
+  private originChatId = "direct";
+  private sessionKey = "cli:direct";
+
+  constructor(private readonly manager: SubagentManager) {
+    super();
+  }
+
+  setContext(channel: string, chatId: string): void {
+    this.originChannel = channel;
+    this.originChatId = chatId;
+    this.sessionKey = `${channel}:${chatId}`;
+  }
+
+  async execute(params: Record<string, unknown>): Promise<string> {
+    const task = String(params.task ?? "");
+    const label =
+      params.label === undefined || params.label === null
+        ? null
+        : String(params.label);
+    return this.manager.spawn({
+      task,
+      label,
+      originChannel: this.originChannel,
+      originChatId: this.originChatId,
+      sessionKey: this.sessionKey,
+    });
+  }
+}
+

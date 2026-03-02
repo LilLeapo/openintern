@@ -1,10 +1,15 @@
+import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import readline from "node:readline/promises";
 import { stderr, stdin, stdout } from "node:process";
-import { mkdir } from "node:fs/promises";
 
 import { AgentLoop } from "../agent/loop.js";
 import { MessageBus } from "../bus/message-bus.js";
-import { loadOrCreateConfig, resolveWorkspacePath } from "../config/loader.js";
+import type { OutboundMessage } from "../bus/events.js";
+import { CronService } from "../cron/service.js";
+import { loadOrCreateConfig, resolveWorkspacePath, getDataDir } from "../config/loader.js";
+import { HeartbeatService } from "../heartbeat/service.js";
 import { makeProvider } from "../llm/provider-factory.js";
 import { syncWorkspaceTemplates } from "../templates/sync.js";
 
@@ -16,6 +21,8 @@ async function main(): Promise<void> {
 
   const bus = new MessageBus();
   const provider = makeProvider(config);
+  const cronStorePath = path.join(getDataDir(), "cron", "jobs.json");
+  const cron = new CronService(cronStorePath);
   const agent = new AgentLoop({
     bus,
     provider,
@@ -31,11 +38,126 @@ async function main(): Promise<void> {
     webSearchApiKey: config.tools.web.search.apiKey,
     webSearchMaxResults: config.tools.web.search.maxResults,
     webProxy: config.tools.web.proxy,
+    cronService: cron,
     channelsConfig: config.channels,
   });
 
+  cron.onJob = async (job) => {
+    const reminder = `[Scheduled Task] Timer finished.
+
+Task '${job.name}' has been triggered.
+Scheduled instruction: ${job.payload.message}`;
+    await bus.publishInbound({
+      channel: job.payload.channel ?? "cli",
+      senderId: "cron",
+      chatId: job.payload.to ?? "direct",
+      content: reminder,
+      metadata: {
+        message_id: `cron_${job.id}_${Date.now()}`,
+      },
+      sessionKeyOverride: `cron:${job.id}`,
+    });
+    return null;
+  };
+
+  const heartbeat = new HeartbeatService({
+    workspace,
+    provider,
+    model: config.agents.defaults.model,
+    intervalS: config.gateway.heartbeat.intervalS,
+    enabled: config.gateway.heartbeat.enabled,
+    onExecute: async (tasks) =>
+      agent.processDirect({
+        content: tasks,
+        sessionKey: "heartbeat",
+        channel: "cli",
+        chatId: "direct",
+        onProgress: async () => {
+          // Heartbeat progress is intentionally suppressed in CLI.
+        },
+      }),
+    onNotify: async (response) => {
+      await bus.publishOutbound({
+        channel: "cli",
+        chatId: "direct",
+        content: response,
+        metadata: {
+          _heartbeat: true,
+        },
+      });
+    },
+  });
+
+  let running = true;
+  const runTask = agent.run();
+  await cron.start();
+  await heartbeat.start();
+
+  const pending = new Map<string, (value: string) => void>();
+  const routeOutbound = (msg: OutboundMessage): void => {
+    const metadata =
+      typeof msg.metadata === "object" && msg.metadata !== null
+        ? (msg.metadata as Record<string, unknown>)
+        : {};
+    const messageId = typeof metadata.message_id === "string" ? metadata.message_id : null;
+    const isProgress = metadata._progress === true;
+    const isToolHint = metadata._tool_hint === true;
+
+    if (messageId && pending.has(messageId)) {
+      if (isProgress) {
+        if (isToolHint && !config.channels.sendToolHints) {
+          return;
+        }
+        if (!isToolHint && !config.channels.sendProgress) {
+          return;
+        }
+        stdout.write(`  ↳ ${msg.content}\n`);
+        return;
+      }
+      const resolve = pending.get(messageId);
+      if (resolve) {
+        pending.delete(messageId);
+        resolve(msg.content);
+      }
+      return;
+    }
+
+    if (isProgress) {
+      return;
+    }
+    stdout.write(`\nAgent: ${msg.content}\n`);
+  };
+
+  const outboundTask = (async () => {
+    while (running) {
+      const msg = await bus.consumeOutbound(500);
+      if (!msg) {
+        continue;
+      }
+      routeOutbound(msg);
+    }
+  })();
+
   const rl = readline.createInterface({ input: stdin, output: stdout });
   stdout.write(`Agent loop ready. Workspace: ${workspace}\nType 'exit' to quit.\n`);
+
+  const sendUserMessage = async (content: string): Promise<string> => {
+    const messageId = `cli_${randomUUID().slice(0, 8)}`;
+    const responsePromise = new Promise<string>((resolve) => {
+      pending.set(messageId, resolve);
+    });
+    await bus.publishInbound({
+      channel: "cli",
+      senderId: "user",
+      chatId: "direct",
+      content,
+      metadata: {
+        message_id: messageId,
+      },
+    });
+    return responsePromise;
+  };
+
   while (true) {
     const line = (await rl.question("You: ")).trim();
     if (!line) {
@@ -45,15 +167,16 @@ async function main(): Promise<void> {
       break;
     }
 
-    const response = await agent.processDirect({
-      content: line,
-      sessionKey: "cli:direct",
-      channel: "cli",
-      chatId: "direct",
-    });
+    const response = await sendUserMessage(line);
     stdout.write(`Agent: ${response}\n`);
   }
+
+  running = false;
   rl.close();
+  heartbeat.stop();
+  cron.stop();
+  agent.stop();
+  await Promise.allSettled([runTask, outboundTask]);
 }
 
 main().catch((error) => {

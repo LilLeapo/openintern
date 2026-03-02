@@ -43,6 +43,15 @@ export interface ChannelsConfig {
   sendToolHints: boolean;
 }
 
+export interface HeartbeatConfig {
+  enabled: boolean;
+  intervalS: number;
+}
+
+export interface GatewayConfig {
+  heartbeat: HeartbeatConfig;
+}
+
 export interface AppConfig {
   agents: {
     defaults: AgentDefaultsConfig;
@@ -50,6 +59,7 @@ export interface AppConfig {
   providers: ProvidersConfig;
   tools: ToolsConfig;
   channels: ChannelsConfig;
+  gateway: GatewayConfig;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -88,5 +98,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     sendProgress: true,
     sendToolHints: false,
   },
+  gateway: {
+    heartbeat: {
+      enabled: true,
+      intervalS: 30 * 60,
+    },
+  },
 };
-

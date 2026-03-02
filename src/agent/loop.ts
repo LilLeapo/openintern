@@ -3,14 +3,18 @@ import path from "node:path";
 import { ContextBuilder } from "./context/context-builder.js";
 import { MemoryConsolidator } from "./memory/consolidator.js";
 import { MemoryStore } from "./memory/store.js";
+import { SubagentManager } from "./subagent/manager.js";
 import { Session, SessionStore, type SessionMessage } from "./session/session-store.js";
 import type { InboundMessage, OutboundMessage } from "../bus/events.js";
 import { getSessionKey } from "../bus/events.js";
 import { MessageBus } from "../bus/message-bus.js";
+import type { CronService } from "../cron/service.js";
 import type { LLMProvider, ToolCallRequest } from "../llm/provider.js";
+import { CronTool } from "../tools/builtins/cron.js";
 import { EditFileTool, ListDirTool, ReadFileTool, WriteFileTool } from "../tools/builtins/filesystem.js";
 import { MessageTool } from "../tools/builtins/message.js";
 import { ExecTool } from "../tools/builtins/exec.js";
+import { SpawnTool } from "../tools/builtins/spawn.js";
 import { WebFetchTool, WebSearchTool } from "../tools/builtins/web.js";
 import { ToolRegistry } from "../tools/core/tool-registry.js";
 import { Mutex } from "../utils/mutex.js";
@@ -43,6 +47,8 @@ export interface AgentLoopOptions {
   webSearchApiKey?: string;
   webSearchMaxResults?: number;
   webProxy?: string | null;
+  cronService?: CronService;
+  enableSpawn?: boolean;
   channelsConfig?: {
     sendProgress: boolean;
     sendToolHints: boolean;
@@ -68,6 +74,8 @@ export class AgentLoop {
     sendProgress: boolean;
     sendToolHints: boolean;
   };
+  readonly cronService?: CronService;
+  readonly enableSpawn: boolean;
 
   private running = false;
   private readonly processingLock = new Mutex();
@@ -80,6 +88,7 @@ export class AgentLoop {
   private readonly webSearchApiKey: string;
   private readonly webSearchMaxResults: number;
   private readonly webProxy: string | null;
+  private readonly subagents: SubagentManager;
 
   constructor(options: AgentLoopOptions) {
     this.bus = options.bus;
@@ -96,6 +105,8 @@ export class AgentLoop {
     this.webSearchApiKey = options.webSearchApiKey ?? "";
     this.webSearchMaxResults = options.webSearchMaxResults ?? 5;
     this.webProxy = options.webProxy ?? null;
+    this.cronService = options.cronService;
+    this.enableSpawn = options.enableSpawn ?? true;
     this.channelsConfig = options.channelsConfig;
 
     this.context = new ContextBuilder(this.workspace);
@@ -103,6 +114,20 @@ export class AgentLoop {
     this.consolidator = new MemoryConsolidator(this.memory);
     this.sessions = options.sessionStore ?? new SessionStore(this.workspace);
     this.tools = new ToolRegistry();
+    this.subagents = new SubagentManager({
+      provider: this.provider,
+      workspace: this.workspace,
+      bus: this.bus,
+      model: this.model,
+      temperature: this.temperature,
+      maxTokens: this.maxTokens,
+      reasoningEffort: this.reasoningEffort,
+      webSearchApiKey: this.webSearchApiKey,
+      webSearchMaxResults: this.webSearchMaxResults,
+      webProxy: this.webProxy,
+      execTimeoutSeconds: this.execTimeoutSeconds,
+      restrictToWorkspace: this.restrictToWorkspace,
+    });
 
     this.registerDefaultTools();
   }
@@ -123,6 +148,12 @@ export class AgentLoop {
     this.tools.register(new WebSearchTool(this.webSearchApiKey, this.webSearchMaxResults, this.webProxy));
     this.tools.register(new WebFetchTool(50_000, this.webProxy));
     this.tools.register(new MessageTool((msg) => this.bus.publishOutbound(msg)));
+    if (this.enableSpawn) {
+      this.tools.register(new SpawnTool(this.subagents));
+    }
+    if (this.cronService) {
+      this.tools.register(new CronTool(this.cronService));
+    }
   }
 
   stop(): void {
@@ -202,8 +233,9 @@ export class AgentLoop {
       task.abortController.abort();
     }
     await Promise.allSettled(tasks.map((t) => t.promise));
+    const subCancelled = await this.subagents.cancelBySession(sessionKey);
 
-    const count = tasks.length;
+    const count = tasks.length + subCancelled;
     await this.bus.publishOutbound({
       channel: message.channel,
       chatId: message.chatId,
@@ -237,9 +269,18 @@ export class AgentLoop {
   }
 
   private setToolContext(channel: string, chatId: string, messageId?: string): void {
-    const messageTool = this.tools.get("message");
-    if (messageTool && messageTool instanceof MessageTool) {
-      messageTool.setContext(channel, chatId, messageId);
+    for (const toolName of ["message", "spawn", "cron"] as const) {
+      const tool = this.tools.get(toolName);
+      if (!tool) {
+        continue;
+      }
+      if (toolName === "message" && tool instanceof MessageTool) {
+        tool.setContext(channel, chatId, messageId);
+        continue;
+      }
+      if (toolName !== "message" && "setContext" in tool && typeof tool.setContext === "function") {
+        tool.setContext(channel, chatId);
+      }
     }
   }
 

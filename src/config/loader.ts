@@ -29,6 +29,10 @@ export function getConfigPath(): string {
   return path.join(os.homedir(), ".openintern", "config.json");
 }
 
+export function getDataDir(): string {
+  return path.join(os.homedir(), ".openintern");
+}
+
 export function expandHome(input: string): string {
   if (input === "~") {
     return os.homedir();
@@ -68,4 +72,3 @@ export async function loadOrCreateConfig(configPath = getConfigPath()): Promise<
   }
   return config;
 }
-

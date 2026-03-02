@@ -61,7 +61,7 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["tools", "web", "search", "max_results"], ["tools", "web", "search", "maxResults"]);
   movePath(out, ["channels", "send_progress"], ["channels", "sendProgress"]);
   movePath(out, ["channels", "send_tool_hints"], ["channels", "sendToolHints"]);
+  movePath(out, ["gateway", "heartbeat", "interval_s"], ["gateway", "heartbeat", "intervalS"]);
 
   return out;
 }
-
