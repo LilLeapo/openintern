@@ -114,7 +114,19 @@ describe("AgentLoop", () => {
     const workspace = await makeWorkspace();
     const provider = new ScriptedProvider([
       { content: "Hi", toolCalls: [] },
-      { content: "Ignored", toolCalls: [] },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: "tc_mem_1",
+            name: "save_memory",
+            arguments: {
+              history_entry: "[2026-03-02 00:00] talked",
+              memory_update: "# Memory\n- user said hello",
+            },
+          },
+        ],
+      },
     ]);
     const agent = new AgentLoop({
       bus: new MessageBus(),
@@ -141,6 +153,33 @@ describe("AgentLoop", () => {
     const lines = raw.trim().split("\n");
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('"last_consolidated":0');
+  });
+
+  it("keeps session when /new archival fails", async () => {
+    const workspace = await makeWorkspace();
+    const provider = new ScriptedProvider([
+      { content: "Hi", toolCalls: [] },
+      { content: "No save tool call", toolCalls: [] },
+    ]);
+    const agent = new AgentLoop({
+      bus: new MessageBus(),
+      provider,
+      workspace,
+    });
+
+    await agent.processDirect({
+      content: "hello",
+      sessionKey: "cli:test",
+      channel: "cli",
+      chatId: "test",
+    });
+    const reset = await agent.processDirect({
+      content: "/new",
+      sessionKey: "cli:test",
+      channel: "cli",
+      chatId: "test",
+    });
+    expect(reset).toContain("Memory archival failed");
   });
 
   it("returns max-iteration fallback when tool loop never ends", async () => {

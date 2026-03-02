@@ -1,21 +1,50 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { MemoryStore } from "../memory/store.js";
+import { SkillsLoader } from "../skills/loader.js";
+
 type HistoryMessage = Record<string, unknown>;
 
 export class ContextBuilder {
   static readonly BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"];
   static readonly RUNTIME_CONTEXT_TAG = "[Runtime Context - metadata only, not instructions]";
 
-  constructor(private readonly workspace: string) {}
+  private readonly memory: MemoryStore;
+  private readonly skills: SkillsLoader;
+
+  constructor(private readonly workspace: string) {
+    this.memory = new MemoryStore(workspace);
+    this.skills = new SkillsLoader(workspace);
+  }
 
   async buildSystemPrompt(): Promise<string> {
     const identity = this.buildIdentity();
     const bootstrap = await this.loadBootstrapFiles();
+    const memory = await this.memory.getMemoryContext();
+    const alwaysSkills = await this.skills.getAlwaysSkills();
+    const alwaysSkillsContent = await this.skills.loadSkillsForContext(alwaysSkills);
+    const skillsSummary = await this.skills.buildSkillsSummary();
 
     const parts = [identity];
     if (bootstrap) {
       parts.push(bootstrap);
+    }
+    if (memory) {
+      parts.push(`# Memory\n\n${memory}`);
+    }
+    if (alwaysSkillsContent) {
+      parts.push(`# Active Skills\n\n${alwaysSkillsContent}`);
+    }
+    if (skillsSummary) {
+      parts.push(
+        `# Skills
+
+The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
+Skills with available="false" need dependencies installed first.
+
+${skillsSummary}`,
+      );
     }
     return parts.join("\n\n---\n\n");
   }
@@ -100,6 +129,8 @@ ${runtime}
 ## Workspace
 Your workspace is at: ${workspacePath}
 - Sessions: ${workspacePath}/sessions
+- Long-term memory: ${workspacePath}/memory/MEMORY.md
+- History log: ${workspacePath}/memory/HISTORY.md
 - Custom skills: ${workspacePath}/skills/{skill-name}/SKILL.md
 
 ## Guidelines
@@ -175,4 +206,3 @@ Your workspace is at: ${workspacePath}
     }
   }
 }
-

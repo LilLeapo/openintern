@@ -1,6 +1,8 @@
 import path from "node:path";
 
 import { ContextBuilder } from "./context/context-builder.js";
+import { MemoryConsolidator } from "./memory/consolidator.js";
+import { MemoryStore } from "./memory/store.js";
 import { Session, SessionStore, type SessionMessage } from "./session/session-store.js";
 import type { InboundMessage, OutboundMessage } from "../bus/events.js";
 import { getSessionKey } from "../bus/events.js";
@@ -9,6 +11,7 @@ import type { LLMProvider, ToolCallRequest } from "../llm/provider.js";
 import { EditFileTool, ListDirTool, ReadFileTool, WriteFileTool } from "../tools/builtins/filesystem.js";
 import { MessageTool } from "../tools/builtins/message.js";
 import { ExecTool } from "../tools/builtins/exec.js";
+import { WebFetchTool, WebSearchTool } from "../tools/builtins/web.js";
 import { ToolRegistry } from "../tools/core/tool-registry.js";
 import { Mutex } from "../utils/mutex.js";
 
@@ -36,6 +39,14 @@ export interface AgentLoopOptions {
   memoryWindow?: number;
   reasoningEffort?: string | null;
   restrictToWorkspace?: boolean;
+  execTimeoutSeconds?: number;
+  webSearchApiKey?: string;
+  webSearchMaxResults?: number;
+  webProxy?: string | null;
+  channelsConfig?: {
+    sendProgress: boolean;
+    sendToolHints: boolean;
+  };
   sessionStore?: SessionStore;
 }
 
@@ -53,10 +64,22 @@ export class AgentLoop {
   readonly context: ContextBuilder;
   readonly sessions: SessionStore;
   readonly tools: ToolRegistry;
+  readonly channelsConfig?: {
+    sendProgress: boolean;
+    sendToolHints: boolean;
+  };
 
   private running = false;
   private readonly processingLock = new Mutex();
   private readonly activeTasks = new Map<string, Set<ActiveTask>>();
+  private readonly memory: MemoryStore;
+  private readonly consolidator: MemoryConsolidator;
+  private readonly consolidating = new Set<string>();
+  private readonly consolidationLocks = new Map<string, Mutex>();
+  private readonly execTimeoutSeconds: number;
+  private readonly webSearchApiKey: string;
+  private readonly webSearchMaxResults: number;
+  private readonly webProxy: string | null;
 
   constructor(options: AgentLoopOptions) {
     this.bus = options.bus;
@@ -69,8 +92,15 @@ export class AgentLoop {
     this.memoryWindow = options.memoryWindow ?? 100;
     this.reasoningEffort = options.reasoningEffort ?? null;
     this.restrictToWorkspace = options.restrictToWorkspace ?? false;
+    this.execTimeoutSeconds = options.execTimeoutSeconds ?? 60;
+    this.webSearchApiKey = options.webSearchApiKey ?? "";
+    this.webSearchMaxResults = options.webSearchMaxResults ?? 5;
+    this.webProxy = options.webProxy ?? null;
+    this.channelsConfig = options.channelsConfig;
 
     this.context = new ContextBuilder(this.workspace);
+    this.memory = new MemoryStore(this.workspace);
+    this.consolidator = new MemoryConsolidator(this.memory);
     this.sessions = options.sessionStore ?? new SessionStore(this.workspace);
     this.tools = new ToolRegistry();
 
@@ -85,11 +115,13 @@ export class AgentLoop {
     this.tools.register(new ListDirTool(this.workspace, allowedDir));
     this.tools.register(
       new ExecTool({
-        timeoutMs: 60_000,
+        timeoutMs: this.execTimeoutSeconds * 1000,
         workingDir: this.workspace,
         restrictToWorkspace: this.restrictToWorkspace,
       }),
     );
+    this.tools.register(new WebSearchTool(this.webSearchApiKey, this.webSearchMaxResults, this.webProxy));
+    this.tools.register(new WebFetchTool(50_000, this.webProxy));
     this.tools.register(new MessageTool((msg) => this.bus.publishOutbound(msg)));
   }
 
@@ -354,6 +386,36 @@ export class AgentLoop {
     const command = message.content.trim().toLowerCase();
 
     if (command === "/new") {
+      const lock = this.getConsolidationLock(session.key);
+      this.consolidating.add(session.key);
+      try {
+        await lock.runExclusive(async () => {
+          const snapshot = session.messages.slice(session.lastConsolidated);
+          if (snapshot.length === 0) {
+            return;
+          }
+          const temp = new Session(session.key);
+          temp.messages = [...snapshot];
+          const ok = await this.consolidator.consolidate({
+            session: temp,
+            provider: this.provider,
+            model: this.model,
+            archiveAll: true,
+            memoryWindow: this.memoryWindow,
+          });
+          if (!ok) {
+            throw new Error("consolidate_failed");
+          }
+        });
+      } catch {
+        this.consolidating.delete(session.key);
+        return {
+          channel: message.channel,
+          chatId: message.chatId,
+          content: "Memory archival failed, session not cleared. Please try again.",
+        };
+      }
+      this.consolidating.delete(session.key);
       session.clear();
       await this.sessions.save(session);
       this.sessions.invalidate(session.key);
@@ -369,6 +431,24 @@ export class AgentLoop {
         chatId: message.chatId,
         content: "Commands:\n/new - Start a new conversation\n/stop - Stop the current task\n/help - Show commands",
       };
+    }
+
+    const unconsolidated = session.messages.length - session.lastConsolidated;
+    if (unconsolidated >= this.memoryWindow && !this.consolidating.has(session.key)) {
+      this.consolidating.add(session.key);
+      const lock = this.getConsolidationLock(session.key);
+      void lock
+        .runExclusive(async () => {
+          await this.consolidator.consolidate({
+            session,
+            provider: this.provider,
+            model: this.model,
+            memoryWindow: this.memoryWindow,
+          });
+        })
+        .finally(() => {
+          this.consolidating.delete(session.key);
+        });
     }
 
     this.setToolContext(message.channel, message.chatId, this.metadataString(message.metadata, "message_id"));
@@ -389,6 +469,15 @@ export class AgentLoop {
     const progressHandler =
       onProgress ??
       (async (content: string, meta?: { toolHint?: boolean }) => {
+        const isToolHint = meta?.toolHint ?? false;
+        if (this.channelsConfig) {
+          if (isToolHint && !this.channelsConfig.sendToolHints) {
+            return;
+          }
+          if (!isToolHint && !this.channelsConfig.sendProgress) {
+            return;
+          }
+        }
         await this.bus.publishOutbound({
           channel: message.channel,
           chatId: message.chatId,
@@ -396,7 +485,7 @@ export class AgentLoop {
           metadata: {
             ...(message.metadata ?? {}),
             _progress: true,
-            _tool_hint: meta?.toolHint ?? false,
+            _tool_hint: isToolHint,
           },
         });
       });
@@ -458,5 +547,15 @@ export class AgentLoop {
   ): string | undefined {
     const raw = metadata?.[key];
     return typeof raw === "string" ? raw : undefined;
+  }
+
+  private getConsolidationLock(sessionKey: string): Mutex {
+    const existing = this.consolidationLocks.get(sessionKey);
+    if (existing) {
+      return existing;
+    }
+    const lock = new Mutex();
+    this.consolidationLocks.set(sessionKey, lock);
+    return lock;
   }
 }
