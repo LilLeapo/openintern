@@ -183,7 +183,9 @@ main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   stderr.write(`Fatal error: ${message}\n`);
   if (message.includes("No API key configured")) {
-    stderr.write("Configure ~/.openintern/config.json -> providers.openaiCompatible.apiKey\n");
+    stderr.write(
+      "Configure ~/.openintern/config.json -> providers.openaiCompatible.apiKey or providers.anthropicCompatible.apiKey\n",
+    );
   }
   process.exitCode = 1;
 });

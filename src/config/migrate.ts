@@ -54,9 +54,18 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["agents", "defaults", "max_tokens"], ["agents", "defaults", "maxTokens"]);
   movePath(out, ["agents", "defaults", "memory_window"], ["agents", "defaults", "memoryWindow"]);
   movePath(out, ["agents", "defaults", "reasoning_effort"], ["agents", "defaults", "reasoningEffort"]);
+  movePath(out, ["agents", "defaults", "provider_name"], ["agents", "defaults", "provider"]);
   movePath(out, ["providers", "openai_compatible"], ["providers", "openaiCompatible"]);
   movePath(out, ["providers", "openaiCompatible", "api_key"], ["providers", "openaiCompatible", "apiKey"]);
   movePath(out, ["providers", "openaiCompatible", "api_base"], ["providers", "openaiCompatible", "apiBase"]);
+  movePath(out, ["providers", "anthropic_compatible"], ["providers", "anthropicCompatible"]);
+  movePath(out, ["providers", "anthropicCompatible", "api_key"], ["providers", "anthropicCompatible", "apiKey"]);
+  movePath(out, ["providers", "anthropicCompatible", "api_base"], ["providers", "anthropicCompatible", "apiBase"]);
+  movePath(
+    out,
+    ["providers", "anthropicCompatible", "anthropic_version"],
+    ["providers", "anthropicCompatible", "anthropicVersion"],
+  );
   movePath(out, ["tools", "web", "search", "api_key"], ["tools", "web", "search", "apiKey"]);
   movePath(out, ["tools", "web", "search", "max_results"], ["tools", "web", "search", "maxResults"]);
   movePath(out, ["channels", "send_progress"], ["channels", "sendProgress"]);

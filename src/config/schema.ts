@@ -1,6 +1,7 @@
 export interface AgentDefaultsConfig {
   workspace: string;
   model: string;
+  provider: "auto" | "openaiCompatible" | "anthropicCompatible";
   maxTokens: number;
   temperature: number;
   maxToolIterations: number;
@@ -14,8 +15,13 @@ export interface ProviderConfig {
   extraHeaders?: Record<string, string>;
 }
 
+export interface AnthropicProviderConfig extends ProviderConfig {
+  anthropicVersion: string;
+}
+
 export interface ProvidersConfig {
   openaiCompatible: ProviderConfig;
+  anthropicCompatible: AnthropicProviderConfig;
 }
 
 export interface WebSearchConfig {
@@ -67,6 +73,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     defaults: {
       workspace: "~/.openintern/workspace",
       model: "gpt-4o-mini",
+      provider: "auto",
       maxTokens: 4096,
       temperature: 0.1,
       maxToolIterations: 40,
@@ -78,6 +85,12 @@ export const DEFAULT_CONFIG: AppConfig = {
     openaiCompatible: {
       apiKey: "",
       apiBase: "https://api.openai.com/v1",
+      extraHeaders: {},
+    },
+    anthropicCompatible: {
+      apiKey: "",
+      apiBase: "https://api.anthropic.com/v1",
+      anthropicVersion: "2023-06-01",
       extraHeaders: {},
     },
   },

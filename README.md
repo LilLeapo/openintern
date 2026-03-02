@@ -1,29 +1,45 @@
-# openintern agent loop (TypeScript)
+# OpenIntern Agent (TypeScript)
 
-TypeScript implementation of a nanobot-style agent loop:
+TypeScript replication project inspired by `reference/nanobot`, focused on a compact but extensible agent core.
 
-- inbound/outbound async message bus
-- session-based history persistence (JSONL)
-- iterative `LLM -> tool calls -> LLM` loop
-- slash commands: `/help`, `/new`, `/stop`
-- memory consolidation: `memory/MEMORY.md` + `memory/HISTORY.md`
-- skills summary + always-on skills loading
-- core tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `exec`, `message`, `web_search`, `web_fetch`
-- OpenAI-compatible provider and config-driven startup
+## Current Capabilities
+
+- Event-driven agent loop (`LLM -> tool calls -> LLM`) with tool iteration guard.
+- Async bus and session persistence (JSONL).
+- Commands: `/help`, `/new`, `/stop`.
+- Memory consolidation:
+  - long-term memory: `memory/MEMORY.md`
+  - history log: `memory/HISTORY.md`
+- Skills discovery and summary injection into system context.
+- Built-in tools:
+  - `read_file`, `write_file`, `edit_file`, `list_dir`
+  - `exec`
+  - `message`
+  - `web_search`, `web_fetch`
+  - `cron`
+  - `spawn` (subagent)
+- Autonomy pipeline:
+  - cron scheduling service
+  - heartbeat service
+  - subagent background execution + system callback
+- Provider layer:
+  - OpenAI-compatible API
+  - Anthropic-compatible API
+  - provider factory with `auto` routing
 
 ## Project Structure
 
 ```text
 src/
   agent/
+    context/context-builder.ts
+    loop.ts
     memory/
       store.ts
       consolidator.ts
-    skills/
-      loader.ts
-    loop.ts
-    context/context-builder.ts
     session/session-store.ts
+    skills/loader.ts
+    subagent/manager.ts
   bus/
     async-queue.ts
     events.ts
@@ -32,10 +48,16 @@ src/
     schema.ts
     loader.ts
     migrate.ts
+  cron/
+    types.ts
+    service.ts
+  heartbeat/
+    service.ts
   llm/
     provider.ts
     provider-factory.ts
     openai-compatible-provider.ts
+    anthropic-compatible-provider.ts
   tools/
     core/
       json-schema.ts
@@ -46,47 +68,93 @@ src/
       exec.ts
       message.ts
       web.ts
+      cron.ts
+      spawn.ts
   templates/
     defaults.ts
     sync.ts
-  utils/
-    mutex.ts
   cli/
     repl.ts
   index.ts
 ```
 
-## Config
-
-On first run, config is created at `~/.openintern/config.json`.
-
-Set at least:
-
-```json
-{
-  "providers": {
-    "openaiCompatible": {
-      "apiKey": "YOUR_KEY",
-      "apiBase": "https://api.openai.com/v1"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": "gpt-4o-mini"
-    }
-  }
-}
-```
-
-## Run
+## Quick Start
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-## Test
+First run auto-creates config at `~/.openintern/config.json`.
+
+## LLM Config
+
+Minimal example:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "provider": "auto",
+      "model": "gpt-4o-mini"
+    }
+  },
+  "providers": {
+    "openaiCompatible": {
+      "apiKey": "YOUR_OPENAI_COMPAT_KEY",
+      "apiBase": "https://api.openai.com/v1"
+    },
+    "anthropicCompatible": {
+      "apiKey": "YOUR_ANTHROPIC_KEY",
+      "apiBase": "https://api.anthropic.com/v1",
+      "anthropicVersion": "2023-06-01"
+    }
+  }
+}
+```
+
+Provider notes:
+
+- Set `agents.defaults.provider = "openaiCompatible"` to force OpenAI-compatible path.
+- Set `agents.defaults.provider = "anthropicCompatible"` to force Anthropic-compatible path.
+- In `auto` mode, Claude-like model names prefer `anthropicCompatible` when key exists.
+
+## Tests
 
 ```bash
+pnpm typecheck
 pnpm test
 ```
+
+## Enterprise Direction (Planned, Not Implemented Yet)
+
+This project is being planned for company-internal multi-user usage with database-backed memory and RAG.
+
+### Target Architecture
+
+- **Primary DB**: PostgreSQL
+- **Vector Search**: `pgvector` (first stage)
+- **Object Storage**: MinIO/S3 (original files)
+- **Async Jobs**: worker queue for chunking/embedding/session summarization
+
+### Memory and Knowledge Layers
+
+- **Session memory**: short-term context in active session
+- **Session summary memory**: periodic summary promoted into user memory
+- **User long-term memory**: personal preferences/facts (private scope)
+- **Organization knowledge base**: shared docs with ACL
+
+### Multi-user and Security Baseline
+
+- All business data carries `tenant_id`.
+- Retrieval must apply ACL filters before ranking.
+- User memory and shared knowledge are stored separately.
+- Memory writes are versioned and auditable (to avoid silent contamination).
+
+### Planned Milestones
+
+1. DB schema + tenant model + ACL baseline.
+2. Document ingestion pipeline + RAG retrieval API.
+3. Session-to-memory summarization pipeline.
+4. Evaluation/observability dashboards (retrieval quality, hallucination checks).
+5. Channel integration and enterprise auth.

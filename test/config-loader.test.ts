@@ -36,7 +36,9 @@ describe("config loader", () => {
     const file = path.join(dir, "config.json");
     const config = await loadConfig(file);
     expect(config.agents.defaults.model).toBe("gpt-4o-mini");
+    expect(config.agents.defaults.provider).toBe("auto");
     expect(config.providers.openaiCompatible.apiBase).toBe("https://api.openai.com/v1");
+    expect(config.providers.anthropicCompatible.apiBase).toBe("https://api.anthropic.com/v1");
   });
 
   it("migrates old key names", async () => {
@@ -49,6 +51,11 @@ describe("config loader", () => {
           openai_compatible: {
             api_key: "k1",
             api_base: "http://localhost:1234/v1",
+          },
+          anthropic_compatible: {
+            api_key: "ak1",
+            api_base: "http://localhost:5000/v1",
+            anthropic_version: "2023-06-01",
           },
         },
         tools: {
@@ -65,6 +72,9 @@ describe("config loader", () => {
     const config = await loadConfig(file);
     expect(config.providers.openaiCompatible.apiKey).toBe("k1");
     expect(config.providers.openaiCompatible.apiBase).toBe("http://localhost:1234/v1");
+    expect(config.providers.anthropicCompatible.apiKey).toBe("ak1");
+    expect(config.providers.anthropicCompatible.apiBase).toBe("http://localhost:5000/v1");
+    expect(config.providers.anthropicCompatible.anthropicVersion).toBe("2023-06-01");
     expect(config.tools.web.search.apiKey).toBe("brave1");
     expect(config.tools.web.search.maxResults).toBe(3);
   });
@@ -97,4 +107,3 @@ describe("config loader", () => {
     expect(path.isAbsolute(resolveWorkspacePath(config))).toBe(true);
   });
 });
-
