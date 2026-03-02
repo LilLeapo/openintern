@@ -54,6 +54,17 @@ export interface HeartbeatConfig {
   intervalS: number;
 }
 
+export interface McpServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  disabled?: boolean;
+}
+
+export interface McpConfig {
+  servers: Record<string, McpServerConfig>;
+}
+
 export interface GatewayConfig {
   heartbeat: HeartbeatConfig;
 }
@@ -66,6 +77,7 @@ export interface AppConfig {
   tools: ToolsConfig;
   channels: ChannelsConfig;
   gateway: GatewayConfig;
+  mcp: McpConfig;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -116,5 +128,8 @@ export const DEFAULT_CONFIG: AppConfig = {
       enabled: true,
       intervalS: 30 * 60,
     },
+  },
+  mcp: {
+    servers: {},
   },
 };
