@@ -18,6 +18,7 @@ TypeScript replication project inspired by `reference/nanobot`, focused on a com
   - `web_search`, `web_fetch`
   - `cron`
   - `spawn` (subagent)
+  - `memory_retrieve`, `memory_save`, `memory_delete` (when MemU is enabled)
 - Autonomy pipeline:
   - cron scheduling service
   - heartbeat service
@@ -70,6 +71,7 @@ src/
       web.ts
       cron.ts
       spawn.ts
+      memory.ts
   templates/
     defaults.ts
     sync.ts
@@ -116,9 +118,14 @@ Minimal example:
       "apiKey": "YOUR_MEMU_API_KEY",
       "baseUrl": "https://api.memu.so",
       "agentId": "openintern",
+      "scopes": {
+        "chat": "chat",
+        "papers": "papers"
+      },
       "timeoutMs": 15000,
       "retrieve": true,
       "memorize": true,
+      "memorizeMode": "tool",
       "apiStyle": "cloudV3",
       "endpoints": {}
     }
@@ -146,7 +153,10 @@ Provider notes:
 - Set `agents.defaults.provider = "openaiCompatible"` to force OpenAI-compatible path.
 - Set `agents.defaults.provider = "anthropicCompatible"` to force Anthropic-compatible path.
 - In `auto` mode, Claude-like model names prefer `anthropicCompatible` when key exists.
-- Set `memory.memu.enabled = true` to enable MemU cloud retrieval + async memorize.
+- Set `memory.memu.enabled = true` to enable MemU retrieval and memory tools.
+- `memory.memu.memorizeMode = "tool"` (default) enables selective memory via tools only.
+- Set `memory.memu.memorizeMode = "auto"` to restore per-turn auto memorize behavior.
+- `memory.memu.scopes.chat` and `memory.memu.scopes.papers` control logical scope suffixes.
 - For local MemU-style services, set `memory.memu.apiStyle = "localSimple"` and override endpoints, e.g.:
 
 ```json
@@ -159,7 +169,8 @@ Provider notes:
       "apiKey": "local-memu-dev-key",
       "endpoints": {
         "memorize": "/memorize",
-        "retrieve": "/recall"
+        "retrieve": "/recall",
+        "clear": "/clear"
       }
     }
   }

@@ -87,15 +87,21 @@ export interface MemUConfig {
   apiKey: string;
   baseUrl: string;
   agentId: string;
+  scopes: {
+    chat: string;
+    papers: string;
+  };
   timeoutMs: number;
   retrieve: boolean;
   memorize: boolean;
+  memorizeMode: "auto" | "tool";
   apiStyle: "cloudV3" | "localSimple" | "mem0V1";
   endpoints: {
     memorize?: string;
     retrieve?: string;
     categories?: string;
     status?: string;
+    clear?: string;
   };
 }
 
@@ -160,9 +166,14 @@ export const DEFAULT_CONFIG: AppConfig = {
       apiKey: "",
       baseUrl: "https://api.memu.so",
       agentId: "openintern",
+      scopes: {
+        chat: "chat",
+        papers: "papers",
+      },
       timeoutMs: 15_000,
       retrieve: true,
       memorize: true,
+      memorizeMode: "tool",
       apiStyle: "cloudV3",
       endpoints: {},
     },

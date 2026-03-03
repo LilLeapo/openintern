@@ -81,9 +81,12 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["memory", "memu", "api_key"], ["memory", "memu", "apiKey"]);
   movePath(out, ["memory", "memu", "base_url"], ["memory", "memu", "baseUrl"]);
   movePath(out, ["memory", "memu", "agent_id"], ["memory", "memu", "agentId"]);
+  movePath(out, ["memory", "memu", "chat_scope"], ["memory", "memu", "scopes", "chat"]);
+  movePath(out, ["memory", "memu", "papers_scope"], ["memory", "memu", "scopes", "papers"]);
   movePath(out, ["memory", "memu", "timeout_ms"], ["memory", "memu", "timeoutMs"]);
   movePath(out, ["memory", "memu", "retrieve_enabled"], ["memory", "memu", "retrieve"]);
   movePath(out, ["memory", "memu", "memorize_enabled"], ["memory", "memu", "memorize"]);
+  movePath(out, ["memory", "memu", "memorize_mode"], ["memory", "memu", "memorizeMode"]);
   movePath(out, ["memory", "memu", "api_style"], ["memory", "memu", "apiStyle"]);
   movePath(
     out,
@@ -104,6 +107,11 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
     out,
     ["memory", "memu", "status_endpoint"],
     ["memory", "memu", "endpoints", "status"],
+  );
+  movePath(
+    out,
+    ["memory", "memu", "clear_endpoint"],
+    ["memory", "memu", "endpoints", "clear"],
   );
   movePath(out, ["channels", "send_progress"], ["channels", "sendProgress"]);
   movePath(out, ["channels", "send_tool_hints"], ["channels", "sendToolHints"]);

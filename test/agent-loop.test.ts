@@ -321,9 +321,14 @@ describe("AgentLoop", () => {
           apiKey: "memu-key",
           baseUrl: "https://api.memu.so",
           agentId: "openintern-test",
+          scopes: {
+            chat: "chat",
+            papers: "papers",
+          },
           timeoutMs: 3000,
           retrieve: true,
           memorize: true,
+          memorizeMode: "auto",
           apiStyle: "cloudV3",
           endpoints: {},
         },
@@ -367,6 +372,6 @@ describe("AgentLoop", () => {
     expect(typeof retrieveBodyRaw).toBe("string");
     const retrieveBody = JSON.parse(String(retrieveBodyRaw)) as Record<string, unknown>;
     expect(retrieveBody.user_id).toBe("cli:test");
-    expect(retrieveBody.agent_id).toBe("openintern-test");
+    expect(retrieveBody.agent_id).toBe("openintern-test:chat");
   });
 });
