@@ -84,6 +84,27 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["memory", "memu", "timeout_ms"], ["memory", "memu", "timeoutMs"]);
   movePath(out, ["memory", "memu", "retrieve_enabled"], ["memory", "memu", "retrieve"]);
   movePath(out, ["memory", "memu", "memorize_enabled"], ["memory", "memu", "memorize"]);
+  movePath(out, ["memory", "memu", "api_style"], ["memory", "memu", "apiStyle"]);
+  movePath(
+    out,
+    ["memory", "memu", "memorize_endpoint"],
+    ["memory", "memu", "endpoints", "memorize"],
+  );
+  movePath(
+    out,
+    ["memory", "memu", "retrieve_endpoint"],
+    ["memory", "memu", "endpoints", "retrieve"],
+  );
+  movePath(
+    out,
+    ["memory", "memu", "categories_endpoint"],
+    ["memory", "memu", "endpoints", "categories"],
+  );
+  movePath(
+    out,
+    ["memory", "memu", "status_endpoint"],
+    ["memory", "memu", "endpoints", "status"],
+  );
   movePath(out, ["channels", "send_progress"], ["channels", "sendProgress"]);
   movePath(out, ["channels", "send_tool_hints"], ["channels", "sendToolHints"]);
   movePath(out, ["gateway", "heartbeat", "host"], ["gateway", "host"]);

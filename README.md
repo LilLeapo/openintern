@@ -118,7 +118,9 @@ Minimal example:
       "agentId": "openintern",
       "timeoutMs": 15000,
       "retrieve": true,
-      "memorize": true
+      "memorize": true,
+      "apiStyle": "cloudV3",
+      "endpoints": {}
     }
   },
   "channels": {
@@ -145,6 +147,41 @@ Provider notes:
 - Set `agents.defaults.provider = "anthropicCompatible"` to force Anthropic-compatible path.
 - In `auto` mode, Claude-like model names prefer `anthropicCompatible` when key exists.
 - Set `memory.memu.enabled = true` to enable MemU cloud retrieval + async memorize.
+- For local MemU-style services, set `memory.memu.apiStyle = "localSimple"` and override endpoints, e.g.:
+
+```json
+{
+  "memory": {
+    "memu": {
+      "enabled": true,
+      "apiStyle": "localSimple",
+      "baseUrl": "http://127.0.0.1:8000",
+      "apiKey": "local-memu-dev-key",
+      "endpoints": {
+        "memorize": "/memorize",
+        "retrieve": "/recall"
+      }
+    }
+  }
+}
+```
+
+- For local OpenCoWork/Mem0-compatible endpoints (`/api/v1/memories*`), use:
+
+```json
+{
+  "memory": {
+    "memu": {
+      "enabled": true,
+      "apiStyle": "mem0V1",
+      "baseUrl": "http://127.0.0.1:8000",
+      "apiKey": "",
+      "agentId": "openintern"
+    }
+  }
+}
+```
+
 - Set `channels.feishu.enabled = true` to enable Feishu webhook IM bridge (event path = `gateway.host:gateway.port + channels.feishu.webhookPath`).
 
 ## Tests

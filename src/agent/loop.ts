@@ -140,12 +140,17 @@ export class AgentLoop {
       restrictToWorkspace: this.restrictToWorkspace,
     });
     const memuConfig = options.memoryConfig?.memu;
-    const memuEnabled = memuConfig?.enabled === true && Boolean(memuConfig.apiKey.trim());
+    const memuApiStyle = memuConfig?.apiStyle ?? "cloudV3";
+    const requiresMemuApiKey = memuApiStyle === "cloudV3";
+    const memuEnabled =
+      memuConfig?.enabled === true && (!requiresMemuApiKey || Boolean(memuConfig.apiKey.trim()));
     this.memuClient = memuEnabled
       ? new MemUClient({
           apiKey: memuConfig?.apiKey ?? "",
           baseUrl: memuConfig?.baseUrl ?? "https://api.memu.so",
           timeoutMs: memuConfig?.timeoutMs ?? 15_000,
+          apiStyle: memuConfig?.apiStyle ?? "cloudV3",
+          endpoints: memuConfig?.endpoints ?? {},
         })
       : null;
     this.memuRetrieveEnabled = memuEnabled && (memuConfig?.retrieve ?? true);

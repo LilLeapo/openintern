@@ -90,6 +90,13 @@ export interface MemUConfig {
   timeoutMs: number;
   retrieve: boolean;
   memorize: boolean;
+  apiStyle: "cloudV3" | "localSimple" | "mem0V1";
+  endpoints: {
+    memorize?: string;
+    retrieve?: string;
+    categories?: string;
+    status?: string;
+  };
 }
 
 export interface MemoryConfig {
@@ -156,6 +163,8 @@ export const DEFAULT_CONFIG: AppConfig = {
       timeoutMs: 15_000,
       retrieve: true,
       memorize: true,
+      apiStyle: "cloudV3",
+      endpoints: {},
     },
   },
   channels: {
