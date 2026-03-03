@@ -182,7 +182,14 @@ Provider notes:
 }
 ```
 
-- Set `channels.feishu.enabled = true` to enable Feishu webhook IM bridge (event path = `gateway.host:gateway.port + channels.feishu.webhookPath`).
+- Set `channels.feishu.enabled = true` to enable Feishu long connection mode (WebSocket via official SDK).
+- In Feishu Open Platform:
+  - Enable event subscription for `im.message.receive_v1`.
+  - Set subscription mode to **Long Connection**.
+- No callback URL or public ingress is required in long connection mode.
+- `encryptKey` and `verificationToken` are optional in long connection mode.
+- `channels.feishu.webhookPath` is kept for compatibility and is ignored in long connection mode.
+- `allowFrom` controls sender allowlist (`["*"]` to allow all users).
 
 ## Tests
 

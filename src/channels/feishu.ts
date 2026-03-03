@@ -1,19 +1,16 @@
-import { createDecipheriv, randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
+
+import * as Lark from "@larksuiteoapi/node-sdk";
 
 import type { OutboundMessage } from "../bus/events.js";
 import { MessageBus } from "../bus/message-bus.js";
 import type { FeishuChannelConfig } from "../config/schema.js";
 
-const MAX_BODY_BYTES = 512_000;
 const TOKEN_REFRESH_SKEW_MS = 60_000;
-const EVENT_OK = JSON.stringify({ code: 0, msg: "ok" });
 
 interface FeishuGatewayOptions {
   config: FeishuChannelConfig;
   bus: MessageBus;
-  host: string;
-  port: number;
 }
 
 interface CachedToken {
@@ -21,13 +18,19 @@ interface CachedToken {
   expiresAt: number;
 }
 
-interface FeishuEventEnvelope {
-  type?: string;
-  token?: string;
-  challenge?: string;
-  encrypt?: string;
-  header?: {
-    event_type?: string;
+interface FeishuMessageEvent {
+  sender?: {
+    sender_type?: string;
+    sender_id?: {
+      open_id?: string;
+    };
+  };
+  message?: {
+    message_id?: string;
+    chat_id?: string;
+    chat_type?: string;
+    message_type?: string;
+    content?: string;
   };
   event?: {
     sender?: {
@@ -49,75 +52,58 @@ interface FeishuEventEnvelope {
 export class FeishuChannel {
   private readonly config: FeishuChannelConfig;
   private readonly bus: MessageBus;
-  private readonly host: string;
-  private readonly port: number;
 
-  private server: Server | null = null;
+  private wsClient: Lark.WSClient | null = null;
   private cachedToken: CachedToken | null = null;
   private readonly processedMessageIds = new Map<string, number>();
 
   constructor(options: FeishuGatewayOptions) {
     this.config = options.config;
     this.bus = options.bus;
-    this.host = options.host;
-    this.port = options.port;
   }
 
   get isEnabled(): boolean {
     return this.config.enabled;
   }
 
-  get webhookPath(): string {
-    const raw = this.config.webhookPath.trim() || "/feishu/events";
-    return raw.startsWith("/") ? raw : `/${raw}`;
-  }
-
   async start(): Promise<void> {
     if (!this.config.enabled) {
       return;
     }
-    if (this.server) {
+    if (this.wsClient) {
       return;
     }
     if (!this.config.appId || !this.config.appSecret) {
       throw new Error("Feishu channel enabled but appId/appSecret is missing");
     }
 
-    this.server = createServer((req, res) => {
-      void this.handleRequest(req, res);
+    const eventDispatcher = new Lark.EventDispatcher({
+      verificationToken: this.config.verificationToken.trim() || undefined,
+      encryptKey: this.config.encryptKey.trim() || undefined,
+      loggerLevel: Lark.LoggerLevel.error,
+    }).register({
+      "im.message.receive_v1": async (payload: unknown) => {
+        await this.handleMessageEvent(this.asObject(payload) as FeishuMessageEvent);
+      },
     });
 
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => {
-        this.server?.off("listening", onListening);
-        reject(error);
-      };
-      const onListening = () => {
-        this.server?.off("error", onError);
-        resolve();
-      };
-
-      this.server?.once("error", onError);
-      this.server?.once("listening", onListening);
-      this.server?.listen(this.port, this.host);
+    this.wsClient = new Lark.WSClient({
+      appId: this.config.appId,
+      appSecret: this.config.appSecret,
+      autoReconnect: true,
+      loggerLevel: Lark.LoggerLevel.error,
+    });
+    await this.wsClient.start({
+      eventDispatcher,
     });
   }
 
   async stop(): Promise<void> {
-    if (!this.server) {
+    if (!this.wsClient) {
       return;
     }
-    const server = this.server;
-    this.server = null;
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
+    this.wsClient.close({ force: true });
+    this.wsClient = null;
   }
 
   async send(message: OutboundMessage): Promise<void> {
@@ -158,43 +144,10 @@ export class FeishuChannel {
     });
   }
 
-  private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method !== "POST") {
-      this.writeJson(res, 405, { code: 405, msg: "method not allowed" });
-      return;
-    }
-    if (this.normalizePath(req.url ?? "") !== this.webhookPath) {
-      this.writeJson(res, 404, { code: 404, msg: "not found" });
-      return;
-    }
-
-    try {
-      const body = await this.readJsonBody(req);
-      const envelope = this.asObject(body) as FeishuEventEnvelope;
-      const decoded = this.decodeEnvelope(envelope);
-      if (decoded.type === "url_verification") {
-        if (!this.verifyToken(decoded.token)) {
-          this.writeJson(res, 403, { code: 403, msg: "invalid verification token" });
-          return;
-        }
-        this.writeJson(res, 200, { challenge: decoded.challenge ?? "" });
-        return;
-      }
-
-      await this.handleMessageEvent(decoded);
-      this.writeRaw(res, 200, EVENT_OK);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.writeJson(res, 400, { code: 400, msg });
-    }
-  }
-
-  private async handleMessageEvent(payload: FeishuEventEnvelope): Promise<void> {
-    if (payload.header?.event_type !== "im.message.receive_v1") {
-      return;
-    }
-
-    const event = payload.event;
+  private async handleMessageEvent(payload: FeishuMessageEvent): Promise<void> {
+    const event = payload.message || payload.sender
+      ? payload
+      : (this.asObject(payload.event) as FeishuMessageEvent);
     const message = event?.message;
     const sender = event?.sender;
     const senderOpenId = sender?.sender_id?.open_id ?? "";
@@ -242,45 +195,6 @@ export class FeishuChannel {
       return true;
     }
     return allowFrom.includes(senderOpenId);
-  }
-
-  private decodeEnvelope(payload: FeishuEventEnvelope): FeishuEventEnvelope {
-    if (payload.encrypt) {
-      if (!this.config.encryptKey.trim()) {
-        throw new Error("received encrypted event but channels.feishu.encryptKey is empty");
-      }
-      return this.decryptPayload(payload.encrypt);
-    }
-    return payload;
-  }
-
-  private decryptPayload(encrypt: string): FeishuEventEnvelope {
-    const key = Buffer.from(`${this.config.encryptKey}=`, "base64");
-    if (key.length !== 32) {
-      throw new Error("invalid encryptKey for Feishu event decryption");
-    }
-    const decipher = createDecipheriv("aes-256-cbc", key, key.subarray(0, 16));
-    const decrypted = Buffer.concat([decipher.update(encrypt, "base64"), decipher.final()]);
-    if (decrypted.length < 20) {
-      throw new Error("invalid encrypted payload");
-    }
-    const msgLength = decrypted.readUInt32BE(16);
-    const payloadStart = 20;
-    const payloadEnd = payloadStart + msgLength;
-    if (payloadEnd > decrypted.length) {
-      throw new Error("invalid decrypted payload length");
-    }
-    const jsonText = decrypted.subarray(payloadStart, payloadEnd).toString("utf8");
-    const parsed = JSON.parse(jsonText) as unknown;
-    return this.asObject(parsed) as FeishuEventEnvelope;
-  }
-
-  private verifyToken(token: string | undefined): boolean {
-    const expected = this.config.verificationToken.trim();
-    if (!expected) {
-      return true;
-    }
-    return token === expected;
   }
 
   private isDuplicateMessage(messageId: string): boolean {
@@ -418,42 +332,9 @@ export class FeishuChannel {
     return "open_id";
   }
 
-  private async readJsonBody(req: IncomingMessage): Promise<unknown> {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const chunk of req) {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      size += buf.length;
-      if (size > MAX_BODY_BYTES) {
-        throw new Error("request body too large");
-      }
-      chunks.push(buf);
-    }
-    if (chunks.length === 0) {
-      return {};
-    }
-    const text = Buffer.concat(chunks).toString("utf8");
-    return JSON.parse(text);
-  }
-
   private asObject(value: unknown): Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
-  }
-
-  private normalizePath(url: string): string {
-    const q = url.indexOf("?");
-    return q >= 0 ? url.slice(0, q) : url;
-  }
-
-  private writeRaw(res: ServerResponse, status: number, body: string): void {
-    res.statusCode = status;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(body);
-  }
-
-  private writeJson(res: ServerResponse, status: number, body: Record<string, unknown>): void {
-    this.writeRaw(res, status, JSON.stringify(body));
   }
 }
