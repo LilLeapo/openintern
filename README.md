@@ -202,6 +202,38 @@ Provider notes:
 - `channels.feishu.webhookPath` is kept for compatibility and is ignored in long connection mode.
 - `allowFrom` controls sender allowlist (`["*"]` to allow all users).
 
+## MemU Tool Behavior
+
+When MemU is enabled, the agent gets three memory tools:
+
+- `memory_retrieve`: query memory by scope (`chat`, `papers`, or `all`).
+- `memory_save`: persist selected content into one scope.
+- `memory_delete`: clear one scope (requires MemU clear endpoint support).
+
+Scope mapping:
+
+- `chat` scope -> `agent_id = <memory.memu.agentId>:<memory.memu.scopes.chat>`
+- `papers` scope -> `agent_id = <memory.memu.agentId>:<memory.memu.scopes.papers>`
+
+This is logical isolation in the same MemU backend. Reads and writes are separated by scope suffix.
+
+Example tool calls:
+
+```text
+memory_save(content="User prefers concise answers.", scope="chat")
+memory_retrieve(query="What are the user's writing preferences?", scope="chat")
+memory_retrieve(query="Summarize methods in this paper", scope="papers")
+memory_retrieve(query="What should I recall now?", scope="all")
+```
+
+If `memory.memu.memorizeMode = "tool"` (default), the system will not auto-memorize each turn; memory is saved only when the model calls `memory_save`.
+
+## Upgrade Notes
+
+- Existing `~/.openintern/workspace/TOOLS.md` files are not overwritten automatically.
+- After upgrading, restart the running agent process to load new tools.
+- If you use `memory_delete`, configure `memory.memu.endpoints.clear` (for example `/clear` on local MemU service).
+
 ## Tests
 
 ```bash
