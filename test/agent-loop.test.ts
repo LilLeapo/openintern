@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentLoop } from "../src/agent/loop.js";
 import { MessageBus } from "../src/bus/message-bus.js";
@@ -54,6 +54,22 @@ class WaitingProvider implements LLMProvider {
   }
 }
 
+class CapturingProvider implements LLMProvider {
+  lastRequest: ChatRequest | null = null;
+
+  getDefaultModel(): string {
+    return "capturing";
+  }
+
+  async chat(request: ChatRequest): Promise<LLMResponse> {
+    this.lastRequest = request;
+    return {
+      content: "MemU-aware answer",
+      toolCalls: [],
+    };
+  }
+}
+
 const tempDirs: string[] = [];
 
 async function makeWorkspace(): Promise<string> {
@@ -63,6 +79,7 @@ async function makeWorkspace(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     tempDirs.splice(0).map((dir) =>
       rm(dir, {
@@ -265,5 +282,89 @@ describe("AgentLoop", () => {
 
     agent.stop();
     await runPromise;
+  });
+
+  it("injects MemU retrieval into prompt and memorizes turn asynchronously", async () => {
+    const workspace = await makeWorkspace();
+    const provider = new CapturingProvider();
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith("/api/v3/memory/retrieve")) {
+        return {
+          ok: true,
+          json: async () => ({
+            categories: [{ name: "preferences", summary: "Communication preferences." }],
+            items: [{ summary: "User prefers concise diffs." }],
+            resources: [{ resource_url: "conv_001.json" }],
+          }),
+        };
+      }
+      if (url.endsWith("/api/v3/memory/memorize")) {
+        return {
+          ok: true,
+          json: async () => ({ task_id: "task_1" }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const agent = new AgentLoop({
+      bus: new MessageBus(),
+      provider,
+      workspace,
+      memoryConfig: {
+        memu: {
+          enabled: true,
+          apiKey: "memu-key",
+          baseUrl: "https://api.memu.so",
+          agentId: "openintern-test",
+          timeoutMs: 3000,
+          retrieve: true,
+          memorize: true,
+        },
+      },
+    });
+
+    const output = await agent.processDirect({
+      content: "How should you respond to me?",
+      sessionKey: "cli:test",
+      channel: "cli",
+      chatId: "test",
+    });
+    expect(output).toBe("MemU-aware answer");
+
+    const systemMessages = (provider.lastRequest?.messages ?? []).filter(
+      (message) => message.role === "system",
+    );
+    const injected = systemMessages.some((message) => {
+      const content = message.content;
+      return typeof content === "string" && content.includes("External Memory Context");
+    });
+    expect(injected).toBe(true);
+
+    const deadline = Date.now() + 1000;
+    let memorizeCalled = false;
+    while (Date.now() < deadline) {
+      memorizeCalled = fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/api/v3/memory/memorize"),
+      );
+      if (memorizeCalled) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(memorizeCalled).toBe(true);
+
+    const retrieveCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/api/v3/memory/retrieve"),
+    );
+    const retrieveBodyRaw = (retrieveCall?.[1] as RequestInit | undefined)?.body;
+    expect(typeof retrieveBodyRaw).toBe("string");
+    const retrieveBody = JSON.parse(String(retrieveBodyRaw)) as Record<string, unknown>;
+    expect(retrieveBody.user_id).toBe("cli:test");
+    expect(retrieveBody.agent_id).toBe("openintern-test");
   });
 });

@@ -39,6 +39,8 @@ describe("config loader", () => {
     expect(config.agents.defaults.provider).toBe("auto");
     expect(config.providers.openaiCompatible.apiBase).toBe("https://api.openai.com/v1");
     expect(config.providers.anthropicCompatible.apiBase).toBe("https://api.anthropic.com/v1");
+    expect(config.memory.memu.enabled).toBe(false);
+    expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
   });
 
   it("migrates old key names", async () => {
@@ -66,6 +68,16 @@ describe("config loader", () => {
             },
           },
         },
+        memory: {
+          memu: {
+            api_key: "memu-key",
+            base_url: "https://api.memu.so",
+            agent_id: "agent-1",
+            timeout_ms: 9999,
+            retrieve_enabled: false,
+            memorize_enabled: false,
+          },
+        },
       }),
       "utf8",
     );
@@ -77,6 +89,12 @@ describe("config loader", () => {
     expect(config.providers.anthropicCompatible.anthropicVersion).toBe("2023-06-01");
     expect(config.tools.web.search.apiKey).toBe("brave1");
     expect(config.tools.web.search.maxResults).toBe(3);
+    expect(config.memory.memu.apiKey).toBe("memu-key");
+    expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
+    expect(config.memory.memu.agentId).toBe("agent-1");
+    expect(config.memory.memu.timeoutMs).toBe(9999);
+    expect(config.memory.memu.retrieve).toBe(false);
+    expect(config.memory.memu.memorize).toBe(false);
   });
 
   it("creates config when missing", async () => {

@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { ContextBuilder } from "./context/context-builder.js";
 import { MemoryConsolidator } from "./memory/consolidator.js";
+import { MemUClient } from "./memory/memu-client.js";
 import { MemoryStore } from "./memory/store.js";
 import { SubagentManager } from "./subagent/manager.js";
 import { Session, SessionStore, type SessionMessage } from "./session/session-store.js";
@@ -18,7 +19,7 @@ import { SpawnTool } from "../tools/builtins/spawn.js";
 import { WebFetchTool, WebSearchTool } from "../tools/builtins/web.js";
 import { ToolRegistry } from "../tools/core/tool-registry.js";
 import { Mutex } from "../utils/mutex.js";
-import type { McpConfig } from "../config/schema.js";
+import type { McpConfig, MemoryConfig } from "../config/schema.js";
 import { McpManager } from "../mcp/mcp-manager.js";
 
 const TOOL_RESULT_MAX_CHARS = 500;
@@ -57,6 +58,7 @@ export interface AgentLoopOptions {
   };
   sessionStore?: SessionStore;
   mcpConfig?: McpConfig;
+  memoryConfig?: MemoryConfig;
 }
 
 export class AgentLoop {
@@ -94,6 +96,10 @@ export class AgentLoop {
   private readonly subagents: SubagentManager;
   private readonly mcpManager = new McpManager();
   private readonly mcpConfig?: McpConfig;
+  private readonly memuClient: MemUClient | null;
+  private readonly memuRetrieveEnabled: boolean;
+  private readonly memuMemorizeEnabled: boolean;
+  private readonly memuAgentId: string;
 
   constructor(options: AgentLoopOptions) {
     this.bus = options.bus;
@@ -133,6 +139,18 @@ export class AgentLoop {
       execTimeoutSeconds: this.execTimeoutSeconds,
       restrictToWorkspace: this.restrictToWorkspace,
     });
+    const memuConfig = options.memoryConfig?.memu;
+    const memuEnabled = memuConfig?.enabled === true && Boolean(memuConfig.apiKey.trim());
+    this.memuClient = memuEnabled
+      ? new MemUClient({
+          apiKey: memuConfig?.apiKey ?? "",
+          baseUrl: memuConfig?.baseUrl ?? "https://api.memu.so",
+          timeoutMs: memuConfig?.timeoutMs ?? 15_000,
+        })
+      : null;
+    this.memuRetrieveEnabled = memuEnabled && (memuConfig?.retrieve ?? true);
+    this.memuMemorizeEnabled = memuEnabled && (memuConfig?.memorize ?? true);
+    this.memuAgentId = memuConfig?.agentId?.trim() || "openintern";
 
     this.registerDefaultTools();
     this.mcpConfig = options.mcpConfig;
@@ -512,9 +530,11 @@ export class AgentLoop {
     }
 
     const history = session.getHistory(this.memoryWindow);
+    const retrievedMemory = await this.retrieveMemuContext(message);
     const initialMessages = await this.context.buildMessages({
       history,
       currentMessage: message.content,
+      retrievedMemory: retrievedMemory ?? undefined,
       media: message.media,
       channel: message.channel,
       chatId: message.chatId,
@@ -550,6 +570,7 @@ export class AgentLoop {
 
     this.saveTurn(session, result.messages, 1 + history.length);
     await this.sessions.save(session);
+    this.scheduleMemuMemorize(message, result.finalContent ?? "");
 
     if (messageTool && messageTool instanceof MessageTool && messageTool.sentInTurn) {
       return null;
@@ -585,6 +606,13 @@ export class AgentLoop {
         ) {
           continue;
         }
+      } else if (role === "system") {
+        if (
+          typeof content === "string" &&
+          content.startsWith(ContextBuilder.EXTERNAL_MEMORY_TAG)
+        ) {
+          continue;
+        }
       }
 
       if (!entry.timestamp) {
@@ -611,5 +639,69 @@ export class AgentLoop {
     const lock = new Mutex();
     this.consolidationLocks.set(sessionKey, lock);
     return lock;
+  }
+
+  private memuScope(channel: string, chatId: string): { userId: string; agentId: string } {
+    return {
+      userId: `${channel}:${chatId}`,
+      agentId: this.memuAgentId,
+    };
+  }
+
+  private async retrieveMemuContext(message: InboundMessage): Promise<string | null> {
+    if (!this.memuClient || !this.memuRetrieveEnabled) {
+      return null;
+    }
+    const query = message.content.trim();
+    if (!query || query.startsWith("/")) {
+      return null;
+    }
+    try {
+      const result = await this.memuClient.retrieve({
+        query,
+        ...this.memuScope(message.channel, message.chatId),
+      });
+      return MemUClient.formatRetrieveContext(result);
+    } catch (error) {
+      this.logMemuWarning("retrieve", error);
+      return null;
+    }
+  }
+
+  private scheduleMemuMemorize(message: InboundMessage, assistantContent: string): void {
+    if (!this.memuClient || !this.memuMemorizeEnabled) {
+      return;
+    }
+    const userContent = message.content.trim();
+    const assistant = assistantContent.trim();
+    if (!userContent || !assistant || userContent.startsWith("/")) {
+      return;
+    }
+    const now = new Date().toISOString();
+    const conversation = [
+      {
+        role: "user",
+        content: userContent,
+        timestamp: now,
+      },
+      {
+        role: "assistant",
+        content: assistant,
+        timestamp: now,
+      },
+    ];
+    void this.memuClient
+      .memorizeConversation({
+        conversation,
+        ...this.memuScope(message.channel, message.chatId),
+      })
+      .catch((error) => {
+        this.logMemuWarning("memorize", error);
+      });
+  }
+
+  private logMemuWarning(action: "retrieve" | "memorize", error: unknown): void {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[memu] ${action} failed: ${msg}`);
   }
 }
