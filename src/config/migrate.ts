@@ -68,6 +68,16 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   );
   movePath(out, ["tools", "web", "search", "api_key"], ["tools", "web", "search", "apiKey"]);
   movePath(out, ["tools", "web", "search", "max_results"], ["tools", "web", "search", "maxResults"]);
+  movePath(out, ["channels", "feishu", "app_id"], ["channels", "feishu", "appId"]);
+  movePath(out, ["channels", "feishu", "app_secret"], ["channels", "feishu", "appSecret"]);
+  movePath(
+    out,
+    ["channels", "feishu", "verification_token"],
+    ["channels", "feishu", "verificationToken"],
+  );
+  movePath(out, ["channels", "feishu", "encrypt_key"], ["channels", "feishu", "encryptKey"]);
+  movePath(out, ["channels", "feishu", "allow_from"], ["channels", "feishu", "allowFrom"]);
+  movePath(out, ["channels", "feishu", "webhook_path"], ["channels", "feishu", "webhookPath"]);
   movePath(out, ["memory", "memu", "api_key"], ["memory", "memu", "apiKey"]);
   movePath(out, ["memory", "memu", "base_url"], ["memory", "memu", "baseUrl"]);
   movePath(out, ["memory", "memu", "agent_id"], ["memory", "memu", "agentId"]);
@@ -76,6 +86,8 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["memory", "memu", "memorize_enabled"], ["memory", "memu", "memorize"]);
   movePath(out, ["channels", "send_progress"], ["channels", "sendProgress"]);
   movePath(out, ["channels", "send_tool_hints"], ["channels", "sendToolHints"]);
+  movePath(out, ["gateway", "heartbeat", "host"], ["gateway", "host"]);
+  movePath(out, ["gateway", "heartbeat", "port"], ["gateway", "port"]);
   movePath(out, ["gateway", "heartbeat", "interval_s"], ["gateway", "heartbeat", "intervalS"]);
 
   return out;

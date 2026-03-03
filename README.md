@@ -120,6 +120,21 @@ Minimal example:
       "retrieve": true,
       "memorize": true
     }
+  },
+  "channels": {
+    "feishu": {
+      "enabled": false,
+      "appId": "cli_xxx",
+      "appSecret": "xxx",
+      "verificationToken": "xxx",
+      "encryptKey": "",
+      "allowFrom": ["*"],
+      "webhookPath": "/feishu/events"
+    }
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790
   }
 }
 ```
@@ -130,6 +145,7 @@ Provider notes:
 - Set `agents.defaults.provider = "anthropicCompatible"` to force Anthropic-compatible path.
 - In `auto` mode, Claude-like model names prefer `anthropicCompatible` when key exists.
 - Set `memory.memu.enabled = true` to enable MemU cloud retrieval + async memorize.
+- Set `channels.feishu.enabled = true` to enable Feishu webhook IM bridge (event path = `gateway.host:gateway.port + channels.feishu.webhookPath`).
 
 ## Tests
 
