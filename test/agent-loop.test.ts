@@ -324,6 +324,8 @@ describe("AgentLoop", () => {
           timeoutMs: 3000,
           retrieve: true,
           memorize: true,
+          apiStyle: "cloudV3",
+          endpoints: {},
         },
       },
     });

@@ -45,6 +45,8 @@ describe("config loader", () => {
     expect(config.gateway.port).toBe(18790);
     expect(config.memory.memu.enabled).toBe(false);
     expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
+    expect(config.memory.memu.apiStyle).toBe("cloudV3");
+    expect(config.memory.memu.endpoints).toEqual({});
   });
 
   it("migrates old key names", async () => {
@@ -96,6 +98,9 @@ describe("config loader", () => {
             timeout_ms: 9999,
             retrieve_enabled: false,
             memorize_enabled: false,
+            api_style: "localSimple",
+            memorize_endpoint: "/memorize",
+            retrieve_endpoint: "/recall",
           },
         },
       }),
@@ -123,6 +128,9 @@ describe("config loader", () => {
     expect(config.memory.memu.timeoutMs).toBe(9999);
     expect(config.memory.memu.retrieve).toBe(false);
     expect(config.memory.memu.memorize).toBe(false);
+    expect(config.memory.memu.apiStyle).toBe("localSimple");
+    expect(config.memory.memu.endpoints.memorize).toBe("/memorize");
+    expect(config.memory.memu.endpoints.retrieve).toBe("/recall");
   });
 
   it("creates config when missing", async () => {

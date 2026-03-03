@@ -2,6 +2,13 @@ interface MemUClientOptions {
   apiKey: string;
   baseUrl: string;
   timeoutMs?: number;
+  apiStyle?: "cloudV3" | "localSimple" | "mem0V1";
+  endpoints?: {
+    memorize?: string;
+    retrieve?: string;
+    categories?: string;
+    status?: string;
+  };
 }
 
 export interface MemUConversationMessage {
@@ -17,6 +24,36 @@ export interface MemURetrieveResult {
   nextStepQuery: string | null;
   raw: Record<string, unknown>;
 }
+
+type MemUApiStyle = "cloudV3" | "localSimple" | "mem0V1";
+
+interface MemUEndpoints {
+  memorize: string;
+  retrieve: string;
+  categories: string;
+  status: string;
+}
+
+const CLOUD_V3_ENDPOINTS: MemUEndpoints = {
+  memorize: "/api/v3/memory/memorize",
+  retrieve: "/api/v3/memory/retrieve",
+  categories: "/api/v3/memory/categories",
+  status: "/api/v3/memory/memorize/status/{task_id}",
+};
+
+const LOCAL_SIMPLE_ENDPOINTS: MemUEndpoints = {
+  memorize: "/memorize",
+  retrieve: "/recall",
+  categories: "",
+  status: "",
+};
+
+const MEM0_V1_ENDPOINTS: MemUEndpoints = {
+  memorize: "/api/v1/memories",
+  retrieve: "/api/v1/memories/search",
+  categories: "/api/v1/memories",
+  status: "",
+};
 
 function asObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -55,15 +92,64 @@ function compactJson(value: unknown, maxChars = 180): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
 }
 
+function normalizeEndpoint(path: string): string {
+  const cleaned = path.trim();
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned.startsWith("/") ? cleaned : `/${cleaned}`;
+}
+
+function resolveEndpoints(
+  apiStyle: MemUApiStyle,
+  overrides: MemUClientOptions["endpoints"],
+): MemUEndpoints {
+  const defaults =
+    apiStyle === "localSimple"
+      ? LOCAL_SIMPLE_ENDPOINTS
+      : apiStyle === "mem0V1"
+        ? MEM0_V1_ENDPOINTS
+        : CLOUD_V3_ENDPOINTS;
+  return {
+    memorize: normalizeEndpoint(overrides?.memorize ?? defaults.memorize),
+    retrieve: normalizeEndpoint(overrides?.retrieve ?? defaults.retrieve),
+    categories: normalizeEndpoint(overrides?.categories ?? defaults.categories),
+    status: normalizeEndpoint(overrides?.status ?? defaults.status),
+  };
+}
+
+function conversationToText(conversation: MemUConversationMessage[]): string {
+  return conversation
+    .map((message) => {
+      const role = message.role?.trim() || "unknown";
+      const content = message.content?.trim() || "";
+      const timestamp = message.timestamp ? `${message.timestamp} ` : "";
+      return `${timestamp}[${role}] ${content}`.trim();
+    })
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
+function mem0UnwrapData(raw: Record<string, unknown>): unknown {
+  if ("data" in raw) {
+    return raw.data;
+  }
+  return raw;
+}
+
 export class MemUClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly apiStyle: MemUApiStyle;
+  private readonly endpoints: MemUEndpoints;
 
   constructor(options: MemUClientOptions) {
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.timeoutMs = Math.max(options.timeoutMs ?? 15_000, 1_000);
+    this.apiStyle = options.apiStyle ?? "cloudV3";
+    this.endpoints = resolveEndpoints(this.apiStyle, options.endpoints);
   }
 
   async memorizeConversation(options: {
@@ -72,6 +158,37 @@ export class MemUClient {
     agentId: string;
     overrideConfig?: Record<string, unknown>;
   }): Promise<{ taskId: string | null; raw: Record<string, unknown> }> {
+    if (this.apiStyle === "mem0V1") {
+      const payload: Record<string, unknown> = {
+        messages: options.conversation.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        run_id: options.userId,
+        metadata: {
+          agent_id: options.agentId,
+        },
+      };
+      const raw = await this.requestJson("POST", this.endpoints.memorize, payload, {
+        "X-User-Id": options.userId,
+      });
+      const data = mem0UnwrapData(raw);
+      const dataObj = asObject(data);
+      const taskId = typeof dataObj.task_id === "string" ? dataObj.task_id : null;
+      return { taskId, raw };
+    }
+
+    if (this.apiStyle === "localSimple") {
+      const payload: Record<string, unknown> = {
+        content: conversationToText(options.conversation),
+        user_id: options.userId,
+        agent_id: options.agentId,
+      };
+      const raw = await this.requestJson("POST", this.endpoints.memorize, payload);
+      const taskId = typeof raw.task_id === "string" ? raw.task_id : null;
+      return { taskId, raw };
+    }
+
     const payload: Record<string, unknown> = {
       conversation: options.conversation.map((message) => ({
         role: message.role,
@@ -85,7 +202,7 @@ export class MemUClient {
       payload.override_config = options.overrideConfig;
     }
 
-    const raw = await this.requestJson("POST", "/api/v3/memory/memorize", payload);
+    const raw = await this.requestJson("POST", this.endpoints.memorize, payload);
     const taskId = typeof raw.task_id === "string" ? raw.task_id : null;
     return { taskId, raw };
   }
@@ -95,15 +212,58 @@ export class MemUClient {
     userId: string;
     agentId: string;
   }): Promise<MemURetrieveResult> {
-    const raw = await this.requestJson("POST", "/api/v3/memory/retrieve", {
-      query: options.query,
-      user_id: options.userId,
-      agent_id: options.agentId,
-    });
+    const raw =
+      this.apiStyle === "mem0V1"
+        ? await this.requestJson(
+            "POST",
+            this.endpoints.retrieve,
+            {
+              query: options.query,
+              run_id: options.userId,
+              filters: {
+                agent_id: options.agentId,
+              },
+            },
+            {
+              "X-User-Id": options.userId,
+            },
+          )
+        : this.apiStyle === "localSimple"
+        ? await this.requestJson(
+            "GET",
+            this.withQuery(
+              this.endpoints.retrieve,
+              new URLSearchParams({
+                query: options.query,
+                user_id: options.userId,
+                agent_id: options.agentId,
+              }),
+            ),
+          )
+        : await this.requestJson("POST", this.endpoints.retrieve, {
+            query: options.query,
+            user_id: options.userId,
+            agent_id: options.agentId,
+          });
+
+    const mem0Data = mem0UnwrapData(raw);
+    const mem0List = asRecordArray(mem0Data);
+    const mem0Obj = asObject(mem0Data);
+
+    const items = asRecordArray(raw.items);
+    const localMemories = asRecordArray(raw.memories);
+    const mem0Items = asRecordArray(mem0Obj.items);
 
     return {
       categories: asRecordArray(raw.categories),
-      items: asRecordArray(raw.items),
+      items:
+        items.length > 0
+          ? items
+          : localMemories.length > 0
+            ? localMemories
+            : mem0Items.length > 0
+              ? mem0Items
+              : mem0List,
       resources: asRecordArray(raw.resources),
       nextStepQuery: typeof raw.next_step_query === "string" ? raw.next_step_query : null,
       raw,
@@ -114,7 +274,50 @@ export class MemUClient {
     userId: string;
     agentId: string;
   }): Promise<Array<Record<string, unknown>>> {
-    const raw = await this.requestJson("POST", "/api/v3/memory/categories", {
+    if (this.apiStyle === "mem0V1") {
+      try {
+        const raw = await this.requestJson(
+          "GET",
+          this.withQuery(
+            this.endpoints.categories,
+            new URLSearchParams({
+              run_id: options.userId,
+            }),
+          ),
+          undefined,
+          {
+            "X-User-Id": options.userId,
+          },
+        );
+        const data = mem0UnwrapData(raw);
+        return asRecordArray(data);
+      } catch {
+        return [];
+      }
+    }
+
+    if (this.apiStyle === "localSimple") {
+      if (!this.endpoints.categories) {
+        return [];
+      }
+      try {
+        const raw = await this.requestJson(
+          "GET",
+          this.withQuery(
+            this.endpoints.categories,
+            new URLSearchParams({
+              user_id: options.userId,
+              agent_id: options.agentId,
+            }),
+          ),
+        );
+        return asRecordArray(raw.categories);
+      } catch {
+        return [];
+      }
+    }
+
+    const raw = await this.requestJson("POST", this.endpoints.categories, {
       user_id: options.userId,
       agent_id: options.agentId,
     });
@@ -122,7 +325,10 @@ export class MemUClient {
   }
 
   async getMemorizeStatus(taskId: string): Promise<Record<string, unknown>> {
-    return this.requestJson("GET", `/api/v3/memory/memorize/status/${encodeURIComponent(taskId)}`);
+    if (this.apiStyle === "localSimple" && !this.endpoints.status) {
+      return { task_id: taskId, status: "completed" };
+    }
+    return this.requestJson("GET", this.renderStatusPath(taskId));
   }
 
   static formatRetrieveContext(
@@ -180,13 +386,17 @@ export class MemUClient {
     method: "GET" | "POST",
     endpoint: string,
     body?: Record<string, unknown>,
+    extraHeaders?: Record<string, string>,
   ): Promise<Record<string, unknown>> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.apiKey}`,
-      Accept: "application/json",
-    };
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (this.apiKey.trim()) {
+      headers.Authorization = `Bearer ${this.apiKey}`;
+    }
+    if (extraHeaders) {
+      Object.assign(headers, extraHeaders);
+    }
     if (method === "POST") {
       headers["Content-Type"] = "application/json";
     }
@@ -217,5 +427,24 @@ export class MemUClient {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private withQuery(endpoint: string, params: URLSearchParams): string {
+    const query = params.toString();
+    if (!query) {
+      return endpoint;
+    }
+    const joiner = endpoint.includes("?") ? "&" : "?";
+    return `${endpoint}${joiner}${query}`;
+  }
+
+  private renderStatusPath(taskId: string): string {
+    const encoded = encodeURIComponent(taskId);
+    const template = this.endpoints.status;
+    if (template.includes("{task_id}")) {
+      return template.replace("{task_id}", encoded);
+    }
+    const base = template.replace(/\/+$/, "");
+    return `${base}/${encoded}`;
   }
 }
