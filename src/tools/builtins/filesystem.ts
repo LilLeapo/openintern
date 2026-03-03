@@ -12,8 +12,9 @@ function resolvePath(
   const resolved = path.resolve(abs);
   if (allowedDir) {
     const root = path.resolve(allowedDir);
-    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
-      throw new Error(`Path ${input} is outside allowed directory ${allowedDir}`);
+    const rel = path.relative(root, resolved);
+    if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      throw new Error(`Access denied: path '${input}' escapes workspace sandbox`);
     }
   }
   return resolved;
@@ -189,4 +190,3 @@ export class ListDirTool extends Tool {
     }
   }
 }
-

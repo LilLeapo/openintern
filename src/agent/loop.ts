@@ -20,7 +20,7 @@ import { WebFetchTool, WebSearchTool } from "../tools/builtins/web.js";
 import { MemoryDeleteTool, MemoryRetrieveTool, MemorySaveTool } from "../tools/builtins/memory.js";
 import { ToolRegistry } from "../tools/core/tool-registry.js";
 import { Mutex } from "../utils/mutex.js";
-import type { McpConfig, MemoryConfig } from "../config/schema.js";
+import { DEFAULT_CONFIG, type AppConfig, type McpConfig, type MemoryConfig } from "../config/schema.js";
 import { McpManager } from "../mcp/mcp-manager.js";
 
 const TOOL_RESULT_MAX_CHARS = 500;
@@ -60,6 +60,7 @@ export interface AgentLoopOptions {
   sessionStore?: SessionStore;
   mcpConfig?: McpConfig;
   memoryConfig?: MemoryConfig;
+  appConfig?: AppConfig;
 }
 
 export class AgentLoop {
@@ -128,20 +129,6 @@ export class AgentLoop {
     this.consolidator = new MemoryConsolidator(this.memory);
     this.sessions = options.sessionStore ?? new SessionStore(this.workspace);
     this.tools = new ToolRegistry();
-    this.subagents = new SubagentManager({
-      provider: this.provider,
-      workspace: this.workspace,
-      bus: this.bus,
-      model: this.model,
-      temperature: this.temperature,
-      maxTokens: this.maxTokens,
-      reasoningEffort: this.reasoningEffort,
-      webSearchApiKey: this.webSearchApiKey,
-      webSearchMaxResults: this.webSearchMaxResults,
-      webProxy: this.webProxy,
-      execTimeoutSeconds: this.execTimeoutSeconds,
-      restrictToWorkspace: this.restrictToWorkspace,
-    });
     const memuConfig = options.memoryConfig?.memu;
     const memuApiStyle = memuConfig?.apiStyle ?? "cloudV3";
     const requiresMemuApiKey = memuApiStyle === "cloudV3";
@@ -164,6 +151,26 @@ export class AgentLoop {
       chat: memuConfig?.scopes?.chat?.trim() || "chat",
       papers: memuConfig?.scopes?.papers?.trim() || "papers",
     };
+
+    const appConfigRef = options.appConfig ?? structuredClone(DEFAULT_CONFIG);
+    this.subagents = new SubagentManager({
+      provider: this.provider,
+      workspace: this.workspace,
+      bus: this.bus,
+      model: this.model,
+      temperature: this.temperature,
+      maxTokens: this.maxTokens,
+      reasoningEffort: this.reasoningEffort,
+      webSearchApiKey: this.webSearchApiKey,
+      webSearchMaxResults: this.webSearchMaxResults,
+      webProxy: this.webProxy,
+      execTimeoutSeconds: this.execTimeoutSeconds,
+      restrictToWorkspace: this.restrictToWorkspace,
+      config: appConfigRef,
+      memuClient: this.memuClient,
+      memuScopeResolver: ({ channel, chatId, scope }) => this.memuScope(channel, chatId, scope),
+      maxConcurrent: appConfigRef.agents.subagentConcurrency.maxConcurrent,
+    });
 
     this.registerDefaultTools();
     this.mcpConfig = options.mcpConfig;

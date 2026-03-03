@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 
-import type { InboundMessage } from "../../bus/events.js";
+import type { InboundMessage, SubagentTaskEvent } from "../../bus/events.js";
 import { MessageBus } from "../../bus/message-bus.js";
+import { resolveRole, validateRoleName } from "../../config/role-resolver.js";
+import type { AppConfig, RoleConfig } from "../../config/schema.js";
 import type { LLMProvider } from "../../llm/provider.js";
 import { ExecTool } from "../../tools/builtins/exec.js";
 import {
@@ -10,9 +14,20 @@ import {
   ReadFileTool,
   WriteFileTool,
 } from "../../tools/builtins/filesystem.js";
+import {
+  MemoryRetrieveTool,
+  MemorySaveTool,
+  type MemoryScopeResolver,
+} from "../../tools/builtins/memory.js";
+import {
+  ScopedMemoryRetrieveTool,
+  ScopedMemorySaveTool,
+} from "../../tools/builtins/scoped-memory.js";
 import { WebFetchTool, WebSearchTool } from "../../tools/builtins/web.js";
+import type { Tool } from "../../tools/core/tool.js";
 import { ToolRegistry } from "../../tools/core/tool-registry.js";
 import { ContextBuilder } from "../context/context-builder.js";
+import type { MemUClient } from "../memory/memu-client.js";
 
 interface RunningTask {
   task: Promise<void>;
@@ -32,6 +47,10 @@ export interface SubagentManagerOptions {
   webProxy?: string | null;
   execTimeoutSeconds?: number;
   restrictToWorkspace?: boolean;
+  config: AppConfig;
+  memuClient?: MemUClient | null;
+  memuScopeResolver?: MemoryScopeResolver;
+  maxConcurrent?: number;
 }
 
 export class SubagentManager {
@@ -50,6 +69,13 @@ export class SubagentManager {
   private readonly webProxy: string | null;
   private readonly execTimeoutSeconds: number;
   private readonly restrictToWorkspace: boolean;
+  private readonly configRef: AppConfig;
+  private readonly memuClient: MemUClient | null;
+  private readonly memuScopeResolver?: MemoryScopeResolver;
+
+  private readonly maxConcurrent: number;
+  private runningCount = 0;
+  private readonly waitQueue: Array<() => void> = [];
 
   constructor(options: SubagentManagerOptions) {
     this.provider = options.provider;
@@ -64,23 +90,50 @@ export class SubagentManager {
     this.webProxy = options.webProxy ?? null;
     this.execTimeoutSeconds = options.execTimeoutSeconds ?? 60;
     this.restrictToWorkspace = options.restrictToWorkspace ?? false;
+    this.configRef = options.config;
+    this.memuClient = options.memuClient ?? null;
+    this.memuScopeResolver = options.memuScopeResolver;
+
+    const configMax = options.config.agents.subagentConcurrency.maxConcurrent;
+    const inputMax = options.maxConcurrent ?? configMax;
+    const normalized = Number.isFinite(inputMax) ? Math.floor(inputMax) : 1;
+    this.maxConcurrent = Math.max(1, normalized);
   }
 
   async spawn(options: {
     task: string;
+    role?: string | null;
     label?: string | null;
     originChannel: string;
     originChatId: string;
     sessionKey: string;
   }): Promise<string> {
+    const role = options.role?.trim() ? options.role.trim() : null;
+    if (role) {
+      const roleError = validateRoleName(this.configRef, role);
+      if (roleError) {
+        return roleError;
+      }
+    }
+
+    const roleConfig = role ? resolveRole(this.configRef, role) : null;
+    if (role && !roleConfig) {
+      return `Error: Role '${role}' is invalid in config.`;
+    }
+
     const taskId = randomUUID().slice(0, 8);
     const label =
       options.label?.trim() ||
       (options.task.length > 30 ? `${options.task.slice(0, 30)}...` : options.task);
 
+    const queued = this.runningCount >= this.maxConcurrent;
+    const queuePosition = queued ? this.waitQueue.length + 1 : null;
+
     const abortController = new AbortController();
     const runTask = this.runSubagent({
       taskId,
+      role,
+      roleConfig,
       label,
       task: options.task,
       originChannel: options.originChannel,
@@ -107,6 +160,9 @@ export class SubagentManager {
     }
     this.sessionTasks.get(options.sessionKey)?.add(taskId);
 
+    if (queued && queuePosition !== null) {
+      return `Subagent [${label}] queued (id: ${taskId}, position: ${queuePosition} in queue). I'll notify you when it completes.`;
+    }
     return `Subagent [${label}] started (id: ${taskId}). I'll notify you when it completes.`;
   }
 
@@ -131,11 +187,109 @@ export class SubagentManager {
   }
 
   getRunningCount(): number {
-    return this.runningTasks.size;
+    return this.runningCount;
   }
 
-  private buildSubagentPrompt(): string {
-    const timeCtx = new ContextBuilder(this.workspace).buildRuntimeContext();
+  private async acquireSlot(): Promise<void> {
+    if (this.runningCount < this.maxConcurrent) {
+      this.runningCount += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.waitQueue.push(resolve);
+    });
+    this.runningCount += 1;
+  }
+
+  private releaseSlot(): void {
+    this.runningCount = Math.max(0, this.runningCount - 1);
+    const next = this.waitQueue.shift();
+    if (next) {
+      next();
+    }
+  }
+
+  private setToolContext(tool: Tool, channel: string, chatId: string): void {
+    const contextAware = tool as Tool & {
+      setContext?: (originChannel: string, originChatId: string) => void;
+    };
+    if (typeof contextAware.setContext === "function") {
+      contextAware.setContext(channel, chatId);
+    }
+  }
+
+  private buildToolRegistry(options: {
+    roleConfig: RoleConfig | null;
+    taskWorkspace: string;
+    originChannel: string;
+    originChatId: string;
+  }): ToolRegistry {
+    const tools = new ToolRegistry();
+    const forceWorkspaceSandbox =
+      this.restrictToWorkspace || options.roleConfig?.workspaceIsolation === true;
+    const allowedDir = forceWorkspaceSandbox ? options.taskWorkspace : undefined;
+
+    const factories: Record<string, () => Tool> = {
+      read_file: () => new ReadFileTool(options.taskWorkspace, allowedDir),
+      write_file: () => new WriteFileTool(options.taskWorkspace, allowedDir),
+      edit_file: () => new EditFileTool(options.taskWorkspace, allowedDir),
+      list_dir: () => new ListDirTool(options.taskWorkspace, allowedDir),
+      exec: () =>
+        new ExecTool({
+          timeoutMs: this.execTimeoutSeconds * 1000,
+          workingDir: options.taskWorkspace,
+          restrictToWorkspace: forceWorkspaceSandbox,
+        }),
+      web_search: () =>
+        new WebSearchTool(this.webSearchApiKey, this.webSearchMaxResults, this.webProxy),
+      web_fetch: () => new WebFetchTool(50_000, this.webProxy),
+    };
+
+    const memuClient = this.memuClient;
+    const memuScopeResolver = this.memuScopeResolver;
+    if (memuClient && memuScopeResolver) {
+      if (options.roleConfig) {
+        const forcedScope = options.roleConfig.memoryScope;
+        factories.memory_save =
+          () => new ScopedMemorySaveTool(memuClient, memuScopeResolver, forcedScope);
+        factories.memory_retrieve =
+          () => new ScopedMemoryRetrieveTool(memuClient, memuScopeResolver, forcedScope);
+      } else {
+        factories.memory_save = () => new MemorySaveTool(memuClient, memuScopeResolver);
+        factories.memory_retrieve =
+          () => new MemoryRetrieveTool(memuClient, memuScopeResolver);
+      }
+    }
+
+    const selectedTools = options.roleConfig
+      ? options.roleConfig.allowedTools
+      : Object.keys(factories);
+
+    for (const toolName of selectedTools) {
+      const createTool = factories[toolName];
+      if (!createTool) {
+        continue;
+      }
+      const tool = createTool();
+      this.setToolContext(tool, options.originChannel, options.originChatId);
+      tools.register(tool);
+    }
+
+    return tools;
+  }
+
+  private buildSubagentPrompt(roleConfig: RoleConfig | null, taskWorkspace: string): string {
+    const timeCtx = new ContextBuilder(taskWorkspace).buildRuntimeContext();
+    if (roleConfig) {
+      return `# Subagent
+
+${timeCtx}
+
+${roleConfig.systemPrompt}
+
+## Workspace
+${taskWorkspace}`;
+    }
     return `# Subagent
 
 ${timeCtx}
@@ -144,43 +298,49 @@ You are a subagent spawned by the main agent to complete a specific task.
 Stay focused on the assigned task. Your final response will be reported back to the main agent.
 
 ## Workspace
-${this.workspace}`;
+${taskWorkspace}`;
   }
 
   private async runSubagent(options: {
     taskId: string;
+    role: string | null;
+    roleConfig: RoleConfig | null;
     label: string;
     task: string;
     originChannel: string;
     originChatId: string;
     signal: AbortSignal;
   }): Promise<void> {
+    await this.acquireSlot();
+
     try {
-      const tools = new ToolRegistry();
-      const allowedDir = this.restrictToWorkspace ? this.workspace : undefined;
-      tools.register(new ReadFileTool(this.workspace, allowedDir));
-      tools.register(new WriteFileTool(this.workspace, allowedDir));
-      tools.register(new EditFileTool(this.workspace, allowedDir));
-      tools.register(new ListDirTool(this.workspace, allowedDir));
-      tools.register(
-        new ExecTool({
-          timeoutMs: this.execTimeoutSeconds * 1000,
-          workingDir: this.workspace,
-          restrictToWorkspace: this.restrictToWorkspace,
-        }),
-      );
-      tools.register(
-        new WebSearchTool(this.webSearchApiKey, this.webSearchMaxResults, this.webProxy),
-      );
-      tools.register(new WebFetchTool(50_000, this.webProxy));
+      const taskWorkspace =
+        options.roleConfig?.workspaceIsolation === true
+          ? path.join(this.workspace, "tasks", options.taskId)
+          : this.workspace;
+
+      if (options.roleConfig?.workspaceIsolation === true) {
+        await mkdir(taskWorkspace, { recursive: true });
+      }
+
+      const tools = this.buildToolRegistry({
+        roleConfig: options.roleConfig,
+        taskWorkspace,
+        originChannel: options.originChannel,
+        originChatId: options.originChatId,
+      });
 
       const messages: Array<Record<string, unknown>> = [
-        { role: "system", content: this.buildSubagentPrompt() },
+        {
+          role: "system",
+          content: this.buildSubagentPrompt(options.roleConfig, taskWorkspace),
+        },
         { role: "user", content: options.task },
       ];
 
       let finalResult: string | null = null;
-      for (let iteration = 0; iteration < 15; iteration += 1) {
+      const maxIterations = options.roleConfig?.maxIterations ?? 15;
+      for (let iteration = 0; iteration < maxIterations; iteration += 1) {
         if (options.signal.aborted) {
           throw new Error("Subagent aborted");
         }
@@ -231,6 +391,8 @@ ${this.workspace}`;
       }
 
       await this.announceResult({
+        taskId: options.taskId,
+        role: options.role,
         label: options.label,
         task: options.task,
         result: finalResult,
@@ -240,18 +402,32 @@ ${this.workspace}`;
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      await this.announceResult({
-        label: options.label,
-        task: options.task,
-        result: `Error: ${msg}`,
-        status: "error",
-        originChannel: options.originChannel,
-        originChatId: options.originChatId,
-      });
+      try {
+        await this.announceResult({
+          taskId: options.taskId,
+          role: options.role,
+          label: options.label,
+          task: options.task,
+          result: `Error: ${msg}`,
+          status: "error",
+          originChannel: options.originChannel,
+          originChatId: options.originChatId,
+        });
+      } catch (announceError) {
+        const announceMessage =
+          announceError instanceof Error ? announceError.message : String(announceError);
+        console.warn(
+          `[subagent] failed to announce task ${options.taskId}: ${announceMessage}`,
+        );
+      }
+    } finally {
+      this.releaseSlot();
     }
   }
 
   private async announceResult(options: {
+    taskId: string;
+    role: string | null;
     label: string;
     task: string;
     result: string;
@@ -259,9 +435,27 @@ ${this.workspace}`;
     originChannel: string;
     originChatId: string;
   }): Promise<void> {
+    const event: SubagentTaskEvent = {
+      type:
+        options.status === "ok"
+          ? "SUBAGENT_TASK_COMPLETED"
+          : "SUBAGENT_TASK_FAILED",
+      taskId: options.taskId,
+      role: options.role,
+      label: options.label,
+      task: options.task,
+      status: options.status,
+      result: options.result,
+      originChannel: options.originChannel,
+      originChatId: options.originChatId,
+      timestamp: new Date(),
+    };
+    await this.bus.emitSubagentEvent(event);
+
     const statusText =
       options.status === "ok" ? "completed successfully" : "failed";
-    const content = `[Subagent '${options.label}' ${statusText}]
+    const roleTag = options.role ? ` (role: ${options.role})` : "";
+    const content = `[Subagent '${options.label}'${roleTag} ${statusText}]
 
 Task: ${options.task}
 
@@ -279,4 +473,3 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
     await this.bus.publishInbound(msg);
   }
 }
-

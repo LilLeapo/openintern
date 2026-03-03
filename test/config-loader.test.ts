@@ -50,6 +50,9 @@ describe("config loader", () => {
     expect(config.memory.memu.apiStyle).toBe("cloudV3");
     expect(config.memory.memu.memorizeMode).toBe("tool");
     expect(config.memory.memu.endpoints).toEqual({});
+    expect(config.agents.subagentConcurrency.maxConcurrent).toBe(3);
+    expect(config.roles.researcher.memoryScope).toBe("papers");
+    expect(config.roles.scientist.workspaceIsolation).toBe(true);
   });
 
   it("migrates old key names", async () => {
@@ -110,6 +113,20 @@ describe("config loader", () => {
             clear_endpoint: "/clear",
           },
         },
+        agents: {
+          subagent_concurrency: {
+            max_concurrent: 7,
+          },
+        },
+        roles: {
+          archivist: {
+            system_prompt: "Archive key findings.",
+            allowed_tools: ["memory_save"],
+            memory_scope: "papers",
+            max_iterations: 9,
+            workspace_isolation: false,
+          },
+        },
       }),
       "utf8",
     );
@@ -142,6 +159,11 @@ describe("config loader", () => {
     expect(config.memory.memu.endpoints.memorize).toBe("/memorize");
     expect(config.memory.memu.endpoints.retrieve).toBe("/recall");
     expect(config.memory.memu.endpoints.clear).toBe("/clear");
+    expect(config.agents.subagentConcurrency.maxConcurrent).toBe(7);
+    expect(config.roles.archivist.systemPrompt).toBe("Archive key findings.");
+    expect(config.roles.archivist.allowedTools).toEqual(["memory_save"]);
+    expect(config.roles.archivist.memoryScope).toBe("papers");
+    expect(config.roles.archivist.maxIterations).toBe(9);
   });
 
   it("creates config when missing", async () => {
