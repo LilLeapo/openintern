@@ -27,8 +27,6 @@ async function main(): Promise<void> {
   const feishu = new FeishuChannel({
     config: config.channels.feishu,
     bus,
-    host: config.gateway.host,
-    port: config.gateway.port,
   });
   const agent = new AgentLoop({
     bus,
@@ -104,9 +102,7 @@ Scheduled instruction: ${job.payload.message}`;
   await heartbeat.start();
   if (feishu.isEnabled) {
     await feishu.start();
-    stdout.write(
-      `Feishu webhook listening at http://${config.gateway.host}:${config.gateway.port}${feishu.webhookPath}\n`,
-    );
+    stdout.write("Feishu long connection started (WebSocket)\n");
   }
 
   const pending = new Map<string, (value: string) => void>();
