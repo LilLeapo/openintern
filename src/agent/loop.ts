@@ -17,6 +17,7 @@ import { MessageTool } from "../tools/builtins/message.js";
 import { ExecTool } from "../tools/builtins/exec.js";
 import { SpawnTool } from "../tools/builtins/spawn.js";
 import { WebFetchTool, WebSearchTool } from "../tools/builtins/web.js";
+import { MemoryDeleteTool, MemoryRetrieveTool, MemorySaveTool } from "../tools/builtins/memory.js";
 import { ToolRegistry } from "../tools/core/tool-registry.js";
 import { Mutex } from "../utils/mutex.js";
 import type { McpConfig, MemoryConfig } from "../config/schema.js";
@@ -99,7 +100,9 @@ export class AgentLoop {
   private readonly memuClient: MemUClient | null;
   private readonly memuRetrieveEnabled: boolean;
   private readonly memuMemorizeEnabled: boolean;
+  private readonly memuMemorizeMode: "auto" | "tool";
   private readonly memuAgentId: string;
+  private readonly memuScopes: { chat: string; papers: string };
 
   constructor(options: AgentLoopOptions) {
     this.bus = options.bus;
@@ -155,7 +158,12 @@ export class AgentLoop {
       : null;
     this.memuRetrieveEnabled = memuEnabled && (memuConfig?.retrieve ?? true);
     this.memuMemorizeEnabled = memuEnabled && (memuConfig?.memorize ?? true);
+    this.memuMemorizeMode = memuConfig?.memorizeMode ?? "tool";
     this.memuAgentId = memuConfig?.agentId?.trim() || "openintern";
+    this.memuScopes = {
+      chat: memuConfig?.scopes?.chat?.trim() || "chat",
+      papers: memuConfig?.scopes?.papers?.trim() || "papers",
+    };
 
     this.registerDefaultTools();
     this.mcpConfig = options.mcpConfig;
@@ -182,6 +190,21 @@ export class AgentLoop {
     }
     if (this.cronService) {
       this.tools.register(new CronTool(this.cronService));
+    }
+    if (this.memuClient) {
+      const resolveScope = (params: {
+        channel: string;
+        chatId: string;
+        scope: "chat" | "papers";
+      }): { userId: string; agentId: string } =>
+        this.memuScope(params.channel, params.chatId, params.scope);
+      if (this.memuRetrieveEnabled) {
+        this.tools.register(new MemoryRetrieveTool(this.memuClient, resolveScope));
+      }
+      if (this.memuMemorizeEnabled) {
+        this.tools.register(new MemorySaveTool(this.memuClient, resolveScope));
+        this.tools.register(new MemoryDeleteTool(this.memuClient, resolveScope));
+      }
     }
   }
 
@@ -305,7 +328,7 @@ export class AgentLoop {
   }
 
   private setToolContext(channel: string, chatId: string, messageId?: string): void {
-    for (const toolName of ["message", "spawn", "cron"] as const) {
+    for (const toolName of this.tools.names) {
       const tool = this.tools.get(toolName);
       if (!tool) {
         continue;
@@ -575,7 +598,9 @@ export class AgentLoop {
 
     this.saveTurn(session, result.messages, 1 + history.length);
     await this.sessions.save(session);
-    this.scheduleMemuMemorize(message, result.finalContent ?? "");
+    if (this.memuMemorizeMode === "auto") {
+      this.scheduleMemuMemorize(message, result.finalContent ?? "");
+    }
 
     if (messageTool && messageTool instanceof MessageTool && messageTool.sentInTurn) {
       return null;
@@ -646,10 +671,16 @@ export class AgentLoop {
     return lock;
   }
 
-  private memuScope(channel: string, chatId: string): { userId: string; agentId: string } {
+  private memuScope(
+    channel: string,
+    chatId: string,
+    scope: "chat" | "papers" = "chat",
+  ): { userId: string; agentId: string } {
+    const scopeSuffix = this.memuScopes[scope].trim();
+    const agentId = scopeSuffix ? `${this.memuAgentId}:${scopeSuffix}` : this.memuAgentId;
     return {
       userId: `${channel}:${chatId}`,
-      agentId: this.memuAgentId,
+      agentId,
     };
   }
 
@@ -664,7 +695,7 @@ export class AgentLoop {
     try {
       const result = await this.memuClient.retrieve({
         query,
-        ...this.memuScope(message.channel, message.chatId),
+        ...this.memuScope(message.channel, message.chatId, "chat"),
       });
       return MemUClient.formatRetrieveContext(result);
     } catch (error) {
@@ -698,7 +729,7 @@ export class AgentLoop {
     void this.memuClient
       .memorizeConversation({
         conversation,
-        ...this.memuScope(message.channel, message.chatId),
+        ...this.memuScope(message.channel, message.chatId, "chat"),
       })
       .catch((error) => {
         this.logMemuWarning("memorize", error);

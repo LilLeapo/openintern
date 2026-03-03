@@ -45,7 +45,10 @@ describe("config loader", () => {
     expect(config.gateway.port).toBe(18790);
     expect(config.memory.memu.enabled).toBe(false);
     expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
+    expect(config.memory.memu.scopes.chat).toBe("chat");
+    expect(config.memory.memu.scopes.papers).toBe("papers");
     expect(config.memory.memu.apiStyle).toBe("cloudV3");
+    expect(config.memory.memu.memorizeMode).toBe("tool");
     expect(config.memory.memu.endpoints).toEqual({});
   });
 
@@ -95,12 +98,16 @@ describe("config loader", () => {
             api_key: "memu-key",
             base_url: "https://api.memu.so",
             agent_id: "agent-1",
+            chat_scope: "dialog",
+            papers_scope: "kb",
             timeout_ms: 9999,
             retrieve_enabled: false,
             memorize_enabled: false,
+            memorize_mode: "auto",
             api_style: "localSimple",
             memorize_endpoint: "/memorize",
             retrieve_endpoint: "/recall",
+            clear_endpoint: "/clear",
           },
         },
       }),
@@ -125,12 +132,16 @@ describe("config loader", () => {
     expect(config.memory.memu.apiKey).toBe("memu-key");
     expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
     expect(config.memory.memu.agentId).toBe("agent-1");
+    expect(config.memory.memu.scopes.chat).toBe("dialog");
+    expect(config.memory.memu.scopes.papers).toBe("kb");
     expect(config.memory.memu.timeoutMs).toBe(9999);
     expect(config.memory.memu.retrieve).toBe(false);
     expect(config.memory.memu.memorize).toBe(false);
+    expect(config.memory.memu.memorizeMode).toBe("auto");
     expect(config.memory.memu.apiStyle).toBe("localSimple");
     expect(config.memory.memu.endpoints.memorize).toBe("/memorize");
     expect(config.memory.memu.endpoints.retrieve).toBe("/recall");
+    expect(config.memory.memu.endpoints.clear).toBe("/clear");
   });
 
   it("creates config when missing", async () => {

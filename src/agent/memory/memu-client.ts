@@ -8,6 +8,7 @@ interface MemUClientOptions {
     retrieve?: string;
     categories?: string;
     status?: string;
+    clear?: string;
   };
 }
 
@@ -32,6 +33,7 @@ interface MemUEndpoints {
   retrieve: string;
   categories: string;
   status: string;
+  clear: string;
 }
 
 const CLOUD_V3_ENDPOINTS: MemUEndpoints = {
@@ -39,6 +41,7 @@ const CLOUD_V3_ENDPOINTS: MemUEndpoints = {
   retrieve: "/api/v3/memory/retrieve",
   categories: "/api/v3/memory/categories",
   status: "/api/v3/memory/memorize/status/{task_id}",
+  clear: "",
 };
 
 const LOCAL_SIMPLE_ENDPOINTS: MemUEndpoints = {
@@ -46,6 +49,7 @@ const LOCAL_SIMPLE_ENDPOINTS: MemUEndpoints = {
   retrieve: "/recall",
   categories: "",
   status: "",
+  clear: "",
 };
 
 const MEM0_V1_ENDPOINTS: MemUEndpoints = {
@@ -53,6 +57,7 @@ const MEM0_V1_ENDPOINTS: MemUEndpoints = {
   retrieve: "/api/v1/memories/search",
   categories: "/api/v1/memories",
   status: "",
+  clear: "/api/v1/memories",
 };
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -115,6 +120,7 @@ function resolveEndpoints(
     retrieve: normalizeEndpoint(overrides?.retrieve ?? defaults.retrieve),
     categories: normalizeEndpoint(overrides?.categories ?? defaults.categories),
     status: normalizeEndpoint(overrides?.status ?? defaults.status),
+    clear: normalizeEndpoint(overrides?.clear ?? defaults.clear),
   };
 }
 
@@ -331,6 +337,59 @@ export class MemUClient {
     return this.requestJson("GET", this.renderStatusPath(taskId));
   }
 
+  async clearScope(options: {
+    userId: string;
+    agentId: string;
+  }): Promise<{ supported: boolean; raw: Record<string, unknown> }> {
+    if (this.apiStyle === "mem0V1") {
+      const endpoint = this.endpoints.clear || this.endpoints.memorize;
+      if (!endpoint) {
+        return { supported: false, raw: { error: "clear endpoint not configured" } };
+      }
+      const raw = await this.requestJson(
+        "DELETE",
+        this.withQuery(
+          endpoint,
+          new URLSearchParams({
+            run_id: options.userId,
+            agent_id: options.agentId,
+          }),
+        ),
+        undefined,
+        {
+          "X-User-Id": options.userId,
+        },
+      );
+      return { supported: true, raw };
+    }
+
+    if (!this.endpoints.clear) {
+      return { supported: false, raw: { error: "clear endpoint not configured" } };
+    }
+
+    const payload: Record<string, unknown> = {
+      user_id: options.userId,
+      agent_id: options.agentId,
+    };
+
+    try {
+      const raw = await this.requestJson("POST", this.endpoints.clear, payload);
+      return { supported: true, raw };
+    } catch {
+      const raw = await this.requestJson(
+        "DELETE",
+        this.withQuery(
+          this.endpoints.clear,
+          new URLSearchParams({
+            user_id: options.userId,
+            agent_id: options.agentId,
+          }),
+        ),
+      );
+      return { supported: true, raw };
+    }
+  }
+
   static formatRetrieveContext(
     result: MemURetrieveResult,
     limits?: { categories?: number; items?: number; resources?: number },
@@ -383,7 +442,7 @@ export class MemUClient {
   }
 
   private async requestJson(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     endpoint: string,
     body?: Record<string, unknown>,
     extraHeaders?: Record<string, string>,
@@ -397,7 +456,7 @@ export class MemUClient {
     if (extraHeaders) {
       Object.assign(headers, extraHeaders);
     }
-    if (method === "POST") {
+    if (method === "POST" || (method === "DELETE" && body)) {
       headers["Content-Type"] = "application/json";
     }
 
@@ -417,8 +476,27 @@ export class MemUClient {
         );
       }
 
-      const data = (await response.json()) as unknown;
-      return asObject(data);
+      if (response.status === 204) {
+        return {};
+      }
+      if (typeof response.text === "function") {
+        const text = await response.text();
+        if (!text.trim()) {
+          return {};
+        }
+        try {
+          const data = JSON.parse(text) as unknown;
+          return asObject(data);
+        } catch {
+          return { text };
+        }
+      }
+
+      if (typeof response.json === "function") {
+        const data = (await response.json()) as unknown;
+        return asObject(data);
+      }
+      return {};
     } catch (error) {
       if (controller.signal.aborted) {
         throw new Error(`MemU API ${method} ${endpoint} timed out after ${this.timeoutMs}ms`);

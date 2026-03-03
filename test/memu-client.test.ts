@@ -227,4 +227,33 @@ describe("MemUClient", () => {
     expect(calls.some((url) => url.endsWith("/api/v1/memories/search"))).toBe(true);
     expect(calls.some((url) => url.endsWith("/api/v1/memories"))).toBe(true);
   });
+
+  it("supports clearScope when clear endpoint is configured", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      json: async () => ({ status: "cleared" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new MemUClient({
+      apiKey: "local-key",
+      baseUrl: "http://127.0.0.1:8000",
+      apiStyle: "localSimple",
+      endpoints: {
+        clear: "/clear",
+      },
+    });
+
+    const result = await client.clearScope({
+      userId: "cli:direct",
+      agentId: "openintern:chat",
+    });
+    expect(result.supported).toBe(true);
+
+    const firstCall = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
+    const url = String(firstCall[0]);
+    const init = firstCall[1] ?? {};
+    expect(url).toBe("http://127.0.0.1:8000/clear");
+    expect(init.method).toBe("POST");
+  });
 });
