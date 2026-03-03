@@ -47,6 +47,7 @@ async function main(): Promise<void> {
     channelsConfig: config.channels,
     mcpConfig: config.mcp,
     memoryConfig: config.memory,
+    appConfig: config,
   });
 
   cron.onJob = async (job) => {

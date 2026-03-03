@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MemUClient } from "../src/agent/memory/memu-client.js";
 import { MemoryDeleteTool, MemoryRetrieveTool, MemorySaveTool } from "../src/tools/builtins/memory.js";
+import { ScopedMemoryRetrieveTool, ScopedMemorySaveTool } from "../src/tools/builtins/scoped-memory.js";
 
 function resolver(input: { channel: string; chatId: string; scope: "chat" | "papers" }): {
   userId: string;
@@ -107,5 +108,60 @@ describe("memory tools", () => {
 
     expect(output).toContain("unsupported");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("scoped memory tools force role scope regardless of requested scope", async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      const agentId = String(payload.agent_id ?? "");
+      if (_url.endsWith("/api/v3/memory/memorize")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ task_id: "task_2", agent_id: agentId }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            items: [{ summary: `Retrieved from ${agentId}` }],
+          }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new MemUClient({
+      apiKey: "k",
+      baseUrl: "https://api.memu.so",
+    });
+
+    const saveTool = new ScopedMemorySaveTool(client, resolver, "papers");
+    saveTool.setContext("cli", "direct");
+    const saveOutput = await saveTool.execute({
+      content: "Should be stored in papers scope only.",
+      scope: "chat",
+    });
+    expect(saveOutput).toContain("papers scope");
+
+    const saveCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/api/v3/memory/memorize"),
+    ) as [string, RequestInit | undefined];
+    const saveBody = JSON.parse(String(saveCall[1]?.body ?? "{}")) as Record<string, unknown>;
+    expect(saveBody.agent_id).toBe("openintern:papers");
+
+    const retrieveTool = new ScopedMemoryRetrieveTool(client, resolver, "chat");
+    retrieveTool.setContext("cli", "direct");
+    const retrieveOutput = await retrieveTool.execute({
+      query: "where is this from?",
+      scope: "all",
+    });
+    expect(retrieveOutput).toContain("openintern:chat");
+
+    const retrieveCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/api/v3/memory/retrieve"),
+    );
+    expect(retrieveCalls).toHaveLength(1);
   });
 });

@@ -55,6 +55,12 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["agents", "defaults", "memory_window"], ["agents", "defaults", "memoryWindow"]);
   movePath(out, ["agents", "defaults", "reasoning_effort"], ["agents", "defaults", "reasoningEffort"]);
   movePath(out, ["agents", "defaults", "provider_name"], ["agents", "defaults", "provider"]);
+  movePath(out, ["agents", "subagent_concurrency"], ["agents", "subagentConcurrency"]);
+  movePath(
+    out,
+    ["agents", "subagentConcurrency", "max_concurrent"],
+    ["agents", "subagentConcurrency", "maxConcurrent"],
+  );
   movePath(out, ["providers", "openai_compatible"], ["providers", "openaiCompatible"]);
   movePath(out, ["providers", "openaiCompatible", "api_key"], ["providers", "openaiCompatible", "apiKey"]);
   movePath(out, ["providers", "openaiCompatible", "api_base"], ["providers", "openaiCompatible", "apiBase"]);
@@ -118,6 +124,24 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["gateway", "heartbeat", "host"], ["gateway", "host"]);
   movePath(out, ["gateway", "heartbeat", "port"], ["gateway", "port"]);
   movePath(out, ["gateway", "heartbeat", "interval_s"], ["gateway", "heartbeat", "intervalS"]);
+
+  const roles = getPath(out, ["roles"]);
+  if (isObject(roles)) {
+    for (const [roleName, roleValue] of Object.entries(roles)) {
+      if (!isObject(roleValue)) {
+        continue;
+      }
+      movePath(out, ["roles", roleName, "system_prompt"], ["roles", roleName, "systemPrompt"]);
+      movePath(out, ["roles", roleName, "allowed_tools"], ["roles", roleName, "allowedTools"]);
+      movePath(out, ["roles", roleName, "memory_scope"], ["roles", roleName, "memoryScope"]);
+      movePath(out, ["roles", roleName, "max_iterations"], ["roles", roleName, "maxIterations"]);
+      movePath(
+        out,
+        ["roles", roleName, "workspace_isolation"],
+        ["roles", roleName, "workspaceIsolation"],
+      );
+    }
+  }
 
   return out;
 }
