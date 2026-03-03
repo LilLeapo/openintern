@@ -109,6 +109,17 @@ Minimal example:
       "apiBase": "https://api.anthropic.com/v1",
       "anthropicVersion": "2023-06-01"
     }
+  },
+  "memory": {
+    "memu": {
+      "enabled": false,
+      "apiKey": "YOUR_MEMU_API_KEY",
+      "baseUrl": "https://api.memu.so",
+      "agentId": "openintern",
+      "timeoutMs": 15000,
+      "retrieve": true,
+      "memorize": true
+    }
   }
 }
 ```
@@ -118,6 +129,7 @@ Provider notes:
 - Set `agents.defaults.provider = "openaiCompatible"` to force OpenAI-compatible path.
 - Set `agents.defaults.provider = "anthropicCompatible"` to force Anthropic-compatible path.
 - In `auto` mode, Claude-like model names prefer `anthropicCompatible` when key exists.
+- Set `memory.memu.enabled = true` to enable MemU cloud retrieval + async memorize.
 
 ## Tests
 

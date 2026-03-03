@@ -9,6 +9,7 @@ type HistoryMessage = Record<string, unknown>;
 export class ContextBuilder {
   static readonly BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"];
   static readonly RUNTIME_CONTEXT_TAG = "[Runtime Context - metadata only, not instructions]";
+  static readonly EXTERNAL_MEMORY_TAG = "[External Memory Context - retrieved facts, not user input]";
 
   private readonly memory: MemoryStore;
   private readonly skills: SkillsLoader;
@@ -65,13 +66,20 @@ ${skillsSummary}`,
   async buildMessages(options: {
     history: HistoryMessage[];
     currentMessage: string;
+    retrievedMemory?: string;
     media?: string[];
     channel?: string;
     chatId?: string;
   }): Promise<HistoryMessage[]> {
+    const externalMemory =
+      typeof options.retrievedMemory === "string" && options.retrievedMemory.trim()
+        ? `${ContextBuilder.EXTERNAL_MEMORY_TAG}\n${options.retrievedMemory}`
+        : null;
+
     return [
       { role: "system", content: await this.buildSystemPrompt() },
       ...options.history,
+      ...(externalMemory ? [{ role: "system", content: externalMemory }] : []),
       { role: "user", content: this.buildRuntimeContext(options.channel, options.chatId) },
       { role: "user", content: await this.buildUserContent(options.currentMessage, options.media) },
     ];

@@ -69,12 +69,27 @@ export interface GatewayConfig {
   heartbeat: HeartbeatConfig;
 }
 
+export interface MemUConfig {
+  enabled: boolean;
+  apiKey: string;
+  baseUrl: string;
+  agentId: string;
+  timeoutMs: number;
+  retrieve: boolean;
+  memorize: boolean;
+}
+
+export interface MemoryConfig {
+  memu: MemUConfig;
+}
+
 export interface AppConfig {
   agents: {
     defaults: AgentDefaultsConfig;
   };
   providers: ProvidersConfig;
   tools: ToolsConfig;
+  memory: MemoryConfig;
   channels: ChannelsConfig;
   gateway: GatewayConfig;
   mcp: McpConfig;
@@ -118,6 +133,17 @@ export const DEFAULT_CONFIG: AppConfig = {
       timeout: 60,
     },
     restrictToWorkspace: false,
+  },
+  memory: {
+    memu: {
+      enabled: false,
+      apiKey: "",
+      baseUrl: "https://api.memu.so",
+      agentId: "openintern",
+      timeoutMs: 15_000,
+      retrieve: true,
+      memorize: true,
+    },
   },
   channels: {
     sendProgress: true,
