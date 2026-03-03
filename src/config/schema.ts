@@ -47,11 +47,22 @@ export interface ToolsConfig {
 export interface ChannelsConfig {
   sendProgress: boolean;
   sendToolHints: boolean;
+  feishu: FeishuChannelConfig;
 }
 
 export interface HeartbeatConfig {
   enabled: boolean;
   intervalS: number;
+}
+
+export interface FeishuChannelConfig {
+  enabled: boolean;
+  appId: string;
+  appSecret: string;
+  verificationToken: string;
+  encryptKey: string;
+  allowFrom: string[];
+  webhookPath: string;
 }
 
 export interface McpServerConfig {
@@ -66,6 +77,8 @@ export interface McpConfig {
 }
 
 export interface GatewayConfig {
+  host: string;
+  port: number;
   heartbeat: HeartbeatConfig;
 }
 
@@ -148,8 +161,19 @@ export const DEFAULT_CONFIG: AppConfig = {
   channels: {
     sendProgress: true,
     sendToolHints: false,
+    feishu: {
+      enabled: false,
+      appId: "",
+      appSecret: "",
+      verificationToken: "",
+      encryptKey: "",
+      allowFrom: [],
+      webhookPath: "/feishu/events",
+    },
   },
   gateway: {
+    host: "0.0.0.0",
+    port: 18790,
     heartbeat: {
       enabled: true,
       intervalS: 30 * 60,

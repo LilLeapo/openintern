@@ -39,6 +39,10 @@ describe("config loader", () => {
     expect(config.agents.defaults.provider).toBe("auto");
     expect(config.providers.openaiCompatible.apiBase).toBe("https://api.openai.com/v1");
     expect(config.providers.anthropicCompatible.apiBase).toBe("https://api.anthropic.com/v1");
+    expect(config.channels.feishu.enabled).toBe(false);
+    expect(config.channels.feishu.webhookPath).toBe("/feishu/events");
+    expect(config.gateway.host).toBe("0.0.0.0");
+    expect(config.gateway.port).toBe(18790);
     expect(config.memory.memu.enabled).toBe(false);
     expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
   });
@@ -68,6 +72,22 @@ describe("config loader", () => {
             },
           },
         },
+        channels: {
+          feishu: {
+            app_id: "cli_123",
+            app_secret: "secret_456",
+            verification_token: "vt",
+            encrypt_key: "ek",
+            allow_from: ["ou_abc"],
+            webhook_path: "/custom/feishu",
+          },
+        },
+        gateway: {
+          heartbeat: {
+            host: "127.0.0.1",
+            port: 18080,
+          },
+        },
         memory: {
           memu: {
             api_key: "memu-key",
@@ -89,6 +109,14 @@ describe("config loader", () => {
     expect(config.providers.anthropicCompatible.anthropicVersion).toBe("2023-06-01");
     expect(config.tools.web.search.apiKey).toBe("brave1");
     expect(config.tools.web.search.maxResults).toBe(3);
+    expect(config.channels.feishu.appId).toBe("cli_123");
+    expect(config.channels.feishu.appSecret).toBe("secret_456");
+    expect(config.channels.feishu.verificationToken).toBe("vt");
+    expect(config.channels.feishu.encryptKey).toBe("ek");
+    expect(config.channels.feishu.allowFrom).toEqual(["ou_abc"]);
+    expect(config.channels.feishu.webhookPath).toBe("/custom/feishu");
+    expect(config.gateway.host).toBe("127.0.0.1");
+    expect(config.gateway.port).toBe(18080);
     expect(config.memory.memu.apiKey).toBe("memu-key");
     expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
     expect(config.memory.memu.agentId).toBe("agent-1");

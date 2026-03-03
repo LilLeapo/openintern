@@ -7,6 +7,7 @@ import { stderr, stdin, stdout } from "node:process";
 import { AgentLoop } from "../agent/loop.js";
 import { MessageBus } from "../bus/message-bus.js";
 import type { OutboundMessage } from "../bus/events.js";
+import { FeishuChannel } from "../channels/feishu.js";
 import { CronService } from "../cron/service.js";
 import { loadOrCreateConfig, resolveWorkspacePath, getDataDir } from "../config/loader.js";
 import { HeartbeatService } from "../heartbeat/service.js";
@@ -23,6 +24,12 @@ async function main(): Promise<void> {
   const provider = makeProvider(config);
   const cronStorePath = path.join(getDataDir(), "cron", "jobs.json");
   const cron = new CronService(cronStorePath);
+  const feishu = new FeishuChannel({
+    config: config.channels.feishu,
+    bus,
+    host: config.gateway.host,
+    port: config.gateway.port,
+  });
   const agent = new AgentLoop({
     bus,
     provider,
@@ -95,9 +102,25 @@ Scheduled instruction: ${job.payload.message}`;
   const runTask = agent.run();
   await cron.start();
   await heartbeat.start();
+  if (feishu.isEnabled) {
+    await feishu.start();
+    stdout.write(
+      `Feishu webhook listening at http://${config.gateway.host}:${config.gateway.port}${feishu.webhookPath}\n`,
+    );
+  }
 
   const pending = new Map<string, (value: string) => void>();
-  const routeOutbound = (msg: OutboundMessage): void => {
+  const routeOutbound = async (msg: OutboundMessage): Promise<void> => {
+    if (msg.channel === "feishu" && feishu.isEnabled) {
+      try {
+        await feishu.send(msg);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        stderr.write(`Feishu send error: ${message}\n`);
+      }
+      return;
+    }
+
     const metadata =
       typeof msg.metadata === "object" && msg.metadata !== null
         ? (msg.metadata as Record<string, unknown>)
@@ -137,7 +160,7 @@ Scheduled instruction: ${job.payload.message}`;
       if (!msg) {
         continue;
       }
-      routeOutbound(msg);
+      await routeOutbound(msg);
     }
   })();
 
@@ -178,6 +201,7 @@ Scheduled instruction: ${job.payload.message}`;
   rl.close();
   heartbeat.stop();
   cron.stop();
+  await feishu.stop();
   agent.stop();
   await Promise.allSettled([runTask, outboundTask]);
 }
