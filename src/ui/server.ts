@@ -1,9 +1,15 @@
 import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { loadOrCreateConfig } from "../config/loader.js";
+import { SubagentManager } from "../agent/subagent/manager.js";
+import { MessageBus } from "../bus/message-bus.js";
+import { loadOrCreateConfig, resolveWorkspacePath } from "../config/loader.js";
+import { makeProvider } from "../llm/provider-factory.js";
+import { syncWorkspaceTemplates } from "../templates/sync.js";
+import { WorkflowEngine } from "../workflow/engine.js";
 import { UiMockState } from "./mock-state.js";
+import { UiRuntimeState } from "./runtime-state.js";
 
 interface JsonResponse {
   ok: boolean;
@@ -94,6 +100,47 @@ async function serveStatic(
 async function main(): Promise<void> {
   const config = await loadOrCreateConfig();
   const state = new UiMockState(config);
+  let runtime: UiRuntimeState | null = null;
+  let runtimeInitError: string | null = null;
+
+  try {
+    const bus = new MessageBus();
+    const provider = makeProvider(config);
+    const workspace = resolveWorkspacePath(config);
+    await mkdir(workspace, { recursive: true });
+    await syncWorkspaceTemplates(workspace);
+
+    const subagents = new SubagentManager({
+      provider,
+      workspace,
+      bus,
+      model: config.agents.defaults.model,
+      temperature: config.agents.defaults.temperature,
+      maxTokens: config.agents.defaults.maxTokens,
+      reasoningEffort: config.agents.defaults.reasoningEffort,
+      webSearchApiKey: config.tools.web.search.apiKey,
+      webSearchMaxResults: config.tools.web.search.maxResults,
+      webProxy: config.tools.web.proxy,
+      execTimeoutSeconds: config.tools.exec.timeout,
+      restrictToWorkspace: config.tools.restrictToWorkspace,
+      config,
+      maxConcurrent: config.agents.subagentConcurrency.maxConcurrent,
+    });
+    const engine = new WorkflowEngine({
+      bus,
+      subagents,
+      workspace,
+      config,
+    });
+    runtime = new UiRuntimeState({
+      bus,
+      engine,
+    });
+  } catch (error) {
+    runtimeInitError = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Runtime workflow init skipped: ${runtimeInitError}\n`);
+  }
+
   const distDir = path.resolve(process.cwd(), "src", "ui", "frontend", "dist");
   const host = process.env.OPENINTERN_UI_HOST || config.gateway.host || "127.0.0.1";
   const defaultPort = Number.isFinite(config.gateway.port) ? config.gateway.port + 1 : 18890;
@@ -113,6 +160,131 @@ async function main(): Promise<void> {
 
       if (pathname === "/api/state" && method === "GET") {
         sendJson(res, 200, { ok: true, data: state.getSnapshot() });
+        return;
+      }
+
+      if (pathname === "/api/runtime/hitl/stream" && method === "GET") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+        runtime.attachApprovalStream(res);
+        return;
+      }
+
+      if (pathname === "/api/runtime/hitl/approvals" && method === "GET") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            approvals: runtime.listApprovals({ pendingOnly: true }),
+          },
+        });
+        return;
+      }
+
+      if (
+        pathname.startsWith("/api/runtime/hitl/approvals/") &&
+        pathname.endsWith("/approve") &&
+        method === "POST"
+      ) {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+        const approvalId = pathname
+          .replace("/api/runtime/hitl/approvals/", "")
+          .replace("/approve", "")
+          .trim();
+        const body = await readJsonBody<{ approver?: string }>(req);
+        await runtime.approve(approvalId, body.approver ?? "researcher");
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            approvals: runtime.listApprovals({ pendingOnly: true }),
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/workflows/start" && method === "POST") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+
+        const body = await readJsonBody<{
+          definition: unknown;
+          triggerInput?: Record<string, unknown>;
+          originChannel?: string;
+          originChatId?: string;
+        }>(req);
+        const started = await runtime.startWorkflow({
+          definition: body.definition,
+          triggerInput: body.triggerInput,
+          originChannel: body.originChannel,
+          originChatId: body.originChatId,
+        });
+        const run = runtime.getRun(started.runId);
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            runId: started.runId,
+            run,
+          },
+        });
+        return;
+      }
+
+      if (pathname.startsWith("/api/runtime/workflows/") && method === "GET") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+        const runId = pathname.replace("/api/runtime/workflows/", "").trim();
+        const run = runtime.getRun(runId);
+        if (!run) {
+          sendJson(res, 404, { ok: false, message: "Run not found" });
+          return;
+        }
+        sendJson(res, 200, { ok: true, data: { run } });
+        return;
+      }
+
+      if (pathname.startsWith("/api/runtime/workflows/") && pathname.endsWith("/cancel") && method === "POST") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+        const runId = pathname.replace("/api/runtime/workflows/", "").replace("/cancel", "").trim();
+        await runtime.cancelRun(runId);
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            run: runtime.getRun(runId),
+          },
+        });
         return;
       }
 

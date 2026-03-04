@@ -23,6 +23,7 @@ TypeScript replication project inspired by `reference/nanobot`, focused on a com
   - cron scheduling service
   - heartbeat service
   - subagent background execution + system callback
+  - DAG workflow engine (manual trigger, event-bus driven node orchestration)
 - Provider layer:
   - OpenAI-compatible API
   - Anthropic-compatible API
@@ -126,6 +127,70 @@ Notes:
 - This phase uses mock runtime data (no direct AgentLoop execution yet).
 - React app source: `src/ui/frontend`.
 - Mock API: `src/ui/server.ts` + `src/ui/mock-state.ts`.
+
+## Workflow Engine (Backend Core)
+
+V1 introduces a backend macro-orchestration engine for deterministic DAG execution:
+
+- structured workflow schema (`src/workflow/schema.ts`)
+- state-machine runner (`src/workflow/engine.ts`)
+- context interpolation + robust JSON output extraction (`src/workflow/interpolation.ts`)
+- event-bus bridge via `SUBAGENT_TASK_COMPLETED` / `SUBAGENT_TASK_FAILED`
+
+Current trigger mode is `manual` (API/SDK-driven start), and this does not replace the UI mock runtime yet.
+
+Workflow schema shape:
+
+```json
+{
+  "id": "wf_example",
+  "trigger": { "type": "manual" },
+  "execution": { "mode": "parallel", "maxParallel": 2 },
+  "nodes": [
+    {
+      "id": "node_clean",
+      "role": "scientist",
+      "skillNames": ["pdf-ingest"],
+      "taskPrompt": "Clean {{trigger.csv_path}}",
+      "dependsOn": [],
+      "outputKeys": ["output_path"],
+      "retry": { "maxAttempts": 2, "backoffMs": 200 },
+      "hitl": {
+        "enabled": true,
+        "highRiskTools": ["exec"],
+        "approvalTarget": "owner",
+        "approvalTimeoutMs": 7200000
+      }
+    },
+    {
+      "id": "node_report",
+      "role": "scientist",
+      "taskPrompt": "Summarize {{node_clean.output_path}}",
+      "dependsOn": ["node_clean"],
+      "outputKeys": ["summary"]
+    }
+  ]
+}
+```
+
+Notes:
+
+- `skillNames` is optional. If omitted, the node still runs with role-based tools.
+- Node output must be a JSON object. The engine extracts JSON robustly even when the model adds extra prose.
+- HITL supports atomic tool-batch approval: if one tool call in a response is high-risk, the whole batch is gated.
+- Workflow-spawned subagents run with isolated origin/session context:
+  - `originChannel = "workflow"`
+  - `originChatId = "<runId>:<nodeId>"`
+  - `sessionKey = "workflow:<runId>:<nodeId>:<attempt>"`
+
+Runtime HITL API (UI server):
+
+- `GET /api/runtime/hitl/stream` (SSE)
+- `GET /api/runtime/hitl/approvals`
+- `POST /api/runtime/hitl/approvals/:approvalId/approve`
+- `POST /api/runtime/workflows/start`
+- `GET /api/runtime/workflows/:runId`
+- `POST /api/runtime/workflows/:runId/cancel`
 
 ## LLM Config
 

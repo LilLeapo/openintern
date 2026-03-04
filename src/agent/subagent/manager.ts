@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { InboundMessage, SubagentTaskEvent } from "../../bus/events.js";
+import type {
+  ApprovalToolCall,
+  InboundMessage,
+  SubagentApprovalGrantedEvent,
+  SubagentTaskEvent,
+} from "../../bus/events.js";
 import { MessageBus } from "../../bus/message-bus.js";
 import { resolveRole, validateRoleName } from "../../config/role-resolver.js";
 import type { AppConfig, RoleConfig } from "../../config/schema.js";
-import type { LLMProvider } from "../../llm/provider.js";
+import type { LLMProvider, ToolCallRequest } from "../../llm/provider.js";
 import { ExecTool } from "../../tools/builtins/exec.js";
 import {
   EditFileTool,
@@ -28,10 +33,20 @@ import type { Tool } from "../../tools/core/tool.js";
 import { ToolRegistry } from "../../tools/core/tool-registry.js";
 import { ContextBuilder } from "../context/context-builder.js";
 import type { MemUClient } from "../memory/memu-client.js";
+import { SkillsLoader } from "../skills/loader.js";
 
 interface RunningTask {
   task: Promise<void>;
   abortController: AbortController;
+}
+
+interface PendingApproval {
+  approvalId: string;
+  taskId: string;
+  sessionKey: string;
+  timer: NodeJS.Timeout;
+  resolve: () => void;
+  reject: (error: Error) => void;
 }
 
 export interface SubagentManagerOptions {
@@ -53,9 +68,42 @@ export interface SubagentManagerOptions {
   maxConcurrent?: number;
 }
 
+export interface SpawnTaskOptions {
+  task: string;
+  role?: string | null;
+  label?: string | null;
+  originChannel: string;
+  originChatId: string;
+  sessionKey: string;
+  skillNames?: string[];
+  announceToMainAgent?: boolean;
+  workflowContext?: {
+    runId: string;
+    nodeId: string;
+    nodeName: string;
+    hitl?: {
+      enabled: boolean;
+      highRiskTools: string[];
+      approvalTarget: "owner" | "group";
+      approvalTimeoutMs: number;
+    };
+  };
+}
+
+export interface SpawnTaskResult {
+  taskId: string;
+  label: string;
+  queued: boolean;
+  queuePosition: number | null;
+  ack: string;
+}
+
 export class SubagentManager {
   private readonly runningTasks = new Map<string, RunningTask>();
   private readonly sessionTasks = new Map<string, Set<string>>();
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly taskToApprovals = new Map<string, Set<string>>();
+  private readonly unsubscribeApprovalGranted: () => void;
 
   private readonly provider: LLMProvider;
   private readonly workspace: string;
@@ -98,6 +146,10 @@ export class SubagentManager {
     const inputMax = options.maxConcurrent ?? configMax;
     const normalized = Number.isFinite(inputMax) ? Math.floor(inputMax) : 1;
     this.maxConcurrent = Math.max(1, normalized);
+
+    this.unsubscribeApprovalGranted = this.bus.onSubagentApprovalGranted((event) => {
+      this.onApprovalGranted(event);
+    });
   }
 
   async spawn(options: {
@@ -108,18 +160,57 @@ export class SubagentManager {
     originChatId: string;
     sessionKey: string;
   }): Promise<string> {
+    try {
+      const started = await this.spawnTask(options);
+      return started.ack;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async spawnTask(options: SpawnTaskOptions): Promise<SpawnTaskResult> {
     const role = options.role?.trim() ? options.role.trim() : null;
     if (role) {
       const roleError = validateRoleName(this.configRef, role);
       if (roleError) {
-        return roleError;
+        throw new Error(roleError);
       }
     }
 
     const roleConfig = role ? resolveRole(this.configRef, role) : null;
     if (role && !roleConfig) {
-      return `Error: Role '${role}' is invalid in config.`;
+      throw new Error(`Error: Role '${role}' is invalid in config.`);
     }
+
+    const skillNames = Array.from(
+      new Set(
+        (options.skillNames ?? [])
+          .map((name) => name.trim())
+          .filter((name) => name.length > 0),
+      ),
+    );
+    const announceToMainAgent = options.announceToMainAgent ?? true;
+    const workflowContext = options.workflowContext
+      ? {
+          runId: options.workflowContext.runId,
+          nodeId: options.workflowContext.nodeId,
+          nodeName: options.workflowContext.nodeName,
+          hitl: options.workflowContext.hitl
+            ? {
+                enabled: options.workflowContext.hitl.enabled === true,
+                highRiskTools: Array.from(
+                  new Set(
+                    options.workflowContext.hitl.highRiskTools
+                      .map((name) => name.trim())
+                      .filter((name) => name.length > 0),
+                  ),
+                ),
+                approvalTarget: options.workflowContext.hitl.approvalTarget,
+                approvalTimeoutMs: options.workflowContext.hitl.approvalTimeoutMs,
+              }
+            : undefined,
+        }
+      : undefined;
 
     const taskId = randomUUID().slice(0, 8);
     const label =
@@ -138,11 +229,19 @@ export class SubagentManager {
       task: options.task,
       originChannel: options.originChannel,
       originChatId: options.originChatId,
+      sessionKey: options.sessionKey,
+      skillNames,
+      announceToMainAgent,
+      workflowContext,
       signal: abortController.signal,
     });
     const wrapped: RunningTask = {
       abortController,
       task: runTask.finally(() => {
+        this.cancelPendingApprovalsByTask(
+          taskId,
+          "Task ended before approval was completed.",
+        );
         this.runningTasks.delete(taskId);
         const set = this.sessionTasks.get(options.sessionKey);
         if (!set) {
@@ -160,13 +259,67 @@ export class SubagentManager {
     }
     this.sessionTasks.get(options.sessionKey)?.add(taskId);
 
-    if (queued && queuePosition !== null) {
-      return `Subagent [${label}] queued (id: ${taskId}, position: ${queuePosition} in queue). I'll notify you when it completes.`;
+    const ack =
+      queued && queuePosition !== null
+        ? `Subagent [${label}] queued (id: ${taskId}, position: ${queuePosition} in queue). I'll notify you when it completes.`
+        : `Subagent [${label}] started (id: ${taskId}). I'll notify you when it completes.`;
+
+    return {
+      taskId,
+      label,
+      queued,
+      queuePosition,
+      ack,
+    };
+  }
+
+  cancelPendingApprovalsByTask(taskId: string, reason = "Approval cancelled."): number {
+    const ids = Array.from(this.taskToApprovals.get(taskId) ?? []);
+    if (ids.length === 0) {
+      return 0;
     }
-    return `Subagent [${label}] started (id: ${taskId}). I'll notify you when it completes.`;
+
+    let cancelled = 0;
+    for (const approvalId of ids) {
+      const pending = this.takePendingApproval(approvalId);
+      if (!pending) {
+        continue;
+      }
+      cancelled += 1;
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+      void this.bus.emitSubagentApprovalCancelled({
+        type: "SUBAGENT_APPROVAL_CANCELLED",
+        approvalId: pending.approvalId,
+        taskId: pending.taskId,
+        cancelledAt: new Date(),
+        reason,
+      });
+    }
+
+    return cancelled;
+  }
+
+  cancelPendingApprovalsBySession(
+    sessionKey: string,
+    reason = "Approval cancelled by session shutdown.",
+  ): number {
+    const taskIds = Array.from(this.sessionTasks.get(sessionKey) ?? []);
+    if (taskIds.length === 0) {
+      return 0;
+    }
+    let total = 0;
+    for (const taskId of taskIds) {
+      total += this.cancelPendingApprovalsByTask(taskId, reason);
+    }
+    return total;
   }
 
   async cancelBySession(sessionKey: string): Promise<number> {
+    this.cancelPendingApprovalsBySession(
+      sessionKey,
+      "Approval cancelled because session was stopped.",
+    );
     const ids = Array.from(this.sessionTasks.get(sessionKey) ?? []);
     if (ids.length === 0) {
       return 0;
@@ -278,19 +431,178 @@ export class SubagentManager {
     return tools;
   }
 
-  private buildSubagentPrompt(roleConfig: RoleConfig | null, taskWorkspace: string): string {
+  private onApprovalGranted(event: SubagentApprovalGrantedEvent): void {
+    const pending = this.pendingApprovals.get(event.approvalId);
+    if (!pending || pending.taskId !== event.taskId) {
+      return;
+    }
+    const removed = this.takePendingApproval(event.approvalId);
+    if (!removed) {
+      return;
+    }
+    clearTimeout(removed.timer);
+    removed.resolve();
+  }
+
+  private takePendingApproval(approvalId: string): PendingApproval | null {
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      return null;
+    }
+    this.pendingApprovals.delete(approvalId);
+    const approvalSet = this.taskToApprovals.get(pending.taskId);
+    if (approvalSet) {
+      approvalSet.delete(approvalId);
+      if (approvalSet.size === 0) {
+        this.taskToApprovals.delete(pending.taskId);
+      }
+    }
+    return pending;
+  }
+
+  private buildCommandPreview(toolCalls: ApprovalToolCall[]): string {
+    const firstExec = toolCalls.find((toolCall) => toolCall.name === "exec");
+    if (firstExec && typeof firstExec.arguments.command === "string") {
+      return firstExec.arguments.command.slice(0, 200);
+    }
+
+    if (toolCalls.length === 1) {
+      const only = toolCalls[0];
+      const args = JSON.stringify(only.arguments);
+      return `${only.name}(${args.slice(0, 180)})`;
+    }
+
+    const names = toolCalls.map((toolCall) => toolCall.name).join(", ");
+    return `${toolCalls.length} tool calls: ${names}`.slice(0, 240);
+  }
+
+  private async waitForApproval(options: {
+    taskId: string;
+    sessionKey: string;
+    originChannel: string;
+    originChatId: string;
+    workflowContext?: SpawnTaskOptions["workflowContext"];
+    toolCalls: ToolCallRequest[];
+    signal: AbortSignal;
+  }): Promise<void> {
+    const workflowContext = options.workflowContext;
+    const hitl = workflowContext?.hitl;
+    if (!workflowContext || !hitl?.enabled) {
+      return;
+    }
+
+    const highRiskSet = new Set(hitl.highRiskTools);
+    const approvalToolCalls: ApprovalToolCall[] = options.toolCalls.map((toolCall) => ({
+      id: toolCall.id,
+      name: toolCall.name,
+      arguments: toolCall.arguments,
+      highRisk: highRiskSet.has(toolCall.name),
+    }));
+    const approvalId = randomUUID().replace(/-/g, "").slice(0, 12);
+    const requestedAt = new Date();
+    const expiresAt = new Date(requestedAt.getTime() + hitl.approvalTimeoutMs);
+    const commandPreview = this.buildCommandPreview(approvalToolCalls);
+
+    let resolveApproval!: () => void;
+    let rejectApproval!: (error: Error) => void;
+    const waitApprovalPromise = new Promise<void>((resolve, reject) => {
+      resolveApproval = resolve;
+      rejectApproval = reject;
+    });
+
+    let timeoutReject!: (error: Error) => void;
+    const timeoutPromise = new Promise<void>((_resolve, reject) => {
+      timeoutReject = reject as (error: Error) => void;
+    });
+
+    const timeoutTimer = setTimeout(() => {
+      const pending = this.takePendingApproval(approvalId);
+      if (!pending) {
+        return;
+      }
+      const timeoutError = new Error(
+        `Approval timed out after ${hitl.approvalTimeoutMs}ms for task ${options.taskId}.`,
+      );
+      pending.reject(timeoutError);
+      timeoutReject(timeoutError);
+      void this.bus.emitSubagentApprovalExpired({
+        type: "SUBAGENT_APPROVAL_EXPIRED",
+        approvalId,
+        taskId: options.taskId,
+        expiredAt: new Date(),
+        reason: timeoutError.message,
+      });
+    }, hitl.approvalTimeoutMs);
+
+    const pendingApproval: PendingApproval = {
+      approvalId,
+      taskId: options.taskId,
+      sessionKey: options.sessionKey,
+      timer: timeoutTimer,
+      resolve: resolveApproval,
+      reject: rejectApproval,
+    };
+    this.pendingApprovals.set(approvalId, pendingApproval);
+    if (!this.taskToApprovals.has(options.taskId)) {
+      this.taskToApprovals.set(options.taskId, new Set());
+    }
+    this.taskToApprovals.get(options.taskId)?.add(approvalId);
+
+    try {
+      await this.bus.emitSubagentApprovalRequested({
+        type: "SUBAGENT_APPROVAL_REQUESTED",
+        approvalId,
+        taskId: options.taskId,
+        runId: workflowContext.runId,
+        nodeId: workflowContext.nodeId,
+        nodeName: workflowContext.nodeName,
+        approvalTarget: hitl.approvalTarget,
+        requestedAt,
+        expiresAt,
+        toolCalls: approvalToolCalls,
+        commandPreview,
+        originChannel: options.originChannel,
+        originChatId: options.originChatId,
+      });
+    } catch (error) {
+      const pending = this.takePendingApproval(approvalId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("Approval request failed to emit."));
+      }
+      throw error;
+    }
+
+    if (options.signal.aborted) {
+      const pending = this.takePendingApproval(approvalId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("Subagent aborted before approval."));
+      }
+      throw new Error("Subagent aborted");
+    }
+
+    await Promise.race([waitApprovalPromise, timeoutPromise]);
+  }
+
+  private async buildSubagentPrompt(
+    roleConfig: RoleConfig | null,
+    taskWorkspace: string,
+    skillNames: string[],
+  ): Promise<string> {
     const timeCtx = new ContextBuilder(taskWorkspace).buildRuntimeContext();
+    const parts: string[] = [];
     if (roleConfig) {
-      return `# Subagent
+      parts.push(`# Subagent
 
 ${timeCtx}
 
 ${roleConfig.systemPrompt}
 
 ## Workspace
-${taskWorkspace}`;
-    }
-    return `# Subagent
+${taskWorkspace}`);
+    } else {
+      parts.push(`# Subagent
 
 ${timeCtx}
 
@@ -298,7 +610,26 @@ You are a subagent spawned by the main agent to complete a specific task.
 Stay focused on the assigned task. Your final response will be reported back to the main agent.
 
 ## Workspace
-${taskWorkspace}`;
+${taskWorkspace}`);
+    }
+
+    if (skillNames.length > 0) {
+      const loaded = await new SkillsLoader(this.workspace).loadSkillsForContext(skillNames);
+      const listedSkills = skillNames.join(", ");
+      if (loaded) {
+        parts.push(`## Assigned Skills
+
+Focus on these skills for this task: ${listedSkills}
+
+${loaded}`);
+      } else {
+        parts.push(`## Assigned Skills
+
+Focus on these skills for this task: ${listedSkills}`);
+      }
+    }
+
+    return parts.join("\n\n");
   }
 
   private async runSubagent(options: {
@@ -309,6 +640,10 @@ ${taskWorkspace}`;
     task: string;
     originChannel: string;
     originChatId: string;
+    sessionKey: string;
+    skillNames: string[];
+    announceToMainAgent: boolean;
+    workflowContext?: SpawnTaskOptions["workflowContext"];
     signal: AbortSignal;
   }): Promise<void> {
     await this.acquireSlot();
@@ -333,7 +668,11 @@ ${taskWorkspace}`;
       const messages: Array<Record<string, unknown>> = [
         {
           role: "system",
-          content: this.buildSubagentPrompt(options.roleConfig, taskWorkspace),
+          content: await this.buildSubagentPrompt(
+            options.roleConfig,
+            taskWorkspace,
+            options.skillNames,
+          ),
         },
         { role: "user", content: options.task },
       ];
@@ -373,6 +712,25 @@ ${taskWorkspace}`;
           tool_calls: toolCallDicts,
         });
 
+        const hitl = options.workflowContext?.hitl;
+        if (hitl?.enabled) {
+          const highRiskSet = new Set(hitl.highRiskTools);
+          const hasHighRisk = response.toolCalls.some((toolCall) =>
+            highRiskSet.has(toolCall.name),
+          );
+          if (hasHighRisk) {
+            await this.waitForApproval({
+              taskId: options.taskId,
+              sessionKey: options.sessionKey,
+              originChannel: options.originChannel,
+              originChatId: options.originChatId,
+              workflowContext: options.workflowContext,
+              toolCalls: response.toolCalls,
+              signal: options.signal,
+            });
+          }
+        }
+
         for (const toolCall of response.toolCalls) {
           const result = await tools.execute(toolCall.name, toolCall.arguments, {
             signal: options.signal,
@@ -399,6 +757,7 @@ ${taskWorkspace}`;
         status: "ok",
         originChannel: options.originChannel,
         originChatId: options.originChatId,
+        announceToMainAgent: options.announceToMainAgent,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -412,6 +771,7 @@ ${taskWorkspace}`;
           status: "error",
           originChannel: options.originChannel,
           originChatId: options.originChatId,
+          announceToMainAgent: options.announceToMainAgent,
         });
       } catch (announceError) {
         const announceMessage =
@@ -434,6 +794,7 @@ ${taskWorkspace}`;
     status: "ok" | "error";
     originChannel: string;
     originChatId: string;
+    announceToMainAgent: boolean;
   }): Promise<void> {
     const event: SubagentTaskEvent = {
       type:
@@ -451,6 +812,10 @@ ${taskWorkspace}`;
       timestamp: new Date(),
     };
     await this.bus.emitSubagentEvent(event);
+
+    if (!options.announceToMainAgent) {
+      return;
+    }
 
     const statusText =
       options.status === "ok" ? "completed successfully" : "failed";

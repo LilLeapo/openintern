@@ -1,7 +1,7 @@
 export type NodeKind = "trigger" | "agent" | "action";
 export type ToolRiskLevel = "low" | "high";
 export type ApprovalTarget = "owner" | "group";
-export type RunStatus = "idle" | "running" | "paused" | "completed";
+export type RunStatus = "idle" | "running" | "paused" | "waiting_for_approval" | "completed";
 export type TraceType = "info" | "llm" | "tool_call" | "tool_result" | "error" | "guard" | "approval";
 
 export interface WorkflowNode {
@@ -47,14 +47,25 @@ export interface ApprovalRequest {
   nodeId: string;
   nodeName: string;
   toolId: string;
+  taskId?: string;
+  commandPreview?: string;
+  toolCalls?: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+    highRisk: boolean;
+  }>;
   target: ApprovalTarget;
-  status: "pending" | "approved";
+  status: "pending" | "approved" | "expired" | "cancelled";
   requestedAt: string;
+  expiresAt?: string | null;
   approvedAt: string | null;
+  reason?: string | null;
+  approver?: string | null;
   parameters: {
     voltageV: number;
     flowSccm: number;
-  };
+  } | null;
 }
 
 export interface TraceEvent {
@@ -107,6 +118,7 @@ export const runStatusStyle: Record<RunStatus, string> = {
   idle: "bg-slate-100 text-slate-600 border-slate-300",
   running: "bg-emerald-100 text-emerald-700 border-emerald-300",
   paused: "bg-amber-100 text-amber-700 border-amber-300",
+  waiting_for_approval: "bg-orange-100 text-orange-700 border-orange-300",
   completed: "bg-blue-100 text-blue-700 border-blue-300",
 };
 
