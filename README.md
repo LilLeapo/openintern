@@ -18,6 +18,7 @@ TypeScript replication project inspired by `reference/nanobot`, focused on a com
   - `web_search`, `web_fetch`
   - `cron`
   - `spawn` (subagent)
+  - `trigger_workflow`, `query_workflow_status`, `draft_workflow`
   - `memory_retrieve`, `memory_save`, `memory_delete` (when MemU is enabled)
 - Autonomy pipeline:
   - cron scheduling service
@@ -92,12 +93,13 @@ First run auto-creates config at `~/.openintern/config.json`.
 
 ## Frontend Workflow Studio (React + Tailwind)
 
-This repo now includes a React + Tailwind frontend for workflow orchestration:
+This repo includes a React + Tailwind runtime dashboard for workflow orchestration:
 
-- HITL approval switch for high-risk tools
-- DAG workflow canvas (node + edge editing with cycle prevention)
-- Trace panel for run observability
-- Skill/Tool registry UI (register script metadata + JSON Schema)
+- Runtime workflow editor (`draft -> publish -> run`)
+- HITL approval queue (real approvals from workflow runtime)
+- Trace panel (run/node/approval/subagent events)
+- Roles/Tools/Skills catalog (runtime read-only)
+- Runs panel (active + recent terminal runs)
 
 Run API + Web together:
 
@@ -110,9 +112,10 @@ Then open the frontend URL from Vite (default: `http://127.0.0.1:5173`).
 Module routes:
 
 - `/workflow` for SOP DAG orchestration
+- `/runs` for runtime run instances
 - `/hitl` for Human-in-the-Loop approval flow
 - `/trace` for observability and tracing
-- `/registry` for Skill/Tool registry
+- `/registry` for Roles/Tools/Skills catalog
 
 Useful commands:
 
@@ -124,9 +127,8 @@ pnpm build:ui     # build React app to src/ui/frontend/dist
 
 Notes:
 
-- This phase uses mock runtime data (no direct AgentLoop execution yet).
 - React app source: `src/ui/frontend`.
-- Mock API: `src/ui/server.ts` + `src/ui/mock-state.ts`.
+- UI API server: `src/ui/server.ts` (runtime-first, mock endpoints kept for compatibility).
 
 ## Workflow Engine (Backend Core)
 
@@ -137,7 +139,7 @@ V1 introduces a backend macro-orchestration engine for deterministic DAG executi
 - context interpolation + robust JSON output extraction (`src/workflow/interpolation.ts`)
 - event-bus bridge via `SUBAGENT_TASK_COMPLETED` / `SUBAGENT_TASK_FAILED`
 
-Current trigger mode is `manual` (API/SDK-driven start), and this does not replace the UI mock runtime yet.
+Current trigger mode is `manual` (API/SDK-driven start).
 
 Workflow schema shape:
 
@@ -185,12 +187,41 @@ Notes:
 
 Runtime HITL API (UI server):
 
-- `GET /api/runtime/hitl/stream` (SSE)
+- `GET /api/runtime/events/stream` (SSE unified event stream)
+- `GET /api/runtime/hitl/stream` (backward compatible alias)
 - `GET /api/runtime/hitl/approvals`
 - `POST /api/runtime/hitl/approvals/:approvalId/approve`
+- `GET /api/runtime/catalog`
+- `GET /api/runtime/workflows/runs`
+- `GET /api/runtime/traces`
 - `POST /api/runtime/workflows/start`
+- `GET /api/runtime/workflow-defs/published`
+- `GET /api/runtime/workflow-defs/published/:workflowId`
+- `GET /api/runtime/workflow-defs/drafts`
+- `GET /api/runtime/workflow-defs/drafts/:draftId`
+- `POST /api/runtime/workflow-defs/drafts`
+- `PUT /api/runtime/workflow-defs/drafts/:draftId`
+- `POST /api/runtime/workflow-defs/publish`
+- `GET /api/runtime/workflows/drafts/:draftId`
 - `GET /api/runtime/workflows/:runId`
 - `POST /api/runtime/workflows/:runId/cancel`
+
+Workflow repository convention:
+
+- published workflow: `workflows/<workflow_id>.json`
+- draft workflow: `workflows/drafts/<draft_id>.json`
+
+Meta-agent workflow tools:
+
+- `trigger_workflow(workflow_id, trigger_input?)`
+  - load published workflow and start a run
+  - returns `instance_id` (runId), summary, and snapshot
+- `query_workflow_status(instance_id)`
+  - returns readable summary and full snapshot JSON
+- `draft_workflow(instruction, workflow_id?, workflow_json?)`
+  - validates against workflow schema
+  - saves draft JSON to `workflows/drafts/`
+  - returns draft path and review URL (`/workflow?draft=<draft_id>`)
 
 ## LLM Config
 
