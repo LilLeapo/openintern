@@ -15,13 +15,14 @@ html,
 body,
 #root {
   width: 100%;
-  min-height: 100%;
+  height: 100%;
   margin: 0;
 }
 
 body {
   font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #1f2a27;
+  overflow: hidden;
 }
 
 .canvas-bg {

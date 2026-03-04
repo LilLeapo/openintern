@@ -1,39 +1,20 @@
-export type NodeKind = "trigger" | "agent" | "action";
 export type ToolRiskLevel = "low" | "high";
 export type ApprovalTarget = "owner" | "group";
-export type RunStatus = "idle" | "running" | "paused" | "waiting_for_approval" | "completed";
-export type TraceType = "info" | "llm" | "tool_call" | "tool_result" | "error" | "guard" | "approval";
 
-export interface WorkflowNode {
-  id: string;
-  name: string;
-  kind: NodeKind;
-  description: string;
-  role: string | null;
-  requiresApproval: boolean;
-  approvalTarget: ApprovalTarget;
-  toolIds: string[];
-  position: {
-    x: number;
-    y: number;
-  };
-}
-
-export interface WorkflowEdge {
-  id: string;
-  from: string;
-  to: string;
-}
+export type RunStatus =
+  | "idle"
+  | "running"
+  | "waiting_for_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export interface ToolDefinition {
   id: string;
   name: string;
   description: string;
-  source: "builtin" | "registry";
+  source: "builtin";
   riskLevel: ToolRiskLevel;
-  scriptName: string | null;
-  scriptPreview: string | null;
-  inputSchema: string;
 }
 
 export interface RoleSummary {
@@ -42,8 +23,27 @@ export interface RoleSummary {
   allowedTools: string[];
 }
 
+export interface SkillSummary {
+  name: string;
+  path: string;
+  source: "workspace" | "builtin";
+  available: boolean;
+  description: string;
+  requires: string[];
+}
+
+export interface RuntimeCatalog {
+  runtimeAvailable: boolean;
+  runtimeInitError: string | null;
+  roles: RoleSummary[];
+  tools: ToolDefinition[];
+  skills: SkillSummary[];
+}
+
 export interface ApprovalRequest {
   id: string;
+  runId: string;
+  workflowId: string;
   nodeId: string;
   nodeName: string;
   toolId: string;
@@ -62,45 +62,203 @@ export interface ApprovalRequest {
   approvedAt: string | null;
   reason?: string | null;
   approver?: string | null;
-  parameters: {
-    voltageV: number;
-    flowSccm: number;
-  } | null;
 }
 
-export interface TraceEvent {
+export interface WorkflowRunNodeState {
+  id: string;
+  name?: string;
+  status: "pending" | "running" | "waiting_for_approval" | "completed" | "failed";
+  attempt: number;
+  maxAttempts: number;
+  currentTaskId: string | null;
+  lastError: string | null;
+}
+
+export interface WorkflowRunSnapshot {
+  runId: string;
+  workflowId: string;
+  status: "running" | "waiting_for_approval" | "completed" | "failed" | "cancelled";
+  startedAt: string;
+  endedAt: string | null;
+  error: string | null;
+  execution: {
+    mode: "serial" | "parallel";
+    maxParallel: number;
+  };
+  triggerInput: Record<string, unknown>;
+  originChannel: string;
+  originChatId: string;
+  activeTaskIds: string[];
+  outputs: Record<string, Record<string, unknown>>;
+  approvals: Array<{
+    approvalId: string;
+    taskId: string;
+    nodeId: string;
+    nodeName: string;
+    status: "pending" | "approved" | "expired" | "cancelled";
+    approvalTarget: "owner" | "group";
+    requestedAt: string;
+    expiresAt: string;
+    approvedAt: string | null;
+    approver: string | null;
+    commandPreview: string;
+    toolCalls: Array<{
+      id: string;
+      name: string;
+      arguments: Record<string, unknown>;
+      highRisk: boolean;
+    }>;
+    reason: string | null;
+  }>;
+  nodes: WorkflowRunNodeState[];
+}
+
+export interface RuntimeRunActivity {
+  id: string;
+  runId: string;
+  nodeId: string | null;
+  taskId: string;
+  role: string | null;
+  label: string;
+  task: string;
+  status: "ok" | "error";
+  result: string;
+  type: "subagent.task.completed" | "subagent.task.failed";
+  timestamp: string;
+  messages: Array<{
+    role: "system" | "user" | "assistant" | "tool";
+    content: string;
+    name?: string;
+    toolCallId?: string;
+    at: string;
+  }>;
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+    result: string;
+    highRisk: boolean;
+    at: string;
+  }>;
+}
+
+export interface WorkflowRunDetail {
+  run: WorkflowRunSnapshot;
+  traces: RuntimeTraceEvent[];
+  activities: RuntimeRunActivity[];
+}
+
+export interface EditableRoleInput {
+  id: string;
+  systemPrompt: string;
+  allowedTools: string[];
+  memoryScope: "chat" | "papers";
+  maxIterations: number;
+  workspaceIsolation: boolean;
+}
+
+export interface WorkflowDefinitionSummary {
+  id: string;
+  name: string;
+  source: "published" | "draft";
+  path: string;
+  updatedAt: string;
+  valid: boolean;
+  error: string | null;
+}
+
+export interface WorkflowDefinitionDetail {
+  draftId?: string;
+  id?: string;
+  source?: "published" | "draft";
+  definition: unknown;
+  normalized: unknown | null;
+  valid: boolean;
+  error: string | null;
+  path: string;
+  reviewUrl?: string;
+}
+
+export interface RuntimeTraceEvent {
   id: string;
   runId: string;
   timestamp: string;
-  type: TraceType;
+  type: string;
   title: string;
   details: string;
   status: "ok" | "pending" | "failed";
+  meta?: Record<string, unknown>;
 }
 
-export interface RunViewState {
-  id: string | null;
-  status: RunStatus;
-  currentNodeId: string | null;
-  startedAt: string | null;
-  endedAt: string | null;
-  pauseReason: string | null;
-  pendingApprovalId: string | null;
+export interface RuntimeEventEnvelope {
+  eventId: string;
+  seq: number;
+  type: string;
+  timestamp: string;
+  data: Record<string, unknown>;
 }
 
-export interface UiSnapshot {
-  workflow: {
-    nodes: WorkflowNode[];
-    edges: WorkflowEdge[];
+export interface ExecutableWorkflowNode {
+  id: string;
+  name?: string;
+  role: string;
+  taskPrompt: string;
+  dependsOn: string[];
+  skillNames?: string[];
+  outputKeys?: string[];
+  retry?: {
+    maxAttempts: number;
+    backoffMs?: number;
   };
-  registry: {
-    tools: ToolDefinition[];
-    roles: RoleSummary[];
+  hitl?: {
+    enabled: boolean;
+    highRiskTools: string[];
+    approvalTarget?: "owner" | "group";
+    approvalTimeoutMs?: number;
   };
-  approvals: ApprovalRequest[];
-  traces: TraceEvent[];
-  run: RunViewState;
 }
+
+export interface ExecutableWorkflowDefinition {
+  id: string;
+  name?: string;
+  trigger: {
+    type: "manual";
+  };
+  execution?: {
+    mode?: "serial" | "parallel";
+    maxParallel?: number;
+  };
+  nodes: ExecutableWorkflowNode[];
+}
+
+export type DataFreshness = "live" | "resyncing" | "stale";
+
+export const runStatusStyle: Record<RunStatus, string> = {
+  idle: "bg-slate-100 text-slate-600 border-slate-300",
+  running: "bg-emerald-100 text-emerald-700 border-emerald-300",
+  waiting_for_approval: "bg-orange-100 text-orange-700 border-orange-300",
+  completed: "bg-blue-100 text-blue-700 border-blue-300",
+  failed: "bg-red-100 text-red-700 border-red-300",
+  cancelled: "bg-slate-100 text-slate-600 border-slate-300",
+};
+
+export const traceTypeStyle: Record<string, string> = {
+  "run.status.changed": "bg-blue-100 text-blue-700 border-blue-300",
+  "node.status.changed": "bg-emerald-100 text-emerald-700 border-emerald-300",
+  "approval.requested": "bg-amber-100 text-amber-700 border-amber-300",
+  "approval.granted": "bg-emerald-100 text-emerald-700 border-emerald-300",
+  "approval.expired": "bg-red-100 text-red-700 border-red-300",
+  "approval.cancelled": "bg-red-100 text-red-700 border-red-300",
+  "subagent.task.completed": "bg-teal-100 text-teal-700 border-teal-300",
+  "subagent.task.failed": "bg-red-100 text-red-700 border-red-300",
+  "trace.append": "bg-slate-100 text-slate-700 border-slate-300",
+};
+
+export const freshnessStyle: Record<DataFreshness, string> = {
+  live: "bg-emerald-100 text-emerald-700 border-emerald-300",
+  resyncing: "bg-amber-100 text-amber-700 border-amber-300",
+  stale: "bg-red-100 text-red-700 border-red-300",
+};
 
 export interface ApiEnvelope<T> {
   ok: boolean;
@@ -108,43 +266,35 @@ export interface ApiEnvelope<T> {
   data?: T;
 }
 
-export const kindLabel: Record<NodeKind, string> = {
-  trigger: "EVENT TRIGGER",
-  agent: "SUB-AGENT TASK",
-  action: "ACTION",
-};
-
-export const runStatusStyle: Record<RunStatus, string> = {
-  idle: "bg-slate-100 text-slate-600 border-slate-300",
-  running: "bg-emerald-100 text-emerald-700 border-emerald-300",
-  paused: "bg-amber-100 text-amber-700 border-amber-300",
-  waiting_for_approval: "bg-orange-100 text-orange-700 border-orange-300",
-  completed: "bg-blue-100 text-blue-700 border-blue-300",
-};
-
-export const traceTypeStyle: Record<TraceType, string> = {
-  info: "bg-slate-100 text-slate-700 border-slate-300",
-  llm: "bg-blue-100 text-blue-700 border-blue-300",
-  tool_call: "bg-emerald-100 text-emerald-700 border-emerald-300",
-  tool_result: "bg-teal-100 text-teal-700 border-teal-300",
-  error: "bg-red-100 text-red-700 border-red-300",
-  guard: "bg-purple-100 text-purple-700 border-purple-300",
-  approval: "bg-amber-100 text-amber-700 border-amber-300",
-};
-
-export const defaultSchema = `{
-  "type": "object",
-  "properties": {
-    "csv_path": {"type": "string"}
+export const starterWorkflow: ExecutableWorkflowDefinition = {
+  id: "wf_example",
+  name: "Runtime workflow",
+  trigger: {
+    type: "manual",
   },
-  "required": ["csv_path"]
-}`;
+  nodes: [
+    {
+      id: "node_main",
+      name: "Main task",
+      role: "scientist",
+      taskPrompt: "Process {{trigger.input}} and return a JSON object.",
+      dependsOn: [],
+      hitl: {
+        enabled: false,
+        highRiskTools: [],
+      },
+    },
+  ],
+};
 
 export function formatTime(iso: string | null): string {
   if (!iso) {
     return "-";
   }
   const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
   const mm = `${date.getMonth() + 1}`.padStart(2, "0");
   const dd = `${date.getDate()}`.padStart(2, "0");
   const hh = `${date.getHours()}`.padStart(2, "0");
