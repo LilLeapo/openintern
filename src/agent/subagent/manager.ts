@@ -6,7 +6,9 @@ import type {
   ApprovalToolCall,
   InboundMessage,
   SubagentApprovalGrantedEvent,
+  SubagentTaskMessage,
   SubagentTaskEvent,
+  SubagentTaskToolCall,
 } from "../../bus/events.js";
 import { MessageBus } from "../../bus/message-bus.js";
 import { resolveRole, validateRoleName } from "../../config/role-resolver.js";
@@ -47,6 +49,19 @@ interface PendingApproval {
   timer: NodeJS.Timeout;
   resolve: () => void;
   reject: (error: Error) => void;
+}
+
+const MAX_LOG_CONTENT = 6_000;
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function truncateLogContent(value: string): string {
+  if (value.length <= MAX_LOG_CONTENT) {
+    return value;
+  }
+  return `${value.slice(0, MAX_LOG_CONTENT)}\n...(truncated)`;
 }
 
 export interface SubagentManagerOptions {
@@ -646,6 +661,8 @@ Focus on these skills for this task: ${listedSkills}`);
     workflowContext?: SpawnTaskOptions["workflowContext"];
     signal: AbortSignal;
   }): Promise<void> {
+    const messageLogs: SubagentTaskMessage[] = [];
+    const toolCallLogs: SubagentTaskToolCall[] = [];
     await this.acquireSlot();
 
     try {
@@ -665,19 +682,34 @@ Focus on these skills for this task: ${listedSkills}`);
         originChatId: options.originChatId,
       });
 
+      const systemPrompt = await this.buildSubagentPrompt(
+        options.roleConfig,
+        taskWorkspace,
+        options.skillNames,
+      );
+
       const messages: Array<Record<string, unknown>> = [
         {
           role: "system",
-          content: await this.buildSubagentPrompt(
-            options.roleConfig,
-            taskWorkspace,
-            options.skillNames,
-          ),
+          content: systemPrompt,
         },
         { role: "user", content: options.task },
       ];
+      messageLogs.push(
+        {
+          role: "system",
+          content: truncateLogContent(systemPrompt),
+          at: nowIso(),
+        },
+        {
+          role: "user",
+          content: truncateLogContent(options.task),
+          at: nowIso(),
+        },
+      );
 
       let finalResult: string | null = null;
+      const highRiskSet = new Set(options.workflowContext?.hitl?.highRiskTools ?? []);
       const maxIterations = options.roleConfig?.maxIterations ?? 15;
       for (let iteration = 0; iteration < maxIterations; iteration += 1) {
         if (options.signal.aborted) {
@@ -695,6 +727,11 @@ Focus on these skills for this task: ${listedSkills}`);
 
         if (response.toolCalls.length === 0) {
           finalResult = response.content ?? "Task completed with no output.";
+          messageLogs.push({
+            role: "assistant",
+            content: truncateLogContent(finalResult),
+            at: nowIso(),
+          });
           break;
         }
 
@@ -711,10 +748,14 @@ Focus on these skills for this task: ${listedSkills}`);
           content: response.content ?? "",
           tool_calls: toolCallDicts,
         });
+        messageLogs.push({
+          role: "assistant",
+          content: truncateLogContent(response.content ?? ""),
+          at: nowIso(),
+        });
 
         const hitl = options.workflowContext?.hitl;
         if (hitl?.enabled) {
-          const highRiskSet = new Set(hitl.highRiskTools);
           const hasHighRisk = response.toolCalls.some((toolCall) =>
             highRiskSet.has(toolCall.name),
           );
@@ -735,11 +776,28 @@ Focus on these skills for this task: ${listedSkills}`);
           const result = await tools.execute(toolCall.name, toolCall.arguments, {
             signal: options.signal,
           });
+          const resultText = truncateLogContent(result);
+          const loggedAt = nowIso();
+          toolCallLogs.push({
+            id: toolCall.id,
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+            result: resultText,
+            highRisk: highRiskSet.has(toolCall.name),
+            at: loggedAt,
+          });
           messages.push({
             role: "tool",
             tool_call_id: toolCall.id,
             name: toolCall.name,
             content: result,
+          });
+          messageLogs.push({
+            role: "tool",
+            name: toolCall.name,
+            toolCallId: toolCall.id,
+            content: resultText,
+            at: loggedAt,
           });
         }
       }
@@ -758,20 +816,30 @@ Focus on these skills for this task: ${listedSkills}`);
         originChannel: options.originChannel,
         originChatId: options.originChatId,
         announceToMainAgent: options.announceToMainAgent,
+        messages: messageLogs,
+        toolCalls: toolCallLogs,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       try {
+        const errorResult = `Error: ${msg}`;
+        messageLogs.push({
+          role: "assistant",
+          content: truncateLogContent(errorResult),
+          at: nowIso(),
+        });
         await this.announceResult({
           taskId: options.taskId,
           role: options.role,
           label: options.label,
           task: options.task,
-          result: `Error: ${msg}`,
+          result: errorResult,
           status: "error",
           originChannel: options.originChannel,
           originChatId: options.originChatId,
           announceToMainAgent: options.announceToMainAgent,
+          messages: messageLogs,
+          toolCalls: toolCallLogs,
         });
       } catch (announceError) {
         const announceMessage =
@@ -795,6 +863,8 @@ Focus on these skills for this task: ${listedSkills}`);
     originChannel: string;
     originChatId: string;
     announceToMainAgent: boolean;
+    messages?: SubagentTaskMessage[];
+    toolCalls?: SubagentTaskToolCall[];
   }): Promise<void> {
     const event: SubagentTaskEvent = {
       type:
@@ -807,6 +877,8 @@ Focus on these skills for this task: ${listedSkills}`);
       task: options.task,
       status: options.status,
       result: options.result,
+      messages: options.messages,
+      toolCalls: options.toolCalls,
       originChannel: options.originChannel,
       originChatId: options.originChatId,
       timestamp: new Date(),

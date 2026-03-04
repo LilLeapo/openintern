@@ -16,12 +16,19 @@ import { EditFileTool, ListDirTool, ReadFileTool, WriteFileTool } from "../tools
 import { MessageTool } from "../tools/builtins/message.js";
 import { ExecTool } from "../tools/builtins/exec.js";
 import { SpawnTool } from "../tools/builtins/spawn.js";
+import {
+  DraftWorkflowTool,
+  QueryWorkflowStatusTool,
+  TriggerWorkflowTool,
+} from "../tools/builtins/workflow.js";
 import { WebFetchTool, WebSearchTool } from "../tools/builtins/web.js";
 import { MemoryDeleteTool, MemoryRetrieveTool, MemorySaveTool } from "../tools/builtins/memory.js";
 import { ToolRegistry } from "../tools/core/tool-registry.js";
 import { Mutex } from "../utils/mutex.js";
 import { DEFAULT_CONFIG, type AppConfig, type McpConfig, type MemoryConfig } from "../config/schema.js";
 import { McpManager } from "../mcp/mcp-manager.js";
+import { WorkflowEngine } from "../workflow/engine.js";
+import { WorkflowRepository } from "../workflow/repository.js";
 
 const TOOL_RESULT_MAX_CHARS = 500;
 
@@ -83,6 +90,10 @@ export class AgentLoop {
   };
   readonly cronService?: CronService;
   readonly enableSpawn: boolean;
+  readonly workflowEngine: WorkflowEngine;
+  readonly workflowRepository: WorkflowRepository;
+  readonly gatewayHost: string;
+  readonly gatewayPort: number;
 
   private running = false;
   private readonly processingLock = new Mutex();
@@ -171,6 +182,15 @@ export class AgentLoop {
       memuScopeResolver: ({ channel, chatId, scope }) => this.memuScope(channel, chatId, scope),
       maxConcurrent: appConfigRef.agents.subagentConcurrency.maxConcurrent,
     });
+    this.workflowEngine = new WorkflowEngine({
+      bus: this.bus,
+      subagents: this.subagents,
+      workspace: this.workspace,
+      config: appConfigRef,
+    });
+    this.workflowRepository = new WorkflowRepository(this.workspace);
+    this.gatewayHost = appConfigRef.gateway.host;
+    this.gatewayPort = appConfigRef.gateway.port;
 
     this.registerDefaultTools();
     this.mcpConfig = options.mcpConfig;
@@ -198,6 +218,18 @@ export class AgentLoop {
     if (this.cronService) {
       this.tools.register(new CronTool(this.cronService));
     }
+    this.tools.register(
+      new TriggerWorkflowTool(this.workflowEngine, this.workflowRepository),
+    );
+    this.tools.register(new QueryWorkflowStatusTool(this.workflowEngine));
+    this.tools.register(
+      new DraftWorkflowTool(
+        this.workflowRepository,
+        this.gatewayHost,
+        this.gatewayPort,
+        process.env.OPENINTERN_UI_PUBLIC_BASE,
+      ),
+    );
     if (this.memuClient) {
       const resolveScope = (params: {
         channel: string;
@@ -217,6 +249,7 @@ export class AgentLoop {
 
   stop(): void {
     this.running = false;
+    this.workflowEngine.close();
     void this.mcpManager.closeAll();
   }
 

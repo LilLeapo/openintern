@@ -26,10 +26,29 @@ export interface SubagentTaskEvent {
   task: string;
   status: "ok" | "error";
   result: string;
+  messages?: SubagentTaskMessage[];
+  toolCalls?: SubagentTaskToolCall[];
   filePaths?: string[];
   originChannel: string;
   originChatId: string;
   timestamp: Date;
+}
+
+export interface SubagentTaskMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  name?: string;
+  toolCallId?: string;
+  at: string;
+}
+
+export interface SubagentTaskToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  result: string;
+  highRisk: boolean;
+  at: string;
 }
 
 export interface ApprovalToolCall {
