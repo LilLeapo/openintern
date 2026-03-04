@@ -1,1 +1,1 @@
-import "./cli/repl.js";
+import "./cli/repl-full.js";
