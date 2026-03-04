@@ -1,154 +1,277 @@
-import { FormEvent, useState } from "react";
+import { useMemo, useState } from "react";
 
 import type { StudioData } from "../studio/useStudioData";
-import { defaultSchema } from "../studio/types";
 
 interface RegistryPageProps {
   studio: StudioData;
   notify: (message: string, type?: "ok" | "error") => void;
 }
 
-interface RegistryForm {
-  name: string;
-  description: string;
-  riskLevel: "low" | "high";
-  inputSchema: string;
-}
-
 export function RegistryPage({ studio, notify }: RegistryPageProps) {
-  const { tools, registerTool } = studio;
-  const [form, setForm] = useState<RegistryForm>({
-    name: "",
-    description: "",
-    riskLevel: "low",
-    inputSchema: defaultSchema,
-  });
-  const [file, setFile] = useState<File | null>(null);
+  const { roles, tools, skills, createRole, optimizeRole } = studio;
 
-  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const [roleId, setRoleId] = useState("role_custom");
+  const [systemPrompt, setSystemPrompt] = useState(
+    "You are a domain specialist. Think carefully, then return concise structured outputs.",
+  );
+  const [memoryScope, setMemoryScope] = useState<"chat" | "papers">("chat");
+  const [maxIterations, setMaxIterations] = useState(15);
+  const [workspaceIsolation, setWorkspaceIsolation] = useState(false);
+  const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [optimizeInstruction, setOptimizeInstruction] = useState("");
+  const [optimizing, setOptimizing] = useState(false);
 
+  const roleIds = useMemo(() => new Set(roles.map((role) => role.id)), [roles]);
+
+  const toggleTool = (toolId: string, checked: boolean) => {
+    setSelectedTools((prev) => {
+      const set = new Set(prev);
+      if (checked) {
+        set.add(toolId);
+      } else {
+        set.delete(toolId);
+      }
+      return Array.from(set);
+    });
+  };
+
+  const onSaveRole = async () => {
     try {
-      await registerTool({
-        name: form.name,
-        description: form.description,
-        riskLevel: form.riskLevel,
-        inputSchema: form.inputSchema,
-        scriptName: file?.name,
-        scriptContent: file ? await file.text() : undefined,
+      await createRole({
+        id: roleId,
+        systemPrompt,
+        allowedTools: selectedTools,
+        memoryScope,
+        maxIterations,
+        workspaceIsolation,
       });
-      setForm({
-        name: "",
-        description: "",
-        riskLevel: "low",
-        inputSchema: defaultSchema,
-      });
-      setFile(null);
-      notify("工具已注册");
+      notify(roleIds.has(roleId) ? `角色 ${roleId} 已更新` : `角色 ${roleId} 已新增`);
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error), "error");
     }
   };
 
+  const onOptimizeRole = async () => {
+    setOptimizing(true);
+    try {
+      const optimized = await optimizeRole({
+        instruction: optimizeInstruction,
+        roleId,
+        role: {
+          id: roleId,
+          systemPrompt,
+          allowedTools: selectedTools,
+          memoryScope,
+          maxIterations,
+          workspaceIsolation,
+        },
+      });
+      setRoleId(optimized.id);
+      setSystemPrompt(optimized.role.systemPrompt);
+      setSelectedTools(optimized.role.allowedTools);
+      setMemoryScope(optimized.role.memoryScope);
+      setMaxIterations(optimized.role.maxIterations);
+      setWorkspaceIsolation(optimized.role.workspaceIsolation);
+      notify("LLM 已回填优化后的 role 配置");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
   return (
-    <section className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[420px_minmax(0,1fr)]">
-      <form onSubmit={onSubmit} className="min-h-0 overflow-auto rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-panel">
-        <h2 className="text-base font-bold">Skill / Tool Registry</h2>
-        <p className="mt-1 text-sm text-slate-500">上传 Python 脚本元数据并声明 JSON Schema，注册为全局 Tool。</p>
+    <section className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="min-h-0 overflow-auto rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-panel">
+        <h2 className="text-base font-bold">Roles</h2>
+        <p className="mt-1 text-sm text-slate-500">可手工新增/更新角色；保存后写入真实配置并立即可用于 workflow。</p>
 
-        <div className="mt-4 space-y-2 text-xs text-slate-600">
-          <label className="block">
-            工具名
-            <input
-              required
-              value={form.name}
-              onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-              className="mt-1 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
-              placeholder="calculate_faradaic_efficiency"
-            />
-          </label>
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <h3 className="text-sm font-semibold text-slate-800">Role Editor</h3>
 
-          <label className="block">
-            功能描述
-            <input
-              required
-              value={form.description}
-              onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
-              className="mt-1 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
-              placeholder="计算法拉第效率"
-            />
-          </label>
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <label className="text-xs text-slate-600">
+              role id
+              <input
+                value={roleId}
+                onChange={(event) => setRoleId(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs text-slate-600">
+              memoryScope
+              <select
+                value={memoryScope}
+                onChange={(event) => setMemoryScope(event.target.value === "papers" ? "papers" : "chat")}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              >
+                <option value="chat">chat</option>
+                <option value="papers">papers</option>
+              </select>
+            </label>
+          </div>
 
-          <label className="block">
-            风险级别
-            <select
-              value={form.riskLevel}
-              onChange={(event) =>
-                setForm((prev) => ({ ...prev, riskLevel: event.target.value as "low" | "high" }))
-              }
-              className="mt-1 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
-            >
-              <option value="low">低风险</option>
-              <option value="high">高风险</option>
-            </select>
-          </label>
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <label className="text-xs text-slate-600">
+              maxIterations
+              <input
+                type="number"
+                min={1}
+                value={maxIterations}
+                onChange={(event) => setMaxIterations(Math.max(1, Number(event.target.value) || 1))}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="inline-flex items-center gap-2 pt-6 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                checked={workspaceIsolation}
+                onChange={(event) => setWorkspaceIsolation(event.target.checked)}
+              />
+              workspaceIsolation
+            </label>
+          </div>
 
-          <label className="block">
-            Python 脚本（可选）
-            <input
-              type="file"
-              accept=".py,.txt"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              className="mt-1 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
-            />
-          </label>
-
-          <label className="block">
-            JSON Schema
+          <label className="mt-2 block text-xs text-slate-600">
+            systemPrompt
             <textarea
-              required
-              rows={8}
-              value={form.inputSchema}
-              onChange={(event) => setForm((prev) => ({ ...prev, inputSchema: event.target.value }))}
-              className="mt-1 w-full resize-y rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 font-mono text-xs"
+              rows={4}
+              value={systemPrompt}
+              onChange={(event) => setSystemPrompt(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
             />
           </label>
+
+          <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2">
+            <p className="text-xs font-semibold text-slate-700">allowedTools</p>
+            <div className="mt-1 flex max-h-40 flex-wrap gap-2 overflow-auto">
+              {tools.map((tool) => {
+                const checked = selectedTools.includes(tool.id);
+                return (
+                  <label
+                    key={tool.id}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => toggleTool(tool.id, event.target.checked)}
+                    />
+                    {tool.id}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void onSaveRole();
+              }}
+              className="rounded-xl border border-[#bad5c5] bg-[#edf6f1] px-4 py-2 text-sm font-semibold text-[#1d5b3d] hover:bg-[#e2f1e9]"
+            >
+              保存 Role
+            </button>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-slate-200 bg-white p-2">
+            <p className="text-xs font-semibold text-slate-700">LLM 优化 Role</p>
+            <textarea
+              rows={3}
+              value={optimizeInstruction}
+              onChange={(event) => setOptimizeInstruction(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
+              placeholder="例如：把该角色优化成学术论文审稿人，减少幻觉并加强引用约束。"
+            />
+            <button
+              type="button"
+              disabled={optimizing}
+              onClick={() => {
+                void onOptimizeRole();
+              }}
+              className="mt-2 rounded-xl border border-[#0d652d] bg-[#0d652d] px-4 py-2 text-sm font-semibold text-white enabled:hover:bg-[#0a4a21] disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {optimizing ? "优化中..." : "用 LLM 优化 Role"}
+            </button>
+          </div>
         </div>
 
-        <button
-          type="submit"
-          className="mt-3 w-full rounded-xl border border-[#bad5c5] bg-[#edf6f1] px-4 py-2 text-sm font-semibold text-[#1d5b3d] hover:bg-[#e2f1e9]"
-        >
-          注册工具
-        </button>
-      </form>
+        <div className="mt-3 space-y-2">
+          {roles.length === 0 ? (
+            <p className="text-sm text-slate-500">暂无角色配置。</p>
+          ) : (
+            roles.map((role) => (
+              <article key={role.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+                <h3 className="font-semibold text-slate-800">{role.id}</h3>
+                <p className="mt-1 whitespace-pre-wrap text-slate-600">{role.systemPrompt}</p>
+                <p className="mt-2 text-slate-500">allowedTools: {role.allowedTools.join(", ") || "-"}</p>
+              </article>
+            ))
+          )}
+        </div>
+      </div>
 
       <div className="min-h-0 overflow-auto rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-panel">
-        <h3 className="text-sm font-bold">已注册工具</h3>
-        <div className="mt-3 space-y-2">
-          {tools.map((tool) => (
-            <article key={tool.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
-              <h4 className="font-semibold text-slate-800">{tool.name}</h4>
-              <p className="mt-1 text-slate-500">{tool.description}</p>
-              <div className="mt-2 flex flex-wrap gap-1">
-                <span
-                  className={`rounded-full border px-2 py-0.5 text-[10px] ${
-                    tool.riskLevel === "high"
-                      ? "border-amber-300 bg-amber-100 text-amber-700"
-                      : "border-emerald-300 bg-emerald-100 text-emerald-700"
-                  }`}
-                >
-                  {tool.riskLevel}
-                </span>
-                <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">
-                  {tool.source}
-                </span>
-              </div>
-              {tool.scriptName ? (
-                <p className="mt-2 font-mono text-[11px] text-slate-600">script: {tool.scriptName}</p>
-              ) : null}
-            </article>
-          ))}
+        <h2 className="text-base font-bold">Tools & Skills</h2>
+        <p className="mt-1 text-sm text-slate-500">工具和技能目录由 runtime 实时读取。</p>
+
+        <h3 className="mt-4 text-sm font-semibold">Tools</h3>
+        <div className="mt-2 space-y-2">
+          {tools.length === 0 ? (
+            <p className="text-sm text-slate-500">暂无工具。</p>
+          ) : (
+            tools.map((tool) => (
+              <article key={tool.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="font-semibold text-slate-800">{tool.name}</h4>
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                      tool.riskLevel === "high"
+                        ? "border-amber-300 bg-amber-100 text-amber-700"
+                        : "border-emerald-300 bg-emerald-100 text-emerald-700"
+                    }`}
+                  >
+                    {tool.riskLevel}
+                  </span>
+                </div>
+                <p className="mt-1 text-slate-500">{tool.description}</p>
+              </article>
+            ))
+          )}
+        </div>
+
+        <h3 className="mt-4 text-sm font-semibold">Skills</h3>
+        <div className="mt-2 space-y-2">
+          {skills.length === 0 ? (
+            <p className="text-sm text-slate-500">暂无技能。</p>
+          ) : (
+            skills.map((skill) => (
+              <article
+                key={`${skill.source}:${skill.name}`}
+                className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="font-semibold text-slate-800">{skill.name}</h4>
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                      skill.available
+                        ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                        : "border-red-300 bg-red-100 text-red-700"
+                    }`}
+                  >
+                    {skill.available ? "available" : "blocked"}
+                  </span>
+                </div>
+                <p className="mt-1 text-slate-500">{skill.description}</p>
+                <p className="mt-1 break-all font-mono text-[11px] text-slate-500">{skill.path}</p>
+                {skill.requires.length > 0 ? (
+                  <p className="mt-1 text-red-600">requires: {skill.requires.join(", ")}</p>
+                ) : null}
+              </article>
+            ))
+          )}
         </div>
       </div>
     </section>
