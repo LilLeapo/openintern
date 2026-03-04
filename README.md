@@ -89,6 +89,44 @@ pnpm dev
 
 First run auto-creates config at `~/.openintern/config.json`.
 
+## Frontend Workflow Studio (React + Tailwind)
+
+This repo now includes a React + Tailwind frontend for workflow orchestration:
+
+- HITL approval switch for high-risk tools
+- DAG workflow canvas (node + edge editing with cycle prevention)
+- Trace panel for run observability
+- Skill/Tool registry UI (register script metadata + JSON Schema)
+
+Run API + Web together:
+
+```bash
+pnpm dev:ui
+```
+
+Then open the frontend URL from Vite (default: `http://127.0.0.1:5173`).
+
+Module routes:
+
+- `/workflow` for SOP DAG orchestration
+- `/hitl` for Human-in-the-Loop approval flow
+- `/trace` for observability and tracing
+- `/registry` for Skill/Tool registry
+
+Useful commands:
+
+```bash
+pnpm dev:ui:api   # mock API server on 18791
+pnpm dev:ui:web   # React web app on 5173
+pnpm build:ui     # build React app to src/ui/frontend/dist
+```
+
+Notes:
+
+- This phase uses mock runtime data (no direct AgentLoop execution yet).
+- React app source: `src/ui/frontend`.
+- Mock API: `src/ui/server.ts` + `src/ui/mock-state.ts`.
+
 ## LLM Config
 
 Minimal example:
