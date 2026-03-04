@@ -117,7 +117,9 @@ export function HitlPage({ studio, notify }: HitlPageProps) {
                     className={`rounded-full border px-2 py-0.5 text-[10px] ${
                       approval.status === "pending"
                         ? "border-amber-300 bg-amber-100 text-amber-700"
-                        : "border-emerald-300 bg-emerald-100 text-emerald-700"
+                        : approval.status === "approved"
+                          ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+                          : "border-slate-300 bg-slate-100 text-slate-600"
                     }`}
                   >
                     {approval.status}
@@ -130,10 +132,26 @@ export function HitlPage({ studio, notify }: HitlPageProps) {
                 <p className="text-slate-700">
                   <strong>{approval.nodeName}</strong> 请求执行 <code>{approval.toolId}</code>
                 </p>
-                <p className="mt-1 text-slate-500">
-                  参数: 电压 {approval.parameters.voltageV}V, 流量 {approval.parameters.flowSccm}sccm
-                </p>
+                {approval.commandPreview ? (
+                  <p className="mt-1 text-slate-500">
+                    指令预览: <code>{approval.commandPreview}</code>
+                  </p>
+                ) : null}
+                {approval.parameters ? (
+                  <p className="mt-1 text-slate-500">
+                    参数: 电压 {approval.parameters.voltageV}V, 流量 {approval.parameters.flowSccm}sccm
+                  </p>
+                ) : null}
+                {approval.toolCalls && approval.toolCalls.length > 0 ? (
+                  <p className="mt-1 text-slate-500">
+                    批次工具: {approval.toolCalls.map((toolCall) => toolCall.name).join(", ")}
+                  </p>
+                ) : null}
                 <p className="mt-1 text-slate-500">发起时间: {formatTime(approval.requestedAt)}</p>
+                {approval.expiresAt ? (
+                  <p className="mt-1 text-slate-500">过期时间: {formatTime(approval.expiresAt)}</p>
+                ) : null}
+                {approval.reason ? <p className="mt-1 text-slate-500">原因: {approval.reason}</p> : null}
 
                 {approval.status === "pending" ? (
                   <button

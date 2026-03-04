@@ -131,6 +131,78 @@ class CapturingToolsProvider implements LLMProvider {
   }
 }
 
+class BatchApprovalProvider implements LLMProvider {
+  getDefaultModel(): string {
+    return "batch-approval";
+  }
+
+  async chat(request: ChatRequest): Promise<LLMResponse> {
+    const hasWrite = request.messages.some(
+      (message) => message.role === "tool" && message.name === "write_file",
+    );
+    const hasExec = request.messages.some(
+      (message) => message.role === "tool" && message.name === "exec",
+    );
+    if (hasWrite && hasExec) {
+      return {
+        content: "{\"ok\":true}",
+        toolCalls: [],
+      };
+    }
+
+    return {
+      content: null,
+      toolCalls: [
+        {
+          id: "tc_write",
+          name: "write_file",
+          arguments: {
+            path: "atomic.txt",
+            content: "atomic",
+          },
+        },
+        {
+          id: "tc_exec",
+          name: "exec",
+          arguments: {
+            command: "echo hitl",
+          },
+        },
+      ],
+    };
+  }
+}
+
+class HighRiskOnlyProvider implements LLMProvider {
+  getDefaultModel(): string {
+    return "high-risk-only";
+  }
+
+  async chat(request: ChatRequest): Promise<LLMResponse> {
+    const hasExec = request.messages.some(
+      (message) => message.role === "tool" && message.name === "exec",
+    );
+    if (hasExec) {
+      return {
+        content: "{\"ok\":true}",
+        toolCalls: [],
+      };
+    }
+    return {
+      content: null,
+      toolCalls: [
+        {
+          id: "tc_exec",
+          name: "exec",
+          arguments: {
+            command: "echo gated",
+          },
+        },
+      ],
+    };
+  }
+}
+
 const tempDirs: string[] = [];
 
 function makeConfig() {
@@ -150,6 +222,21 @@ async function pathExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function waitFor(
+  check: () => boolean,
+  timeoutMs = 1500,
+  intervalMs = 20,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("waitFor timeout");
 }
 
 afterEach(async () => {
@@ -220,6 +307,43 @@ describe("SubagentManager", () => {
     });
     const cancelled = await manager.cancelBySession("cli:direct");
     expect(cancelled).toBe(1);
+  });
+
+  it("spawnTask returns structured result and can suppress system callback", async () => {
+    const workspace = await makeWorkspace();
+    const bus = new MessageBus();
+    const seenEvents: string[] = [];
+    bus.onSubagentEvent((event) => {
+      seenEvents.push(event.type);
+    });
+
+    const manager = new SubagentManager({
+      provider: new StaticProvider("{\"ok\":true}"),
+      workspace,
+      bus,
+      model: "static",
+      temperature: 0.1,
+      maxTokens: 128,
+      reasoningEffort: null,
+      config: makeConfig(),
+    });
+
+    const started = await manager.spawnTask({
+      task: "structured run",
+      originChannel: "workflow",
+      originChatId: "run_1:node_1",
+      sessionKey: "workflow:run_1:node_1:1",
+      announceToMainAgent: false,
+    });
+
+    expect(started.taskId).toMatch(/^[a-f0-9]{8}$/);
+    expect(started.ack).toContain("started");
+    expect(started.queued).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const inbound = await bus.consumeInbound(100);
+    expect(inbound).toBeNull();
+    expect(seenEvents).toContain("SUBAGENT_TASK_COMPLETED");
   });
 
   it("returns error for unknown role", async () => {
@@ -367,5 +491,174 @@ describe("SubagentManager", () => {
     expect(inbound?.content).toContain("Access denied");
     expect(await pathExists(isolatedDir)).toBe(true);
     expect(await pathExists(escapedPath)).toBe(false);
+  });
+
+  it("atomically gates a whole tool-call batch when any high-risk tool is present", async () => {
+    const workspace = await makeWorkspace();
+    const bus = new MessageBus();
+    const requested: string[] = [];
+    const completed: string[] = [];
+    bus.onSubagentApprovalRequested((event) => {
+      requested.push(event.approvalId);
+      expect(event.toolCalls).toHaveLength(2);
+      expect(event.toolCalls.some((toolCall) => toolCall.name === "exec" && toolCall.highRisk)).toBe(true);
+      expect(event.toolCalls.some((toolCall) => toolCall.name === "write_file" && !toolCall.highRisk)).toBe(true);
+    });
+    bus.onSubagentEvent((event) => {
+      completed.push(event.type);
+    });
+
+    const manager = new SubagentManager({
+      provider: new BatchApprovalProvider(),
+      workspace,
+      bus,
+      model: "batch-approval",
+      temperature: 0.1,
+      maxTokens: 128,
+      reasoningEffort: null,
+      config: makeConfig(),
+    });
+
+    const started = await manager.spawnTask({
+      task: "run hitl batch",
+      originChannel: "workflow",
+      originChatId: "run_a:node_a",
+      sessionKey: "workflow:run_a:node_a:1",
+      announceToMainAgent: false,
+      workflowContext: {
+        runId: "run_a",
+        nodeId: "node_a",
+        nodeName: "node_a",
+        hitl: {
+          enabled: true,
+          highRiskTools: ["exec"],
+          approvalTarget: "owner",
+          approvalTimeoutMs: 2_000,
+        },
+      },
+    });
+
+    await waitFor(() => requested.length === 1);
+    const beforeApproval = await pathExists(path.join(workspace, "atomic.txt"));
+    expect(beforeApproval).toBe(false);
+
+    await bus.emitSubagentApprovalGranted({
+      type: "SUBAGENT_APPROVAL_GRANTED",
+      approvalId: requested[0] ?? "",
+      taskId: started.taskId,
+      approver: "reviewer",
+      approvedAt: new Date(),
+    });
+
+    await waitFor(() => completed.includes("SUBAGENT_TASK_COMPLETED"), 3000);
+    const afterApproval = await pathExists(path.join(workspace, "atomic.txt"));
+    expect(afterApproval).toBe(true);
+  });
+
+  it("emits approval timeout and fails the task", async () => {
+    const workspace = await makeWorkspace();
+    const bus = new MessageBus();
+    const expired: string[] = [];
+    const failed: string[] = [];
+    bus.onSubagentApprovalExpired((event) => {
+      expired.push(event.approvalId);
+    });
+    bus.onSubagentEvent((event) => {
+      if (event.type === "SUBAGENT_TASK_FAILED") {
+        failed.push(event.taskId);
+      }
+    });
+
+    const manager = new SubagentManager({
+      provider: new HighRiskOnlyProvider(),
+      workspace,
+      bus,
+      model: "high-risk-only",
+      temperature: 0.1,
+      maxTokens: 128,
+      reasoningEffort: null,
+      config: makeConfig(),
+    });
+
+    await manager.spawnTask({
+      task: "run timeout",
+      originChannel: "workflow",
+      originChatId: "run_b:node_b",
+      sessionKey: "workflow:run_b:node_b:1",
+      announceToMainAgent: false,
+      workflowContext: {
+        runId: "run_b",
+        nodeId: "node_b",
+        nodeName: "node_b",
+        hitl: {
+          enabled: true,
+          highRiskTools: ["exec"],
+          approvalTarget: "owner",
+          approvalTimeoutMs: 30,
+        },
+      },
+    });
+
+    await waitFor(() => expired.length === 1, 2000);
+    await waitFor(() => failed.length === 1, 2000);
+  });
+
+  it("cancels pending approvals by session and cleans up waiters", async () => {
+    const workspace = await makeWorkspace();
+    const bus = new MessageBus();
+    const requested: string[] = [];
+    const cancelled: string[] = [];
+    const failed: string[] = [];
+    bus.onSubagentApprovalRequested((event) => {
+      requested.push(event.approvalId);
+    });
+    bus.onSubagentApprovalCancelled((event) => {
+      cancelled.push(event.approvalId);
+    });
+    bus.onSubagentEvent((event) => {
+      if (event.type === "SUBAGENT_TASK_FAILED") {
+        failed.push(event.taskId);
+      }
+    });
+
+    const manager = new SubagentManager({
+      provider: new HighRiskOnlyProvider(),
+      workspace,
+      bus,
+      model: "high-risk-only",
+      temperature: 0.1,
+      maxTokens: 128,
+      reasoningEffort: null,
+      config: makeConfig(),
+    });
+
+    await manager.spawnTask({
+      task: "run cancel",
+      originChannel: "workflow",
+      originChatId: "run_c:node_c",
+      sessionKey: "workflow:run_c:node_c:1",
+      announceToMainAgent: false,
+      workflowContext: {
+        runId: "run_c",
+        nodeId: "node_c",
+        nodeName: "node_c",
+        hitl: {
+          enabled: true,
+          highRiskTools: ["exec"],
+          approvalTarget: "owner",
+          approvalTimeoutMs: 5_000,
+        },
+      },
+    });
+
+    await waitFor(() => requested.length === 1, 2000);
+    const cancelledCount = manager.cancelPendingApprovalsBySession(
+      "workflow:run_c:node_c:1",
+      "manual cancellation",
+    );
+    expect(cancelledCount).toBe(1);
+
+    await waitFor(() => cancelled.length === 1, 2000);
+    await waitFor(() => failed.length === 1, 2000);
   });
 });

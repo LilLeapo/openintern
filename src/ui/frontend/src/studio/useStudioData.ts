@@ -42,12 +42,13 @@ export interface RegisterToolInput {
 export function useStudioData() {
   const [snapshot, setSnapshot] = useState<UiSnapshot | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [runtimeApprovals, setRuntimeApprovals] = useState<UiSnapshot["approvals"] | null>(null);
 
   const nodes = snapshot?.workflow.nodes ?? [];
   const edges = snapshot?.workflow.edges ?? [];
   const roles = snapshot?.registry.roles ?? [];
   const tools = snapshot?.registry.tools ?? [];
-  const approvals = snapshot?.approvals ?? [];
+  const approvals = runtimeApprovals ?? snapshot?.approvals ?? [];
   const traces = snapshot?.traces ?? [];
 
   const selectedNode = useMemo(
@@ -77,6 +78,101 @@ export function useStudioData() {
     void loadSnapshot().catch(() => {
       // Errors are surfaced by action handlers; initial load failure keeps empty UI.
     });
+  }, []);
+
+  const mapRuntimeApproval = (approval: Record<string, unknown>) => {
+    const toolCalls = Array.isArray(approval.toolCalls)
+      ? approval.toolCalls
+          .map((item) => {
+            if (typeof item !== "object" || item === null) {
+              return null;
+            }
+            const obj = item as Record<string, unknown>;
+            return {
+              id: typeof obj.id === "string" ? obj.id : "",
+              name: typeof obj.name === "string" ? obj.name : "",
+              arguments:
+                typeof obj.arguments === "object" && obj.arguments !== null
+                  ? (obj.arguments as Record<string, unknown>)
+                  : {},
+              highRisk: obj.highRisk === true,
+            };
+          })
+          .filter(
+            (
+              item,
+            ): item is {
+              id: string;
+              name: string;
+              arguments: Record<string, unknown>;
+              highRisk: boolean;
+            } => item !== null,
+          )
+      : [];
+
+    return {
+      id: typeof approval.approvalId === "string" ? approval.approvalId : "",
+      nodeId: typeof approval.nodeId === "string" ? approval.nodeId : "",
+      nodeName: typeof approval.nodeName === "string" ? approval.nodeName : "",
+      toolId: toolCalls[0]?.name ?? "",
+      taskId: typeof approval.taskId === "string" ? approval.taskId : undefined,
+      commandPreview:
+        typeof approval.commandPreview === "string" ? approval.commandPreview : undefined,
+      toolCalls,
+      target: approval.approvalTarget === "group" ? "group" : "owner",
+      status:
+        approval.status === "approved" ||
+        approval.status === "expired" ||
+        approval.status === "cancelled"
+          ? approval.status
+          : "pending",
+      requestedAt:
+        typeof approval.requestedAt === "string"
+          ? approval.requestedAt
+          : new Date().toISOString(),
+      expiresAt: typeof approval.expiresAt === "string" ? approval.expiresAt : null,
+      approvedAt: typeof approval.approvedAt === "string" ? approval.approvedAt : null,
+      reason: typeof approval.reason === "string" ? approval.reason : null,
+      approver: typeof approval.approver === "string" ? approval.approver : null,
+      parameters: null,
+    } as UiSnapshot["approvals"][number];
+  };
+
+  const loadRuntimeApprovals = async (): Promise<void> => {
+    try {
+      const data = await api<{ approvals: Array<Record<string, unknown>> }>(
+        "/api/runtime/hitl/approvals",
+      );
+      setRuntimeApprovals(data.approvals.map(mapRuntimeApproval));
+    } catch {
+      setRuntimeApprovals(null);
+    }
+  };
+
+  useEffect(() => {
+    void loadRuntimeApprovals();
+
+    let stopped = false;
+    let source: EventSource | null = null;
+    try {
+      source = new EventSource("/api/runtime/hitl/stream");
+      const reconcile = () => {
+        if (!stopped) {
+          void loadRuntimeApprovals();
+        }
+      };
+      source.onopen = reconcile;
+      source.addEventListener("approval.requested", reconcile);
+      source.addEventListener("approval.updated", reconcile);
+      source.addEventListener("run.status.changed", reconcile);
+    } catch {
+      // Runtime stream might be unavailable when API key is not configured.
+    }
+
+    return () => {
+      stopped = true;
+      source?.close();
+    };
   }, []);
 
   const refresh = async (): Promise<void> => {
@@ -116,11 +212,23 @@ export function useStudioData() {
   };
 
   const approve = async (approvalId: string): Promise<void> => {
-    await api<UiSnapshot>(`/api/approvals/${approvalId}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ approver: "researcher" }),
-    });
-    await refresh();
+    try {
+      const data = await api<{ approvals: Array<Record<string, unknown>> }>(
+        `/api/runtime/hitl/approvals/${approvalId}/approve`,
+        {
+          method: "POST",
+          body: JSON.stringify({ approver: "researcher" }),
+        },
+      );
+      setRuntimeApprovals(data.approvals.map(mapRuntimeApproval));
+      return;
+    } catch {
+      await api<UiSnapshot>(`/api/approvals/${approvalId}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ approver: "researcher" }),
+      });
+      await refresh();
+    }
   };
 
   const registerTool = async (input: RegisterToolInput): Promise<void> => {
