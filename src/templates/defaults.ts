@@ -26,6 +26,9 @@ Available core tools:
 - memory_retrieve
 - memory_save
 - memory_delete
+- trigger_workflow
+- query_workflow_status
+- draft_workflow
 `,
   "HEARTBEAT.md": `# HEARTBEAT
 

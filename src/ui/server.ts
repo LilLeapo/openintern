@@ -1,15 +1,24 @@
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { SubagentManager } from "../agent/subagent/manager.js";
 import { MessageBus } from "../bus/message-bus.js";
-import { loadOrCreateConfig, resolveWorkspacePath } from "../config/loader.js";
+import { loadOrCreateConfig, resolveWorkspacePath, saveConfig } from "../config/loader.js";
+import type { RoleConfig } from "../config/schema.js";
 import { makeProvider } from "../llm/provider-factory.js";
+import type { LLMProvider } from "../llm/provider.js";
 import { syncWorkspaceTemplates } from "../templates/sync.js";
 import { WorkflowEngine } from "../workflow/engine.js";
+import { extractJsonObject } from "../workflow/interpolation.js";
+import { WorkflowRepository } from "../workflow/repository.js";
+import { MIN_WORKFLOW_EXAMPLE, WORKFLOW_SCHEMA_HINT } from "../workflow/schema-hint.js";
+import { parseWorkflowDefinition } from "../workflow/schema.js";
 import { UiMockState } from "./mock-state.js";
 import { UiRuntimeState } from "./runtime-state.js";
+import { loadWorkflowDraftReview } from "./draft-api.js";
+import { buildRuntimeCatalog } from "./runtime-catalog.js";
 
 interface JsonResponse {
   ok: boolean;
@@ -97,21 +106,297 @@ async function serveStatic(
   }
 }
 
+function asPositiveInt(raw: string | null, fallback: number): number {
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function toSafeId(input: string, fallback: string): string {
+  const normalized = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || fallback;
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1") {
+      return true;
+    }
+    if (normalized === "false" || normalized === "0") {
+      return false;
+    }
+  }
+  return fallback;
+}
+
+function asPositiveInteger(value: unknown, fallback: number): number {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) {
+    return fallback;
+  }
+  return Math.floor(num);
+}
+
+function normalizeToolList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter((item) => item.length > 0),
+    ),
+  );
+}
+
+function normalizeRolePatch(input: Record<string, unknown>, fallbackId: string): { id: string; role: RoleConfig } {
+  const id = toSafeId(typeof input.id === "string" ? input.id : "", fallbackId);
+  const systemPrompt =
+    typeof input.systemPrompt === "string" && input.systemPrompt.trim().length > 0
+      ? input.systemPrompt.trim()
+      : "You are a domain role. Complete tasks and return structured, concise outputs.";
+  const allowedTools = normalizeToolList(input.allowedTools);
+  return {
+    id,
+    role: {
+      systemPrompt,
+      allowedTools,
+      memoryScope: input.memoryScope === "papers" ? "papers" : "chat",
+      maxIterations: asPositiveInteger(input.maxIterations, 15),
+      workspaceIsolation: asBoolean(input.workspaceIsolation, false),
+    },
+  };
+}
+
+async function optimizeWorkflowDefinition(options: {
+  provider: LLMProvider;
+  instruction: string;
+  definition?: unknown;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  reasoningEffort: string | null;
+}): Promise<Record<string, unknown>> {
+  const promptBody = {
+    instruction: options.instruction,
+    currentDefinition: options.definition ?? null,
+  };
+  const response = await options.provider.chat({
+    model: options.model,
+    maxTokens: options.maxTokens,
+    temperature: options.temperature,
+    reasoningEffort: options.reasoningEffort,
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You optimize OpenIntern workflow JSON definitions.",
+          "Return JSON only. Do not include markdown fences.",
+          WORKFLOW_SCHEMA_HINT,
+          "Minimum valid example:",
+          MIN_WORKFLOW_EXAMPLE,
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: JSON.stringify(promptBody, null, 2),
+      },
+    ],
+  });
+  const raw = response.content ?? "";
+  return extractJsonObject(raw);
+}
+
+async function optimizeRoleDefinition(options: {
+  provider: LLMProvider;
+  instruction: string;
+  role: Record<string, unknown>;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  reasoningEffort: string | null;
+}): Promise<Record<string, unknown>> {
+  const response = await options.provider.chat({
+    model: options.model,
+    maxTokens: options.maxTokens,
+    temperature: options.temperature,
+    reasoningEffort: options.reasoningEffort,
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You optimize OpenIntern role configuration.",
+          "Return JSON only with fields: id, systemPrompt, allowedTools, memoryScope, maxIterations, workspaceIsolation.",
+          "allowedTools must be an array of strings.",
+          "memoryScope must be 'chat' or 'papers'.",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            instruction: options.instruction,
+            role: options.role,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  });
+  return extractJsonObject(response.content ?? "");
+}
+
+function defaultDefinitionFromInstruction(input: {
+  instruction?: string;
+  workflowId?: string;
+}): Record<string, unknown> {
+  const workflowId = toSafeId(input.workflowId ?? "", "wf_draft");
+  const instruction = (input.instruction ?? "").trim();
+  return {
+    id: workflowId,
+    name: instruction ? instruction.slice(0, 80) : "Draft workflow",
+    trigger: {
+      type: "manual",
+    },
+    nodes: [
+      {
+        id: "node_main",
+        name: "Main Task",
+        role: "scientist",
+        taskPrompt: instruction || "Execute task from trigger input and return a JSON object.",
+        dependsOn: [],
+        hitl: {
+          enabled: false,
+          highRiskTools: [],
+        },
+      },
+    ],
+  };
+}
+
+async function buildDefinitionSummaryList(options: {
+  source: "published" | "draft";
+  repository: WorkflowRepository;
+}): Promise<
+  Array<{
+    id: string;
+    name: string;
+    source: "published" | "draft";
+    path: string;
+    updatedAt: string;
+    valid: boolean;
+    error: string | null;
+  }>
+> {
+  const entries =
+    options.source === "published"
+      ? (await options.repository.listPublished()).map((entry) => ({
+          id: entry.workflowId,
+          path: entry.path,
+          updatedAt: entry.updatedAt,
+        }))
+      : (await options.repository.listDrafts()).map((entry) => ({
+          id: entry.draftId,
+          path: entry.path,
+          updatedAt: entry.updatedAt,
+        }));
+
+  const out: Array<{
+    id: string;
+    name: string;
+    source: "published" | "draft";
+    path: string;
+    updatedAt: string;
+    valid: boolean;
+    error: string | null;
+  }> = [];
+
+  for (const entry of entries) {
+    let definition: unknown;
+    try {
+      definition =
+        options.source === "published"
+          ? await options.repository.loadPublished(entry.id)
+          : await options.repository.loadDraft(entry.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      out.push({
+        id: entry.id,
+        name: entry.id,
+        source: options.source,
+        path: entry.path,
+        updatedAt: entry.updatedAt,
+        valid: false,
+        error: message,
+      });
+      continue;
+    }
+
+    const candidateName =
+      typeof (definition as Record<string, unknown>)?.name === "string"
+        ? String((definition as Record<string, unknown>).name)
+        : entry.id;
+    try {
+      parseWorkflowDefinition(definition);
+      out.push({
+        id: entry.id,
+        name: candidateName,
+        source: options.source,
+        path: entry.path,
+        updatedAt: entry.updatedAt,
+        valid: true,
+        error: null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      out.push({
+        id: entry.id,
+        name: candidateName,
+        source: options.source,
+        path: entry.path,
+        updatedAt: entry.updatedAt,
+        valid: false,
+        error: message,
+      });
+    }
+  }
+
+  return out;
+}
+
 async function main(): Promise<void> {
   const config = await loadOrCreateConfig();
+  const workspace = resolveWorkspacePath(config);
+  await mkdir(workspace, { recursive: true });
+  await syncWorkspaceTemplates(workspace);
+
   const state = new UiMockState(config);
+  const workflowRepository = new WorkflowRepository(workspace);
   let runtime: UiRuntimeState | null = null;
+  let runtimeProvider: LLMProvider | null = null;
   let runtimeInitError: string | null = null;
 
   try {
     const bus = new MessageBus();
-    const provider = makeProvider(config);
-    const workspace = resolveWorkspacePath(config);
-    await mkdir(workspace, { recursive: true });
-    await syncWorkspaceTemplates(workspace);
+    runtimeProvider = makeProvider(config);
 
     const subagents = new SubagentManager({
-      provider,
+      provider: runtimeProvider,
       workspace,
       bus,
       model: config.agents.defaults.model,
@@ -163,6 +448,18 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (pathname === "/api/runtime/events/stream" && method === "GET") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+        runtime.attachEventStream(res);
+        return;
+      }
+
       if (pathname === "/api/runtime/hitl/stream" && method === "GET") {
         if (!runtime) {
           sendJson(res, 503, {
@@ -171,7 +468,125 @@ async function main(): Promise<void> {
           });
           return;
         }
-        runtime.attachApprovalStream(res);
+        runtime.attachEventStream(res);
+        return;
+      }
+
+      if (pathname === "/api/runtime/catalog" && method === "GET") {
+        const catalog = await buildRuntimeCatalog({
+          workspace,
+          config,
+          runtimeAvailable: runtime !== null,
+          runtimeInitError,
+        });
+        sendJson(res, 200, { ok: true, data: catalog });
+        return;
+      }
+
+      if (pathname === "/api/runtime/roles" && method === "POST") {
+        const body = await readJsonBody<Record<string, unknown>>(req);
+        const roleIdInput = typeof body.id === "string" ? body.id : "";
+        if (!roleIdInput.trim()) {
+          sendJson(res, 400, { ok: false, message: "role id is required" });
+          return;
+        }
+
+        const { id, role } = normalizeRolePatch(body, "role_custom");
+        if (id !== toSafeId(roleIdInput, "role_custom")) {
+          sendJson(res, 400, { ok: false, message: "invalid role id" });
+          return;
+        }
+        config.roles[id] = role;
+        await saveConfig(config);
+
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            id,
+            role,
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/assist/optimize-workflow" && method === "POST") {
+        if (!runtimeProvider) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "LLM provider is unavailable.",
+          });
+          return;
+        }
+
+        const body = await readJsonBody<{
+          instruction?: string;
+          definition?: unknown;
+        }>(req);
+        const instruction = body.instruction?.trim() ?? "";
+        if (!instruction && !body.definition) {
+          sendJson(res, 400, { ok: false, message: "instruction or definition is required" });
+          return;
+        }
+
+        const optimizedRaw = await optimizeWorkflowDefinition({
+          provider: runtimeProvider,
+          instruction,
+          definition: body.definition,
+          model: config.agents.defaults.model,
+          maxTokens: config.agents.defaults.maxTokens,
+          temperature: Math.min(0.3, config.agents.defaults.temperature),
+          reasoningEffort: config.agents.defaults.reasoningEffort,
+        });
+        const normalized = parseWorkflowDefinition(optimizedRaw);
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            definition: normalized,
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/assist/optimize-role" && method === "POST") {
+        if (!runtimeProvider) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "LLM provider is unavailable.",
+          });
+          return;
+        }
+
+        const body = await readJsonBody<{
+          instruction?: string;
+          roleId?: string;
+          role?: Record<string, unknown>;
+        }>(req);
+
+        const roleId = toSafeId(body.roleId ?? "", "role_custom");
+        const currentRole =
+          body.role ??
+          ({
+            id: roleId,
+            ...(config.roles[roleId] ?? {}),
+          } satisfies Record<string, unknown>);
+
+        const optimizedRaw = await optimizeRoleDefinition({
+          provider: runtimeProvider,
+          instruction: body.instruction?.trim() ?? "",
+          role: currentRole,
+          model: config.agents.defaults.model,
+          maxTokens: config.agents.defaults.maxTokens,
+          temperature: Math.min(0.3, config.agents.defaults.temperature),
+          reasoningEffort: config.agents.defaults.reasoningEffort,
+        });
+        const normalized = normalizeRolePatch(optimizedRaw, roleId);
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            id: normalized.id,
+            role: normalized.role,
+          },
+        });
         return;
       }
 
@@ -183,10 +598,56 @@ async function main(): Promise<void> {
           });
           return;
         }
+        const pendingOnly = requestUrl.searchParams.get("pendingOnly") === "true";
         sendJson(res, 200, {
           ok: true,
           data: {
-            approvals: runtime.listApprovals({ pendingOnly: true }),
+            approvals: runtime.listApprovals({ pendingOnly }),
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/hitl/approvals/test-request" && method === "POST") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+
+        const body = await readJsonBody<{
+          runId?: string;
+          workflowId?: string;
+          nodeId?: string;
+          nodeName?: string;
+          approvalTarget?: "owner" | "group";
+          commandPreview?: string;
+          expiresInMs?: number;
+          toolCalls?: Array<{
+            id?: string;
+            name: string;
+            arguments?: Record<string, unknown>;
+            highRisk?: boolean;
+          }>;
+        }>(req);
+
+        const approval = runtime.createMockApproval({
+          runId: body.runId,
+          workflowId: body.workflowId,
+          nodeId: body.nodeId,
+          nodeName: body.nodeName,
+          approvalTarget: body.approvalTarget,
+          commandPreview: body.commandPreview,
+          expiresInMs: body.expiresInMs,
+          toolCalls: body.toolCalls,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            approval,
+            approvals: runtime.listApprovals(),
           },
         });
         return;
@@ -213,7 +674,228 @@ async function main(): Promise<void> {
         sendJson(res, 200, {
           ok: true,
           data: {
-            approvals: runtime.listApprovals({ pendingOnly: true }),
+            approvals: runtime.listApprovals(),
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/workflows/runs" && method === "GET") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+
+        const limit = asPositiveInt(requestUrl.searchParams.get("limit"), 200);
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            runs: runtime.listRuns({ limit }),
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/traces" && method === "GET") {
+        if (!runtime) {
+          sendJson(res, 503, {
+            ok: false,
+            message: runtimeInitError ?? "Runtime workflow is unavailable.",
+          });
+          return;
+        }
+
+        const limit = asPositiveInt(requestUrl.searchParams.get("limit"), 200);
+        const runId = requestUrl.searchParams.get("runId")?.trim() || undefined;
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            traces: runtime.listTraces({
+              runId,
+              limit,
+            }),
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/workflow-defs/published" && method === "GET") {
+        const summaries = await buildDefinitionSummaryList({
+          source: "published",
+          repository: workflowRepository,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            workflows: summaries,
+          },
+        });
+        return;
+      }
+
+      if (pathname.startsWith("/api/runtime/workflow-defs/published/") && method === "GET") {
+        const workflowId = pathname.replace("/api/runtime/workflow-defs/published/", "").trim();
+        if (!workflowId) {
+          sendJson(res, 400, { ok: false, message: "workflowId is required" });
+          return;
+        }
+        const definition = await workflowRepository.loadPublished(workflowId);
+        let normalized: ReturnType<typeof parseWorkflowDefinition> | null = null;
+        let valid = true;
+        let error: string | null = null;
+        try {
+          normalized = parseWorkflowDefinition(definition);
+        } catch (validationError) {
+          valid = false;
+          error =
+            validationError instanceof Error ? validationError.message : String(validationError);
+        }
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            id: workflowId,
+            source: "published",
+            definition,
+            normalized,
+            valid,
+            error,
+            path: workflowRepository.resolvePublishedPath(workflowId),
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/workflow-defs/drafts" && method === "GET") {
+        const summaries = await buildDefinitionSummaryList({
+          source: "draft",
+          repository: workflowRepository,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            workflows: summaries,
+          },
+        });
+        return;
+      }
+
+      if (pathname.startsWith("/api/runtime/workflow-defs/drafts/") && method === "GET") {
+        const draftId = pathname.replace("/api/runtime/workflow-defs/drafts/", "").trim();
+        if (!draftId) {
+          sendJson(res, 400, { ok: false, message: "draftId is required" });
+          return;
+        }
+        const data = await loadWorkflowDraftReview({
+          repository: workflowRepository,
+          draftId,
+          gatewayHost: config.gateway.host,
+          gatewayPort: config.gateway.port,
+          publicBase: process.env.OPENINTERN_UI_PUBLIC_BASE,
+        });
+        sendJson(res, 200, { ok: true, data });
+        return;
+      }
+
+      if (pathname === "/api/runtime/workflow-defs/drafts" && method === "POST") {
+        const body = await readJsonBody<{
+          draftId?: string;
+          workflowId?: string;
+          instruction?: string;
+          definition?: Record<string, unknown>;
+        }>(req);
+        const fallbackId = `${toSafeId(body.workflowId ?? "", "wf_draft")}_${Date.now()}`;
+        const draftId = toSafeId(
+          body.draftId ?? `${fallbackId}_${randomUUID().replace(/-/g, "").slice(0, 6)}`,
+          fallbackId,
+        );
+        const candidate = body.definition ?? defaultDefinitionFromInstruction(body);
+        const normalized = parseWorkflowDefinition(candidate);
+        const filePath = await workflowRepository.saveDraft(draftId, normalized);
+        const review = await loadWorkflowDraftReview({
+          repository: workflowRepository,
+          draftId,
+          gatewayHost: config.gateway.host,
+          gatewayPort: config.gateway.port,
+          publicBase: process.env.OPENINTERN_UI_PUBLIC_BASE,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            draftId,
+            path: filePath,
+            reviewUrl: review.reviewUrl,
+            definition: normalized,
+          },
+        });
+        return;
+      }
+
+      if (pathname.startsWith("/api/runtime/workflow-defs/drafts/") && method === "PUT") {
+        const draftId = pathname.replace("/api/runtime/workflow-defs/drafts/", "").trim();
+        if (!draftId) {
+          sendJson(res, 400, { ok: false, message: "draftId is required" });
+          return;
+        }
+        const body = await readJsonBody<{ definition: Record<string, unknown> }>(req);
+        if (!body.definition || typeof body.definition !== "object") {
+          sendJson(res, 400, { ok: false, message: "definition is required" });
+          return;
+        }
+        const normalized = parseWorkflowDefinition(body.definition);
+        const filePath = await workflowRepository.saveDraft(draftId, normalized);
+        const review = await loadWorkflowDraftReview({
+          repository: workflowRepository,
+          draftId,
+          gatewayHost: config.gateway.host,
+          gatewayPort: config.gateway.port,
+          publicBase: process.env.OPENINTERN_UI_PUBLIC_BASE,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            draftId,
+            path: filePath,
+            reviewUrl: review.reviewUrl,
+            definition: normalized,
+          },
+        });
+        return;
+      }
+
+      if (pathname === "/api/runtime/workflow-defs/publish" && method === "POST") {
+        const body = await readJsonBody<{
+          draftId?: string;
+          workflowId?: string;
+          overwrite?: boolean;
+          definition?: Record<string, unknown>;
+        }>(req);
+
+        let definition: unknown = body.definition;
+        if (!definition && body.draftId) {
+          definition = await workflowRepository.loadDraft(body.draftId);
+        }
+        if (!definition) {
+          sendJson(res, 400, { ok: false, message: "draftId or definition is required" });
+          return;
+        }
+
+        const candidate = structuredClone(definition) as Record<string, unknown>;
+        if (body.workflowId?.trim()) {
+          candidate.id = body.workflowId.trim();
+        }
+        const normalized = parseWorkflowDefinition(candidate);
+        const savedPath = await workflowRepository.savePublished(normalized.id, normalized, {
+          overwrite: body.overwrite === true,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            workflowId: normalized.id,
+            path: savedPath,
+            definition: normalized,
           },
         });
         return;
@@ -230,12 +912,31 @@ async function main(): Promise<void> {
 
         const body = await readJsonBody<{
           definition: unknown;
+          workflowRef?: {
+            source?: "published" | "draft";
+            id?: string;
+          };
           triggerInput?: Record<string, unknown>;
           originChannel?: string;
           originChatId?: string;
         }>(req);
+
+        let definition: unknown = body.definition;
+        if (!definition && body.workflowRef?.id) {
+          const refId = body.workflowRef.id;
+          if (body.workflowRef.source === "draft") {
+            definition = await workflowRepository.loadDraft(refId);
+          } else {
+            definition = await workflowRepository.loadPublished(refId);
+          }
+        }
+        if (!definition) {
+          sendJson(res, 400, { ok: false, message: "definition or workflowRef is required" });
+          return;
+        }
+
         const started = await runtime.startWorkflow({
-          definition: body.definition,
+          definition,
           triggerInput: body.triggerInput,
           originChannel: body.originChannel,
           originChatId: body.originChatId,
@@ -251,6 +952,23 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (pathname.startsWith("/api/runtime/workflows/drafts/") && method === "GET") {
+        const draftId = pathname.replace("/api/runtime/workflows/drafts/", "").trim();
+        if (!draftId) {
+          sendJson(res, 400, { ok: false, message: "draftId is required" });
+          return;
+        }
+        const data = await loadWorkflowDraftReview({
+          repository: workflowRepository,
+          draftId,
+          gatewayHost: config.gateway.host,
+          gatewayPort: config.gateway.port,
+          publicBase: process.env.OPENINTERN_UI_PUBLIC_BASE,
+        });
+        sendJson(res, 200, { ok: true, data });
+        return;
+      }
+
       if (pathname.startsWith("/api/runtime/workflows/") && method === "GET") {
         if (!runtime) {
           sendJson(res, 503, {
@@ -260,12 +978,31 @@ async function main(): Promise<void> {
           return;
         }
         const runId = pathname.replace("/api/runtime/workflows/", "").trim();
+        if (!runId || runId.includes("/")) {
+          sendJson(res, 404, { ok: false, message: "Run not found" });
+          return;
+        }
         const run = runtime.getRun(runId);
         if (!run) {
           sendJson(res, 404, { ok: false, message: "Run not found" });
           return;
         }
-        sendJson(res, 200, { ok: true, data: { run } });
+        const traceLimit = asPositiveInt(requestUrl.searchParams.get("traceLimit"), 200);
+        const activityLimit = asPositiveInt(requestUrl.searchParams.get("activityLimit"), 100);
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            run,
+            traces: runtime.listTraces({
+              runId,
+              limit: traceLimit,
+            }),
+            activities: runtime.listRunActivities({
+              runId,
+              limit: activityLimit,
+            }),
+          },
+        });
         return;
       }
 
