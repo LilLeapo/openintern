@@ -16,6 +16,10 @@ export interface WorkflowRuntime {
   getRunSnapshot(runId: string): WorkflowRunSnapshot | null;
 }
 
+export interface WorkflowRunSnapshotLookup {
+  load(runId: string): Promise<WorkflowRunSnapshot | null>;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -53,9 +57,52 @@ function summaryFromSnapshot(snapshot: WorkflowRunSnapshot): string {
   return `Workflow '${snapshot.workflowId}' is running (${completed}/${snapshot.nodes.length} completed).`;
 }
 
+function executionFlowFromSnapshot(snapshot: WorkflowRunSnapshot): {
+  completed: number;
+  running: number;
+  waiting_for_approval: number;
+  failed: number;
+  pending: number;
+  nodes: Array<{
+    id: string;
+    name?: string;
+    role?: string;
+    status: "pending" | "running" | "waiting_for_approval" | "completed" | "failed";
+    attempt: number;
+    maxAttempts: number;
+    currentTaskId: string | null;
+    lastError: string | null;
+  }>;
+} {
+  const counts = {
+    completed: 0,
+    running: 0,
+    waiting_for_approval: 0,
+    failed: 0,
+    pending: 0,
+  };
+  for (const node of snapshot.nodes) {
+    counts[node.status] += 1;
+  }
+  return {
+    ...counts,
+    nodes: snapshot.nodes.map((node) => ({
+      id: node.id,
+      name: node.name,
+      status: node.status,
+      attempt: node.attempt,
+      maxAttempts: node.maxAttempts,
+      currentTaskId: node.currentTaskId,
+      lastError: node.lastError,
+    })),
+  };
+}
+
 function defaultWorkflowFromInstruction(instruction: string, workflowId?: string): WorkflowDefinition {
   const id = toSafeIdentifier(workflowId ?? "", "wf_draft") || "wf_draft";
-  const prompt = instruction.trim() || "Execute the requested workflow task and return a JSON object.";
+  const prompt =
+    instruction.trim() ||
+    "Execute the requested workflow task and return JSON with key 'result'.";
 
   return {
     id,
@@ -67,8 +114,9 @@ function defaultWorkflowFromInstruction(instruction: string, workflowId?: string
       {
         id: "node_main",
         role: "scientist",
-        taskPrompt: prompt,
+        taskPrompt: `${prompt} Keep output concise and structured.`,
         dependsOn: [],
+        outputKeys: ["result"],
         hitl: {
           enabled: false,
           highRiskTools: [],
@@ -230,7 +278,7 @@ export class TriggerWorkflowTool extends Tool {
 
 export class QueryWorkflowStatusTool extends Tool {
   readonly name = "query_workflow_status";
-  readonly description = "Query workflow run status by instance_id and return summary + snapshot.";
+  readonly description = "Query workflow run status by instance_id and return summary + execution flow + snapshot.";
   readonly parameters = {
     type: "object",
     properties: {
@@ -242,23 +290,46 @@ export class QueryWorkflowStatusTool extends Tool {
     required: ["instance_id"],
   } as const;
 
-  constructor(private readonly runtime: WorkflowRuntime) {
+  constructor(
+    private readonly runtime: WorkflowRuntime,
+    private readonly history?: WorkflowRunSnapshotLookup,
+  ) {
     super();
   }
 
   async execute(params: Record<string, unknown>): Promise<string> {
     const instanceId = String(params.instance_id ?? "").trim();
-    const snapshot = this.runtime.getRunSnapshot(instanceId);
-    if (!snapshot) {
-      return `Error: Workflow instance '${instanceId}' not found.`;
+    const liveSnapshot = this.runtime.getRunSnapshot(instanceId);
+    if (!liveSnapshot) {
+      const historical = this.history ? await this.history.load(instanceId) : null;
+      if (!historical) {
+        return (
+          `Error: Workflow instance '${instanceId}' not found in current agent runtime. ` +
+          "It may have finished in another process, or this runtime was restarted."
+        );
+      }
+      return JSON.stringify(
+        {
+          ok: true,
+          instance_id: instanceId,
+          summary: summaryFromSnapshot(historical),
+          execution_flow: executionFlowFromSnapshot(historical),
+          snapshot: historical,
+          from_history: true,
+        },
+        null,
+        2,
+      );
     }
 
     return JSON.stringify(
       {
         ok: true,
         instance_id: instanceId,
-        summary: summaryFromSnapshot(snapshot),
-        snapshot,
+        summary: summaryFromSnapshot(liveSnapshot),
+        execution_flow: executionFlowFromSnapshot(liveSnapshot),
+        snapshot: liveSnapshot,
+        from_history: false,
       },
       null,
       2,
