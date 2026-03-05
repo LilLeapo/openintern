@@ -155,6 +155,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include agent_id for localSimple/sealosAssistant payloads for legacy compatibility.",
     )
+    parser.add_argument(
+        "--memu-require-items-created",
+        action="store_true",
+        help="Treat MemU write as failure when response explicitly reports items_created <= 0.",
+    )
     parser.add_argument("--openintern-config", default="~/.openintern/config.json", help="OpenIntern config path for MemU defaults.")
     return parser.parse_args()
 
@@ -203,6 +208,29 @@ def parse_int(value: str, fallback: int) -> int:
         return int(str(value).strip())
     except Exception:
         return fallback
+
+
+def parse_items_created(payload: Dict[str, Any]) -> Optional[int]:
+    if not isinstance(payload, dict):
+        return None
+
+    def pick(obj: Dict[str, Any]) -> Optional[int]:
+        for key in ("items_created", "itemsCreated", "created_count", "created"):
+            if key not in obj:
+                continue
+            try:
+                return int(obj.get(key))
+            except Exception:
+                return None
+        return None
+
+    direct = pick(payload)
+    if direct is not None:
+        return direct
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return pick(data)
+    return None
 
 
 def load_openintern_memu_defaults(
@@ -837,6 +865,7 @@ def main() -> int:
             f"scope={memu_opts.get('scope')} "
             f"source_type={memu_opts.get('source_type') or '(none)'} "
             f"file_source_type={memu_opts.get('file_source_type') or '(follow source_type)'} "
+            f"require_items_created={'yes' if args.memu_require_items_created else 'no'} "
             f"endpoint_memorize={memu_opts.get('endpoint_memorize') or '/memorize'} "
             f"endpoint_memorize_file={memu_opts.get('endpoint_memorize_file') or '/memorize/file'}"
         )
@@ -956,10 +985,20 @@ def main() -> int:
                     chunk_text=chunk,
                 )
                 try:
-                    memu_client.memorize(
+                    resp_json = memu_client.memorize(
                         payload,
                         source_type=str(memu_opts.get("source_type") or "").strip(),
                     )
+                    if args.memu_require_items_created:
+                        items_created = parse_items_created(resp_json)
+                        if items_created is not None and items_created <= 0:
+                            memu_error = (
+                                f"chunk {idx}/{len(chunks)} returned items_created={items_created}"
+                            )
+                            log(f"[MEMU-FAILED] {job.source_name}: {memu_error}")
+                            if args.fail_fast:
+                                raise RuntimeError(memu_error)
+                            break
                 except Exception as exc:
                     memu_error = f"chunk {idx}/{len(chunks)} failed: {exc}"
                     log(f"[MEMU-FAILED] {job.source_name}: {memu_error}")
@@ -1022,7 +1061,7 @@ def main() -> int:
                     if image_idx <= resume_images:
                         continue
                     try:
-                        memu_client.memorize_file(
+                        file_resp = memu_client.memorize_file(
                             file_name=Path(image.name).name,
                             file_bytes=image.data,
                             source_type=(
@@ -1030,6 +1069,12 @@ def main() -> int:
                                 or str(memu_opts.get("source_type") or "").strip()
                             ),
                         )
+                        if args.memu_require_items_created:
+                            file_items_created = parse_items_created(file_resp)
+                            if file_items_created is not None and file_items_created <= 0:
+                                raise RuntimeError(
+                                    f"image {image_idx}/{image_total} returned items_created={file_items_created}"
+                                )
                         images_ingested += 1
                         if not args.disable_image_anchor_text:
                             anchor_text = build_image_anchor_text(
@@ -1038,10 +1083,16 @@ def main() -> int:
                                 image_name=image.name,
                                 merged_text=merged_text,
                             )
-                            memu_client.memorize(
+                            anchor_resp = memu_client.memorize(
                                 anchor_text,
                                 source_type=str(memu_opts.get("source_type") or "").strip(),
                             )
+                            if args.memu_require_items_created:
+                                anchor_items_created = parse_items_created(anchor_resp)
+                                if anchor_items_created is not None and anchor_items_created <= 0:
+                                    raise RuntimeError(
+                                        f"image {image_idx}/{image_total} anchor returned items_created={anchor_items_created}"
+                                    )
                     except Exception as exc:
                         image_error = f"image {image_idx}/{image_total} ({image.name}) failed: {exc}"
                         log(f"[MEMU-IMAGE-FAILED] {job.source_name}: {image_error}")
