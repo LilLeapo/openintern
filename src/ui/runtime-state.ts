@@ -18,6 +18,7 @@ import {
   type WorkflowRunHandle,
   type WorkflowRunSnapshot,
 } from "../workflow/engine.js";
+import { RuntimeSqliteStore } from "../workflow/runtime-sqlite.js";
 
 interface StartRuntimeWorkflowInput {
   definition: unknown;
@@ -84,6 +85,20 @@ const MAX_TRACES = 500;
 const MAX_TERMINAL_RUNS = 200;
 const MAX_RUN_ACTIVITIES = 200;
 
+function shortTraceText(value: string | null | undefined, max = 260): string {
+  if (!value) {
+    return "";
+  }
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return "";
+  }
+  if (clean.length <= max) {
+    return clean;
+  }
+  return `${clean.slice(0, max - 3)}...`;
+}
+
 function parseOriginContext(event: SubagentTaskEvent): { runId: string; nodeId: string | null } | null {
   if (event.originChannel !== "workflow") {
     return null;
@@ -107,6 +122,7 @@ function parseOriginContext(event: SubagentTaskEvent): { runId: string; nodeId: 
 export class UiRuntimeState {
   private readonly bus: MessageBus;
   private readonly engine: WorkflowEngine;
+  private readonly store?: RuntimeSqliteStore;
   private readonly sseClients = new Set<ServerResponse>();
   private readonly unsubscribers: Array<() => void>;
   private readonly runHandles = new Map<string, WorkflowRunHandle>();
@@ -117,9 +133,10 @@ export class UiRuntimeState {
   private seq = 0;
   private readonly pollTimer: NodeJS.Timeout;
 
-  constructor(options: { bus: MessageBus; engine: WorkflowEngine }) {
+  constructor(options: { bus: MessageBus; engine: WorkflowEngine; store?: RuntimeSqliteStore }) {
     this.bus = options.bus;
     this.engine = options.engine;
+    this.store = options.store;
 
     this.unsubscribers = [
       this.bus.onSubagentEvent(async (event) => {
@@ -181,9 +198,16 @@ export class UiRuntimeState {
   }
 
   listApprovals(options?: { pendingOnly?: boolean }): WorkflowApprovalSnapshot[] {
-    const rows = [...this.engine.getApprovals(), ...this.mockApprovals.values()].sort((a, b) =>
-      b.requestedAt.localeCompare(a.requestedAt),
-    );
+    const liveRows = this.currentApprovals();
+    const persistedRows = this.store ? this.store.listApprovals() : [];
+    const byId = new Map<string, WorkflowApprovalSnapshot>();
+    for (const row of persistedRows) {
+      byId.set(row.approvalId, row);
+    }
+    for (const row of liveRows) {
+      byId.set(row.approvalId, row);
+    }
+    const rows = Array.from(byId.values()).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
     if (options?.pendingOnly) {
       return rows.filter((row) => row.status === "pending");
     }
@@ -191,9 +215,18 @@ export class UiRuntimeState {
   }
 
   listRuns(options?: { limit?: number }): WorkflowRunSnapshot[] {
-    const rows = Array.from(this.runs.values())
+    const liveRows = Array.from(this.runs.values())
       .map((run) => this.applyMockApprovals(run))
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    const persistedRows = this.store ? this.store.listRuns() : [];
+    const byId = new Map<string, WorkflowRunSnapshot>();
+    for (const row of persistedRows) {
+      byId.set(row.runId, row);
+    }
+    for (const row of liveRows) {
+      byId.set(row.runId, row);
+    }
+    const rows = Array.from(byId.values()).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
     const limit = options?.limit;
     if (!limit || limit <= 0) {
       return rows;
@@ -202,8 +235,19 @@ export class UiRuntimeState {
   }
 
   listTraces(options?: { runId?: string; limit?: number }): RuntimeTraceEvent[] {
-    const runId = options?.runId?.trim();
-    const filtered = runId ? this.traces.filter((trace) => trace.runId === runId) : this.traces;
+    const runId = options?.runId?.trim() || undefined;
+    const persistedRows = this.store ? this.store.listTraces({ runId }) : [];
+    const byId = new Map<string, RuntimeTraceEvent>();
+    for (const row of persistedRows) {
+      byId.set(row.id, row);
+    }
+    for (const row of this.traces) {
+      if (runId && row.runId !== runId) {
+        continue;
+      }
+      byId.set(row.id, row);
+    }
+    const filtered = Array.from(byId.values()).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     const limit = options?.limit;
     if (!limit || limit <= 0) {
       return filtered;
@@ -216,7 +260,15 @@ export class UiRuntimeState {
     if (!runId) {
       return [];
     }
-    const rows = this.runActivities.get(runId) ?? [];
+    const persistedRows = this.store ? this.store.listActivities({ runId }) : [];
+    const byId = new Map<string, RuntimeRunActivity>();
+    for (const row of persistedRows) {
+      byId.set(row.id, row);
+    }
+    for (const row of this.runActivities.get(runId) ?? []) {
+      byId.set(row.id, row);
+    }
+    const rows = Array.from(byId.values()).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     const limit = options.limit;
     if (!limit || limit <= 0) {
       return rows;
@@ -252,6 +304,7 @@ export class UiRuntimeState {
       approver,
       reason: null,
     });
+    this.persistApprovals();
 
     this.broadcast(
       this.nextEnvelope("approval.updated", {
@@ -292,6 +345,7 @@ export class UiRuntimeState {
           nodes: completedNodes,
         };
         this.runs.set(run.runId, nextRun);
+        this.persistRun(nextRun);
         this.broadcast(
           this.nextEnvelope("run.status.changed", {
             runId: run.runId,
@@ -342,6 +396,7 @@ export class UiRuntimeState {
       return null;
     }
     this.runs.set(runId, snapshot);
+    this.persistRun(snapshot);
     return this.applyMockApprovals(snapshot);
   }
 
@@ -425,9 +480,11 @@ export class UiRuntimeState {
         ],
       };
       this.runs.set(runId, syntheticRun);
+      this.persistRun(syntheticRun);
     }
 
     this.mockApprovals.set(approvalId, approval);
+    this.persistApprovals();
     const nextRun = this.getRun(runId);
     if (nextRun) {
       this.broadcast(
@@ -493,8 +550,15 @@ export class UiRuntimeState {
     const prev = this.runs.get(runId) ?? null;
     this.runs.set(runId, next);
     const nextWithMock = this.applyMockApprovals(next);
+    this.persistRun(nextWithMock);
 
     if (!prev || prev.status !== next.status) {
+      const statusDetails =
+        next.status === "failed" && next.error
+          ? `${prev ? `${prev.status} -> ${next.status}` : `status=${next.status}`}; error=${shortTraceText(next.error)}`
+          : prev
+            ? `${prev.status} -> ${next.status}`
+            : `status=${next.status}`;
       this.broadcast(
         this.nextEnvelope("run.status.changed", {
           runId,
@@ -506,7 +570,7 @@ export class UiRuntimeState {
         runId,
         type: "run.status.changed",
         title: "Run status changed",
-        details: prev ? `${prev.status} -> ${next.status}` : `status=${next.status}`,
+        details: statusDetails,
         status:
           next.status === "failed"
             ? "failed"
@@ -525,6 +589,13 @@ export class UiRuntimeState {
         prevNode.attempt !== node.attempt ||
         prevNode.currentTaskId !== node.currentTaskId
       ) {
+        const nodeDetailsBase = prevNode
+          ? `${prevNode.status} -> ${node.status} (attempt ${node.attempt}/${node.maxAttempts})`
+          : `${node.status} (attempt ${node.attempt}/${node.maxAttempts})`;
+        const nodeDetails =
+          node.status === "failed" && node.lastError
+            ? `${nodeDetailsBase}; error=${shortTraceText(node.lastError)}`
+            : nodeDetailsBase;
         this.broadcast(
           this.nextEnvelope("node.status.changed", {
             runId,
@@ -535,12 +606,11 @@ export class UiRuntimeState {
           runId,
           type: "node.status.changed",
           title: `Node ${node.id} status changed`,
-          details: prevNode
-            ? `${prevNode.status} -> ${node.status} (attempt ${node.attempt}/${node.maxAttempts})`
-            : `${node.status} (attempt ${node.attempt}/${node.maxAttempts})`,
+          details: nodeDetails,
           status: node.status === "failed" ? "failed" : node.status === "waiting_for_approval" ? "pending" : "ok",
           meta: {
             nodeId: node.id,
+            ...(node.lastError ? { error: shortTraceText(node.lastError) } : {}),
           },
         });
       }
@@ -620,18 +690,28 @@ export class UiRuntimeState {
       );
     }
 
+    const toolNames = event.toolCalls?.map((item) => item.name).filter((name) => name.trim().length > 0) ?? [];
+    const failureText =
+      event.type === "SUBAGENT_TASK_FAILED" || event.status === "error"
+        ? shortTraceText(event.result)
+        : "";
+    const detailParts = [`taskId=${event.taskId}`, `label=${event.label}`];
+    if (toolNames.length > 0) {
+      detailParts.push(`tools=${toolNames.join(", ")}`);
+    }
+    if (failureText) {
+      detailParts.push(`error=${failureText}`);
+    }
     this.pushTrace({
       runId,
       type: event.type === "SUBAGENT_TASK_COMPLETED" ? "subagent.task.completed" : "subagent.task.failed",
       title: `Subagent task ${event.type === "SUBAGENT_TASK_COMPLETED" ? "completed" : "failed"}`,
-      details:
-        event.toolCalls && event.toolCalls.length > 0
-          ? `taskId=${event.taskId}; label=${event.label}; tools=${event.toolCalls.map((item) => item.name).join(", ")}`
-          : `taskId=${event.taskId}; label=${event.label}`,
+      details: detailParts.join("; "),
       status: event.type === "SUBAGENT_TASK_COMPLETED" ? "ok" : "failed",
       meta: {
         taskId: event.taskId,
         nodeOrigin: event.originChatId,
+        ...(failureText ? { error: failureText } : {}),
       },
     });
 
@@ -658,6 +738,7 @@ export class UiRuntimeState {
       },
     });
     this.captureRunSnapshot(event.runId);
+    this.persistApprovals();
   }
 
   private async onApprovalGranted(event: SubagentApprovalGrantedEvent): Promise<void> {
@@ -681,6 +762,7 @@ export class UiRuntimeState {
         },
       });
       this.captureRunSnapshot(runId);
+      this.persistApprovals();
     }
   }
 
@@ -705,6 +787,7 @@ export class UiRuntimeState {
         },
       });
       this.captureRunSnapshot(runId);
+      this.persistApprovals();
     }
   }
 
@@ -729,6 +812,7 @@ export class UiRuntimeState {
         },
       });
       this.captureRunSnapshot(runId);
+      this.persistApprovals();
     }
   }
 
@@ -736,6 +820,7 @@ export class UiRuntimeState {
     const current = this.runActivities.get(runId) ?? [];
     const next = [activity, ...current.filter((item) => item.id !== activity.id)].slice(0, MAX_RUN_ACTIVITIES);
     this.runActivities.set(runId, next);
+    this.persistActivity(activity);
     return activity;
   }
 
@@ -785,6 +870,42 @@ export class UiRuntimeState {
     };
   }
 
+  private currentApprovals(): WorkflowApprovalSnapshot[] {
+    return [...this.engine.getApprovals(), ...this.mockApprovals.values()].sort((a, b) =>
+      b.requestedAt.localeCompare(a.requestedAt),
+    );
+  }
+
+  private persistRun(run: WorkflowRunSnapshot): void {
+    if (!this.store) {
+      return;
+    }
+    this.store.upsertRun(run);
+  }
+
+  private persistTrace(trace: RuntimeTraceEvent): void {
+    if (!this.store) {
+      return;
+    }
+    this.store.upsertTrace(trace);
+  }
+
+  private persistActivity(activity: RuntimeRunActivity): void {
+    if (!this.store) {
+      return;
+    }
+    this.store.upsertActivity(activity);
+  }
+
+  private persistApprovals(): void {
+    if (!this.store) {
+      return;
+    }
+    for (const approval of this.currentApprovals()) {
+      this.store.upsertApproval(approval);
+    }
+  }
+
   private pushTrace(input: RuntimeTraceInput): void {
     const trace: RuntimeTraceEvent = {
       id: `trace_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
@@ -793,6 +914,7 @@ export class UiRuntimeState {
     };
 
     this.traces = [trace, ...this.traces.filter((item) => item.id !== trace.id)].slice(0, MAX_TRACES);
+    this.persistTrace(trace);
     this.broadcast(
       this.nextEnvelope("trace.append", {
         trace,

@@ -81,6 +81,7 @@ export interface SubagentManagerOptions {
   memuClient?: MemUClient | null;
   memuScopeResolver?: MemoryScopeResolver;
   maxConcurrent?: number;
+  externalToolRegistry?: ToolRegistry;
 }
 
 export interface SpawnTaskOptions {
@@ -135,6 +136,7 @@ export class SubagentManager {
   private readonly configRef: AppConfig;
   private readonly memuClient: MemUClient | null;
   private readonly memuScopeResolver?: MemoryScopeResolver;
+  private readonly externalToolRegistry?: ToolRegistry;
 
   private readonly maxConcurrent: number;
   private runningCount = 0;
@@ -156,6 +158,7 @@ export class SubagentManager {
     this.configRef = options.config;
     this.memuClient = options.memuClient ?? null;
     this.memuScopeResolver = options.memuScopeResolver;
+    this.externalToolRegistry = options.externalToolRegistry;
 
     const configMax = options.config.agents.subagentConcurrency.maxConcurrent;
     const inputMax = options.maxConcurrent ?? configMax;
@@ -435,12 +438,18 @@ export class SubagentManager {
 
     for (const toolName of selectedTools) {
       const createTool = factories[toolName];
-      if (!createTool) {
+      if (createTool) {
+        const tool = createTool();
+        this.setToolContext(tool, options.originChannel, options.originChatId);
+        tools.register(tool);
         continue;
       }
-      const tool = createTool();
-      this.setToolContext(tool, options.originChannel, options.originChatId);
-      tools.register(tool);
+      const external = this.externalToolRegistry?.get(toolName);
+      if (external) {
+        // MCP tools are process-level and can be reused by subagents.
+        this.setToolContext(external, options.originChannel, options.originChatId);
+        tools.register(external);
+      }
     }
 
     return tools;

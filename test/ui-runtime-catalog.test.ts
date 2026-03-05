@@ -42,4 +42,19 @@ describe("buildRuntimeCatalog", () => {
     expect(catalog.tools.some((tool) => tool.id === "trigger_workflow")).toBe(true);
     expect(Array.isArray(catalog.skills)).toBe(true);
   });
+
+  it("includes external MCP tools in catalog", async () => {
+    const workspace = await makeWorkspace();
+    const catalog = await buildRuntimeCatalog({
+      workspace,
+      config: structuredClone(DEFAULT_CONFIG),
+      runtimeAvailable: true,
+      runtimeInitError: null,
+      extraToolIds: ["lark-mcp__wiki_get_node", "lark-mcp__docx_builtin_import"],
+    });
+
+    const mcpTool = catalog.tools.find((tool) => tool.id === "lark-mcp__wiki_get_node");
+    expect(mcpTool?.source).toBe("mcp");
+    expect(mcpTool?.description).toContain("MCP");
+  });
 });

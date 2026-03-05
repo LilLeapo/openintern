@@ -466,4 +466,61 @@ describe("WorkflowEngine", () => {
     expect(result.error).toContain("approval timeout");
     engine.close();
   });
+
+  it("emits persisted activity callback for subagent completion", async () => {
+    const bus = new MessageBus();
+    const subagents = new FakeSubagentManager();
+    const activities: Array<{ runId: string; type: string; result: string }> = [];
+    const engine = new WorkflowEngine({
+      bus,
+      subagents,
+      workspace: process.cwd(),
+      config: structuredClone(DEFAULT_CONFIG),
+      onActivity: async (activity) => {
+        activities.push({
+          runId: activity.runId,
+          type: activity.type,
+          result: activity.result,
+        });
+      },
+    });
+
+    const handle = await engine.start(
+      {
+        id: "wf_activity",
+        trigger: { type: "manual" },
+        nodes: [
+          {
+            id: "node_a",
+            role: "scientist",
+            taskPrompt: "A",
+            dependsOn: [],
+            outputKeys: ["a"],
+          },
+        ],
+      },
+      {
+        triggerInput: {},
+        originChannel: "cli",
+        originChatId: "direct",
+      },
+    );
+
+    await waitFor(() => subagents.calls.length === 1);
+    await bus.emitSubagentEvent(
+      makeEvent({
+        type: "SUBAGENT_TASK_COMPLETED",
+        taskId: "task_1",
+        status: "ok",
+        result: '{"a":1}',
+        originChatId: `${handle.runId}:node_a`,
+      }),
+    );
+
+    await handle.done;
+    expect(activities.length).toBeGreaterThan(0);
+    expect(activities[0]?.runId).toBe(handle.runId);
+    expect(activities[0]?.type).toBe("subagent.task.completed");
+    engine.close();
+  });
 });

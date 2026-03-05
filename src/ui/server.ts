@@ -9,10 +9,16 @@ import { loadOrCreateConfig, resolveWorkspacePath, saveConfig } from "../config/
 import type { RoleConfig } from "../config/schema.js";
 import { makeProvider } from "../llm/provider-factory.js";
 import type { LLMProvider } from "../llm/provider.js";
+import { McpManager } from "../mcp/mcp-manager.js";
 import { syncWorkspaceTemplates } from "../templates/sync.js";
+import { ToolRegistry } from "../tools/core/tool-registry.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { extractJsonObject } from "../workflow/interpolation.js";
+import { WorkflowRunActivityHistoryRepository } from "../workflow/run-activity-history.js";
 import { WorkflowRepository } from "../workflow/repository.js";
+import { WorkflowRunHistoryRepository } from "../workflow/run-history.js";
+import { recoverRunSnapshot } from "../workflow/run-recovery.js";
+import { RuntimeSqliteStore } from "../workflow/runtime-sqlite.js";
 import { MIN_WORKFLOW_EXAMPLE, WORKFLOW_SCHEMA_HINT } from "../workflow/schema-hint.js";
 import { parseWorkflowDefinition } from "../workflow/schema.js";
 import { UiMockState } from "./mock-state.js";
@@ -163,6 +169,15 @@ function normalizeToolList(value: unknown): string[] {
   );
 }
 
+async function persistRecoveredRunSnapshot(options: {
+  snapshot: import("../workflow/engine.js").WorkflowRunSnapshot;
+  runtimeStore: RuntimeSqliteStore;
+  workflowRunHistory: WorkflowRunHistoryRepository;
+}): Promise<void> {
+  options.runtimeStore.upsertRun(options.snapshot);
+  await options.workflowRunHistory.save(options.snapshot);
+}
+
 function normalizeRolePatch(input: Record<string, unknown>, fallbackId: string): { id: string; role: RoleConfig } {
   const id = toSafeId(typeof input.id === "string" ? input.id : "", fallbackId);
   const systemPrompt =
@@ -278,8 +293,11 @@ function defaultDefinitionFromInstruction(input: {
         id: "node_main",
         name: "Main Task",
         role: "scientist",
-        taskPrompt: instruction || "Execute task from trigger input and return a JSON object.",
+        taskPrompt:
+          instruction ||
+          "Execute task from trigger input and return JSON with key 'result'.",
         dependsOn: [],
+        outputKeys: ["result"],
         hitl: {
           enabled: false,
           highRiskTools: [],
@@ -387,9 +405,31 @@ async function main(): Promise<void> {
 
   const state = new UiMockState(config);
   const workflowRepository = new WorkflowRepository(workspace);
+  const workflowRunHistory = new WorkflowRunHistoryRepository(workspace);
+  const workflowRunActivityHistory = new WorkflowRunActivityHistoryRepository(workspace);
+  const runtimeStore = new RuntimeSqliteStore(workspace);
+  if (!runtimeStore.available) {
+    process.stderr.write(
+      "Runtime SQLite unavailable (node:sqlite not supported in current Node). Falling back to non-SQLite runtime history.\n",
+    );
+  }
   let runtime: UiRuntimeState | null = null;
   let runtimeProvider: LLMProvider | null = null;
   let runtimeInitError: string | null = null;
+  const runtimeExternalTools = new ToolRegistry();
+  const runtimeMcpManager = new McpManager();
+  const connectRuntimeMcp = async (): Promise<void> => {
+    if (Object.keys(config.mcp.servers).length === 0) {
+      return;
+    }
+    try {
+      await runtimeMcpManager.connectAll(config.mcp, runtimeExternalTools);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[mcp] runtime connect failed: ${message}\n`);
+    }
+  };
+  void connectRuntimeMcp();
 
   try {
     const bus = new MessageBus();
@@ -410,16 +450,26 @@ async function main(): Promise<void> {
       restrictToWorkspace: config.tools.restrictToWorkspace,
       config,
       maxConcurrent: config.agents.subagentConcurrency.maxConcurrent,
+      externalToolRegistry: runtimeExternalTools,
     });
     const engine = new WorkflowEngine({
       bus,
       subagents,
       workspace,
       config,
+      onSnapshot: async (snapshot) => {
+        await workflowRunHistory.save(snapshot);
+        runtimeStore.upsertRun(snapshot);
+      },
+      onActivity: async (activity) => {
+        await workflowRunActivityHistory.append(activity.runId, activity);
+        runtimeStore.upsertActivity(activity);
+      },
     });
     runtime = new UiRuntimeState({
       bus,
       engine,
+      store: runtimeStore,
     });
   } catch (error) {
     runtimeInitError = error instanceof Error ? error.message : String(error);
@@ -478,6 +528,7 @@ async function main(): Promise<void> {
           config,
           runtimeAvailable: runtime !== null,
           runtimeInitError,
+          extraToolIds: runtimeExternalTools.names,
         });
         sendJson(res, 200, { ok: true, data: catalog });
         return;
@@ -591,18 +642,23 @@ async function main(): Promise<void> {
       }
 
       if (pathname === "/api/runtime/hitl/approvals" && method === "GET") {
-        if (!runtime) {
-          sendJson(res, 503, {
-            ok: false,
-            message: runtimeInitError ?? "Runtime workflow is unavailable.",
-          });
-          return;
-        }
         const pendingOnly = requestUrl.searchParams.get("pendingOnly") === "true";
+        const liveApprovals = runtime ? runtime.listApprovals({ pendingOnly }) : [];
+        const persistedApprovals = runtimeStore.listApprovals({ pendingOnly });
+        const merged = new Map<string, (typeof liveApprovals)[number]>();
+        for (const approval of persistedApprovals) {
+          merged.set(approval.approvalId, approval);
+        }
+        for (const approval of liveApprovals) {
+          merged.set(approval.approvalId, approval);
+        }
+        const approvals = Array.from(merged.values()).sort((a, b) =>
+          b.requestedAt.localeCompare(a.requestedAt),
+        );
         sendJson(res, 200, {
           ok: true,
           data: {
-            approvals: runtime.listApprovals({ pendingOnly }),
+            approvals,
           },
         });
         return;
@@ -681,42 +737,68 @@ async function main(): Promise<void> {
       }
 
       if (pathname === "/api/runtime/workflows/runs" && method === "GET") {
-        if (!runtime) {
-          sendJson(res, 503, {
-            ok: false,
-            message: runtimeInitError ?? "Runtime workflow is unavailable.",
-          });
-          return;
+        const limitRaw = requestUrl.searchParams.get("limit");
+        const limit = limitRaw ? asPositiveInt(limitRaw, 200) : 0;
+        const fetchLimit = limit > 0 ? Math.max(limit, 500) : 5_000;
+        const sqliteRuns = runtimeStore.listRuns({ limit: fetchLimit });
+        const historyRuns = await workflowRunHistory.list({ limit: fetchLimit });
+        const liveRuns = runtime ? runtime.listRuns({ limit: fetchLimit }) : [];
+        const merged = new Map<string, (typeof liveRuns)[number]>();
+        for (const run of sqliteRuns) {
+          merged.set(run.runId, run);
         }
-
-        const limit = asPositiveInt(requestUrl.searchParams.get("limit"), 200);
+        for (const run of historyRuns) {
+          merged.set(run.runId, run);
+        }
+        for (const run of liveRuns) {
+          merged.set(run.runId, run);
+        }
+        const sortedRuns = Array.from(merged.values()).sort((a, b) =>
+          b.startedAt.localeCompare(a.startedAt),
+        );
+        const normalizedRuns: Array<(typeof sortedRuns)[number]> = [];
+        for (const item of sortedRuns) {
+          const recovered = recoverRunSnapshot(item);
+          if (recovered.recovered) {
+            await persistRecoveredRunSnapshot({
+              snapshot: recovered.snapshot,
+              runtimeStore,
+              workflowRunHistory,
+            });
+            normalizedRuns.push(recovered.snapshot);
+            continue;
+          }
+          normalizedRuns.push(item);
+        }
+        const runs = limit > 0 ? normalizedRuns.slice(0, limit) : normalizedRuns;
         sendJson(res, 200, {
           ok: true,
           data: {
-            runs: runtime.listRuns({ limit }),
+            runs,
           },
         });
         return;
       }
 
       if (pathname === "/api/runtime/traces" && method === "GET") {
-        if (!runtime) {
-          sendJson(res, 503, {
-            ok: false,
-            message: runtimeInitError ?? "Runtime workflow is unavailable.",
-          });
-          return;
-        }
-
         const limit = asPositiveInt(requestUrl.searchParams.get("limit"), 200);
         const runId = requestUrl.searchParams.get("runId")?.trim() || undefined;
+        const sqliteTraces = runtimeStore.listTraces({ runId, limit });
+        const liveTraces = runtime ? runtime.listTraces({ runId, limit }) : [];
+        const merged = new Map<string, (typeof liveTraces)[number]>();
+        for (const trace of sqliteTraces) {
+          merged.set(trace.id, trace);
+        }
+        for (const trace of liveTraces) {
+          merged.set(trace.id, trace);
+        }
+        const traces = Array.from(merged.values())
+          .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+          .slice(0, limit);
         sendJson(res, 200, {
           ok: true,
           data: {
-            traces: runtime.listTraces({
-              runId,
-              limit,
-            }),
+            traces,
           },
         });
         return;
@@ -970,37 +1052,69 @@ async function main(): Promise<void> {
       }
 
       if (pathname.startsWith("/api/runtime/workflows/") && method === "GET") {
-        if (!runtime) {
-          sendJson(res, 503, {
-            ok: false,
-            message: runtimeInitError ?? "Runtime workflow is unavailable.",
-          });
-          return;
-        }
         const runId = pathname.replace("/api/runtime/workflows/", "").trim();
         if (!runId || runId.includes("/")) {
           sendJson(res, 404, { ok: false, message: "Run not found" });
           return;
         }
-        const run = runtime.getRun(runId);
-        if (!run) {
+        const runRecord =
+          runtime?.getRun(runId) ??
+          runtimeStore.getRun(runId) ??
+          (await workflowRunHistory.load(runId));
+        if (!runRecord) {
           sendJson(res, 404, { ok: false, message: "Run not found" });
           return;
         }
+        const recoveredRun = recoverRunSnapshot(runRecord);
+        const run = recoveredRun.snapshot;
+        if (recoveredRun.recovered) {
+          await persistRecoveredRunSnapshot({
+            snapshot: run,
+            runtimeStore,
+            workflowRunHistory,
+          });
+        }
         const traceLimit = asPositiveInt(requestUrl.searchParams.get("traceLimit"), 200);
         const activityLimit = asPositiveInt(requestUrl.searchParams.get("activityLimit"), 100);
+        const sqliteTraces = runtimeStore.listTraces({ runId, limit: traceLimit });
+        const liveTraces = runtime?.listTraces({ runId, limit: traceLimit }) ?? [];
+        const traceMap = new Map<string, (typeof liveTraces)[number]>();
+        for (const trace of sqliteTraces) {
+          traceMap.set(trace.id, trace);
+        }
+        for (const trace of liveTraces) {
+          traceMap.set(trace.id, trace);
+        }
+        const traces = Array.from(traceMap.values())
+          .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+          .slice(0, traceLimit);
+
+        const persistedActivities = await workflowRunActivityHistory.list(runId, { limit: activityLimit });
+        const sqliteActivities = runtimeStore.listActivities({ runId, limit: activityLimit });
+        const liveActivities =
+          runtime?.listRunActivities({
+            runId,
+            limit: activityLimit,
+          }) ?? [];
+        const activityMap = new Map<string, (typeof liveActivities)[number]>();
+        for (const item of sqliteActivities) {
+          activityMap.set(item.id, item);
+        }
+        for (const item of persistedActivities) {
+          activityMap.set(item.id, item);
+        }
+        for (const item of liveActivities) {
+          activityMap.set(item.id, item);
+        }
+        const activities = Array.from(activityMap.values())
+          .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+          .slice(0, activityLimit);
         sendJson(res, 200, {
           ok: true,
           data: {
             run,
-            traces: runtime.listTraces({
-              runId,
-              limit: traceLimit,
-            }),
-            activities: runtime.listRunActivities({
-              runId,
-              limit: activityLimit,
-            }),
+            traces,
+            activities,
           },
         });
         return;

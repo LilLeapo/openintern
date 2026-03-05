@@ -9,6 +9,8 @@ import { MessageBus } from "../src/bus/message-bus.js";
 import { DEFAULT_CONFIG } from "../src/config/schema.js";
 import type { ChatRequest, LLMProvider, LLMResponse } from "../src/llm/provider.js";
 import { MemUClient } from "../src/agent/memory/memu-client.js";
+import { Tool } from "../src/tools/core/tool.js";
+import { ToolRegistry } from "../src/tools/core/tool-registry.js";
 
 class StaticProvider implements LLMProvider {
   constructor(private readonly content: string) {}
@@ -200,6 +202,56 @@ class HighRiskOnlyProvider implements LLMProvider {
         },
       ],
     };
+  }
+}
+
+class ExternalMcpProvider implements LLMProvider {
+  getDefaultModel(): string {
+    return "external-mcp";
+  }
+
+  async chat(request: ChatRequest): Promise<LLMResponse> {
+    const hasToolResult = request.messages.some(
+      (message) => message.role === "tool" && message.name === "lark-mcp__wiki_query",
+    );
+    if (hasToolResult) {
+      return {
+        content: "{\"ok\":true}",
+        toolCalls: [],
+      };
+    }
+    return {
+      content: null,
+      toolCalls: [
+        {
+          id: "tc_mcp_1",
+          name: "lark-mcp__wiki_query",
+          arguments: {
+            q: "AEM",
+          },
+        },
+      ],
+    };
+  }
+}
+
+class FakeExternalMcpTool extends Tool {
+  readonly name = "lark-mcp__wiki_query";
+  readonly description = "fake mcp query";
+  readonly parameters = {
+    type: "object",
+    properties: {
+      q: {
+        type: "string",
+      },
+    },
+    required: ["q"],
+  } as const;
+
+  async execute(params: Record<string, unknown>): Promise<string> {
+    return JSON.stringify({
+      summary: `mcp:${String(params.q ?? "")}`,
+    });
   }
 }
 
@@ -660,5 +712,37 @@ describe("SubagentManager", () => {
 
     await waitFor(() => cancelled.length === 1, 2000);
     await waitFor(() => failed.length === 1, 2000);
+  });
+
+  it("supports external MCP-style tools in role allowlist", async () => {
+    const workspace = await makeWorkspace();
+    const bus = new MessageBus();
+    const externalTools = new ToolRegistry();
+    externalTools.register(new FakeExternalMcpTool());
+    const config = makeConfig();
+    config.roles.researcher.allowedTools = ["lark-mcp__wiki_query"];
+
+    const manager = new SubagentManager({
+      provider: new ExternalMcpProvider(),
+      workspace,
+      bus,
+      model: "external-mcp",
+      temperature: 0.1,
+      maxTokens: 128,
+      reasoningEffort: null,
+      config,
+      externalToolRegistry: externalTools,
+    });
+
+    await manager.spawn({
+      task: "query with mcp",
+      role: "researcher",
+      originChannel: "cli",
+      originChatId: "direct",
+      sessionKey: "cli:direct",
+    });
+
+    const inbound = await bus.consumeInbound(1000);
+    expect(inbound?.content).toContain("{\"ok\":true}");
   });
 });
