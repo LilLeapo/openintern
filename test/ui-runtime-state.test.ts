@@ -68,6 +68,26 @@ function completedEvent(input: {
   };
 }
 
+function failedEvent(input: {
+  taskId: string;
+  runId: string;
+  nodeId: string;
+  result: string;
+}): SubagentTaskEvent {
+  return {
+    type: "SUBAGENT_TASK_FAILED",
+    taskId: input.taskId,
+    role: "scientist",
+    label: input.taskId,
+    task: "task",
+    status: "error",
+    result: input.result,
+    originChannel: "workflow",
+    originChatId: `${input.runId}:${input.nodeId}`,
+    timestamp: new Date(),
+  };
+}
+
 describe("UiRuntimeState", () => {
   it("tracks runs and traces from workflow execution", async () => {
     const bus = new MessageBus();
@@ -193,6 +213,60 @@ describe("UiRuntimeState", () => {
 
     const limited = runtime.listTraces({ runId: started.runId, limit: 1 });
     expect(limited.length).toBe(1);
+
+    runtime.close();
+    engine.close();
+  });
+
+  it("records subagent failure reason in trace details", async () => {
+    const bus = new MessageBus();
+    const engine = new WorkflowEngine({
+      bus,
+      subagents: new FakeSubagentManager(),
+      workspace: process.cwd(),
+      config: structuredClone(DEFAULT_CONFIG),
+    });
+    const runtime = new UiRuntimeState({ bus, engine });
+
+    const started = await runtime.startWorkflow({
+      definition: {
+        id: "wf_runtime_fail_trace",
+        trigger: { type: "manual" },
+        nodes: [
+          {
+            id: "node_main",
+            role: "scientist",
+            taskPrompt: "Do work",
+            dependsOn: [],
+            outputKeys: ["ok"],
+          },
+        ],
+      },
+      triggerInput: {},
+      originChannel: "ui",
+      originChatId: "studio",
+    });
+
+    await waitFor(() => {
+      const snapshot = runtime.getRun(started.runId);
+      return Boolean(snapshot && snapshot.activeTaskIds.length > 0);
+    });
+    const activeTaskId = runtime.getRun(started.runId)?.activeTaskIds[0];
+    expect(activeTaskId).toBeDefined();
+
+    await bus.emitSubagentEvent(
+      failedEvent({
+        taskId: String(activeTaskId),
+        runId: started.runId,
+        nodeId: "node_main",
+        result: "tool exec failed: exit code 2",
+      }),
+    );
+
+    await waitFor(() => runtime.getRun(started.runId)?.status === "failed");
+    const traces = runtime.listTraces({ runId: started.runId });
+    const failedTrace = traces.find((trace) => trace.type === "subagent.task.failed");
+    expect(failedTrace?.details).toContain("error=tool exec failed: exit code 2");
 
     runtime.close();
     engine.close();

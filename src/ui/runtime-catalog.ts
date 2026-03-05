@@ -6,13 +6,16 @@ export interface RuntimeCatalogTool {
   name: string;
   description: string;
   riskLevel: "low" | "high";
-  source: "builtin";
+  source: "builtin" | "mcp";
 }
 
 export interface RuntimeCatalogRole {
   id: string;
   systemPrompt: string;
   allowedTools: string[];
+  memoryScope: "chat" | "papers";
+  maxIterations: number;
+  workspaceIsolation: boolean;
 }
 
 export interface RuntimeCatalogSkill {
@@ -48,11 +51,14 @@ function roleCatalog(config: AppConfig): RuntimeCatalogRole[] {
       id,
       systemPrompt: role.systemPrompt,
       allowedTools: Array.from(new Set(role.allowedTools)),
+      memoryScope: role.memoryScope,
+      maxIterations: role.maxIterations ?? 15,
+      workspaceIsolation: role.workspaceIsolation ?? false,
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function toolCatalog(config: AppConfig): RuntimeCatalogTool[] {
+function toolCatalog(config: AppConfig, externalToolIds: string[]): RuntimeCatalogTool[] {
   const union = new Set<string>();
   for (const role of Object.values(config.roles)) {
     for (const toolId of role.allowedTools) {
@@ -71,14 +77,19 @@ function toolCatalog(config: AppConfig): RuntimeCatalogTool[] {
   for (const toolId of runtimeBuiltins) {
     union.add(toolId);
   }
+  for (const toolId of externalToolIds) {
+    union.add(toolId);
+  }
 
   return Array.from(union)
     .sort((a, b) => a.localeCompare(b))
     .map((toolId) => ({
       id: toolId,
       name: toolId,
-      description: "Runtime built-in tool",
-      source: "builtin" as const,
+      description: externalToolIds.includes(toolId)
+        ? "Runtime MCP tool"
+        : "Runtime built-in tool",
+      source: (externalToolIds.includes(toolId) ? "mcp" : "builtin") as "mcp" | "builtin",
       riskLevel: inferRisk(toolId),
     }));
 }
@@ -88,9 +99,17 @@ export async function buildRuntimeCatalog(options: {
   config: AppConfig;
   runtimeAvailable: boolean;
   runtimeInitError: string | null;
+  extraToolIds?: string[];
 }): Promise<RuntimeCatalog> {
   const roles = roleCatalog(options.config);
-  const tools = toolCatalog(options.config);
+  const externalToolIds = Array.from(
+    new Set(
+      (options.extraToolIds ?? [])
+        .map((toolId) => toolId.trim())
+        .filter((toolId) => toolId.length > 0),
+    ),
+  );
+  const tools = toolCatalog(options.config, externalToolIds);
   const skillsLoader = new SkillsLoader(options.workspace);
   const skills = await skillsLoader.listSkillsCatalog();
 

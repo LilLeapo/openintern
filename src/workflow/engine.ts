@@ -16,6 +16,7 @@ import type {
   SpawnTaskResult,
   SubagentManager,
 } from "../agent/subagent/manager.js";
+import type { WorkflowRunActivityRecord } from "./run-activity-history.js";
 import { extractJsonObject, interpolateTemplate } from "./interpolation.js";
 import {
   parseWorkflowDefinition,
@@ -182,6 +183,8 @@ export class WorkflowEngine {
   private readonly subagents: SpawnOnlySubagentManager;
   private readonly config: AppConfig;
   private readonly skillsLoader: SkillsLoader;
+  private readonly onSnapshot?: (snapshot: WorkflowRunSnapshot) => void | Promise<void>;
+  private readonly onActivity?: (activity: WorkflowRunActivityRecord) => void | Promise<void>;
   private readonly runs = new Map<string, RunRuntimeState>();
   private readonly taskIndex = new Map<string, TrackedTask>();
   private readonly runWorkChains = new Map<string, Promise<void>>();
@@ -192,11 +195,15 @@ export class WorkflowEngine {
     subagents: SpawnOnlySubagentManager;
     workspace: string;
     config: AppConfig;
+    onSnapshot?: (snapshot: WorkflowRunSnapshot) => void | Promise<void>;
+    onActivity?: (activity: WorkflowRunActivityRecord) => void | Promise<void>;
   }) {
     this.bus = options.bus;
     this.subagents = options.subagents;
     this.config = options.config;
     this.skillsLoader = new SkillsLoader(options.workspace);
+    this.onSnapshot = options.onSnapshot;
+    this.onActivity = options.onActivity;
     this.unsubscribers = [
       this.bus.onSubagentEvent(async (event) => {
         await this.onSubagentEvent(event);
@@ -267,6 +274,7 @@ export class WorkflowEngine {
     };
 
     this.runs.set(runId, state);
+    this.emitSnapshot(runId);
     void this.enqueueRunWork(runId, async () => {
       await this.scheduleRun(runId);
     });
@@ -388,6 +396,7 @@ export class WorkflowEngine {
       this.clearRunTimers(run);
       if (run.status === "running" || run.status === "waiting_for_approval") {
         this.finishRun(run, "cancelled", "Workflow engine closed before completion.");
+        this.emitSnapshot(run.runId);
       }
     }
   }
@@ -440,6 +449,22 @@ export class WorkflowEngine {
       this.taskIndex.delete(event.taskId);
       run.activeTaskIds.delete(event.taskId);
       node.currentTaskId = null;
+
+      this.emitActivity({
+        id: `activity_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+        runId: run.runId,
+        nodeId: tracked.nodeId,
+        taskId: event.taskId,
+        role: event.role,
+        label: event.label,
+        task: event.task,
+        status: event.status,
+        result: event.result,
+        type: event.type === "SUBAGENT_TASK_COMPLETED" ? "subagent.task.completed" : "subagent.task.failed",
+        timestamp: event.timestamp.toISOString(),
+        messages: event.messages ?? [],
+        toolCalls: event.toolCalls ?? [],
+      });
 
       if (event.type === "SUBAGENT_TASK_COMPLETED") {
         try {
@@ -593,7 +618,10 @@ export class WorkflowEngine {
       .catch(() => {
         // Keep execution chain alive after failures.
       })
-      .then(work)
+      .then(async () => {
+        await work();
+        this.emitSnapshot(runId);
+      })
       .finally(() => {
         if (this.runWorkChains.get(runId) === current) {
           this.runWorkChains.delete(runId);
@@ -631,7 +659,30 @@ export class WorkflowEngine {
     const allDone = Array.from(run.nodes.values()).every((node) => node.status === "completed");
     if (allDone) {
       this.finishRun(run, "completed");
+      return;
     }
+
+    if (run.activeTaskIds.size > 0 || this.hasPendingApprovals(run)) {
+      return;
+    }
+
+    const hasRunningNodes = Array.from(run.nodes.values()).some(
+      (node) => node.status === "running" || node.status === "waiting_for_approval",
+    );
+    const nextReady = this.pickReadyNode(run);
+    if (nextReady || !hasRunningNodes) {
+      return;
+    }
+
+    const blocked = Array.from(run.nodes.values())
+      .filter((node) => node.status !== "completed")
+      .map((node) => `${node.definition.id}:${node.status}`)
+      .join(", ");
+    this.finishRun(
+      run,
+      "failed",
+      `Workflow '${run.definition.id}' became unschedulable: no active tasks but nodes still running/waiting. Remaining nodes: ${blocked}`,
+    );
   }
 
   private pickReadyNode(run: RunRuntimeState): NodeRuntimeState | null {
@@ -822,6 +873,42 @@ ${outputKeyHint}`;
       outputs: structuredClone(run.outputs),
       ...(run.error ? { error: run.error } : {}),
     });
+  }
+
+  private emitSnapshot(runId: string): void {
+    if (!this.onSnapshot) {
+      return;
+    }
+    const snapshot = this.getRunSnapshot(runId);
+    if (!snapshot) {
+      return;
+    }
+    try {
+      const maybePromise = this.onSnapshot(snapshot);
+      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+        void (maybePromise as Promise<void>).catch(() => {
+          // Best effort snapshot persistence.
+        });
+      }
+    } catch {
+      // Best effort snapshot persistence.
+    }
+  }
+
+  private emitActivity(activity: WorkflowRunActivityRecord): void {
+    if (!this.onActivity) {
+      return;
+    }
+    try {
+      const maybePromise = this.onActivity(activity);
+      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+        void (maybePromise as Promise<void>).catch(() => {
+          // Best effort activity persistence.
+        });
+      }
+    } catch {
+      // Best effort activity persistence.
+    }
   }
 
   private clearRunTimers(run: RunRuntimeState): void {
