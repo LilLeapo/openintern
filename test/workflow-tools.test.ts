@@ -205,4 +205,50 @@ describe("workflow builtin tools", () => {
     const output = await query.execute({ instance_id: "missing" });
     expect(output).toContain("not found");
   });
+
+  it("query_workflow_status falls back to persisted history", async () => {
+    const query = new QueryWorkflowStatusTool(
+      {
+        getRunSnapshot: () => null,
+        start: async () => {
+          throw new Error("not implemented");
+        },
+      },
+      {
+        load: async () => ({
+          runId: "run_1",
+          workflowId: "wf_demo",
+          status: "failed",
+          startedAt: "2026-03-05T10:00:00.000Z",
+          endedAt: "2026-03-05T10:01:00.000Z",
+          error: "boom",
+          execution: {
+            mode: "serial",
+            maxParallel: 1,
+          },
+          triggerInput: {},
+          originChannel: "cli",
+          originChatId: "direct",
+          activeTaskIds: [],
+          outputs: {},
+          approvals: [],
+          nodes: [
+            {
+              id: "node_1",
+              status: "failed",
+              attempt: 1,
+              maxAttempts: 1,
+              currentTaskId: null,
+              lastError: "boom",
+            },
+          ],
+        }),
+      },
+    );
+
+    const output = await query.execute({ instance_id: "run_1" });
+    const parsed = JSON.parse(output) as { ok: boolean; from_history: boolean };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.from_history).toBe(true);
+  });
 });
