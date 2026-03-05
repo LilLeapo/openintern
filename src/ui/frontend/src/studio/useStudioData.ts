@@ -228,7 +228,7 @@ export function useStudioData() {
   }, []);
 
   const fetchRuns = useCallback(async () => {
-    const data = await api<{ runs: WorkflowRunSnapshot[] }>("/api/runtime/workflows/runs?limit=200");
+    const data = await api<{ runs: WorkflowRunSnapshot[] }>("/api/runtime/workflows/runs");
     return data.runs;
   }, []);
 
@@ -565,12 +565,13 @@ export function useStudioData() {
     [loadWorkflowDefs],
   );
 
-  const startRunFromEditor = useCallback(async () => {
+  const startRunFromEditor = useCallback(async (triggerInput?: Record<string, unknown>) => {
     const definition = parseWorkflowJson(workflowJson);
     const data = await api<{ runId: string; run: WorkflowRunSnapshot }>("/api/runtime/workflows/start", {
       method: "POST",
       body: JSON.stringify({
         definition,
+        triggerInput,
       }),
     });
     setRuns((prev) => upsertByKey(prev, data.run, (item) => item.runId));

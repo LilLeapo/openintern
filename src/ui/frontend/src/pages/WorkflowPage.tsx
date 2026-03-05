@@ -260,11 +260,14 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
   const [selectedWorkflowRef, setSelectedWorkflowRef] = useState<string>("editor");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [publishWorkflowId, setPublishWorkflowId] = useState("");
+  const [triggerInputText, setTriggerInputText] = useState("");
   const [showJsonEditor, setShowJsonEditor] = useState(false);
   const [syncSelectionAfterSave, setSyncSelectionAfterSave] = useState(false);
 
   const {
     roles,
+    tools,
+    skills,
     runtimeAvailable,
     runtimeInitError,
     draftDefs,
@@ -315,6 +318,54 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
 
   const selectedNode =
     editorDefinition && selectedNodeIndex >= 0 ? editorDefinition.nodes[selectedNodeIndex] ?? null : null;
+  const roleById = useMemo(
+    () => new Map(roles.map((role) => [role.id, role] as const)),
+    [roles],
+  );
+  const selectedRole = selectedNode ? roleById.get(selectedNode.role) ?? null : null;
+  const selectableTools = useMemo(() => {
+    const ids = new Set<string>();
+    const out: typeof tools = [];
+    for (const tool of tools) {
+      if (!ids.has(tool.id)) {
+        ids.add(tool.id);
+        out.push(tool);
+      }
+    }
+    return out;
+  }, [tools]);
+  const selectableSkills = useMemo(() => {
+    const names = new Set<string>();
+    const out = skills.map((skill) => {
+      names.add(skill.name);
+      return {
+        name: skill.name,
+        available: skill.available,
+        source: skill.source,
+      };
+    });
+    for (const name of selectedNode?.skillNames ?? []) {
+      if (name.trim().length === 0 || names.has(name)) {
+        continue;
+      }
+      out.push({
+        name,
+        available: false,
+        source: "workspace" as const,
+      });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }, [skills, selectedNode?.skillNames]);
+  const roleAllowedTools = useMemo(() => {
+    if (!selectedRole) {
+      return selectableTools;
+    }
+    const allowed = new Set(selectedRole.allowedTools);
+    return selectableTools.filter((tool) => allowed.has(tool.id));
+  }, [selectedRole, selectableTools]);
+  const mcpToolsForNode = useMemo(() => roleAllowedTools.filter((tool) => tool.source === "mcp"), [roleAllowedTools]);
+  const requiresTriggerInput =
+    editorDefinition?.nodes.some((node) => node.taskPrompt.includes("{{trigger.input}}")) ?? false;
 
   useEffect(() => {
     if (!editorDefinition || editorDefinition.nodes.length === 0) {
@@ -346,6 +397,41 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
         index === selectedNodeIndex ? updater(node) : node,
       ),
     }));
+  };
+
+  const toggleSelectedNodeSkill = (skillName: string, checked: boolean) => {
+    updateSelectedNode((node) => {
+      const next = new Set(node.skillNames ?? []);
+      if (checked) {
+        next.add(skillName);
+      } else {
+        next.delete(skillName);
+      }
+      return {
+        ...node,
+        skillNames: Array.from(next).sort((a, b) => a.localeCompare(b)),
+      };
+    });
+  };
+
+  const toggleSelectedNodeHighRiskTool = (toolId: string, checked: boolean) => {
+    updateSelectedNode((node) => {
+      const next = new Set(node.hitl?.highRiskTools ?? []);
+      if (checked) {
+        next.add(toolId);
+      } else {
+        next.delete(toolId);
+      }
+      return {
+        ...node,
+        hitl: {
+          enabled: node.hitl?.enabled === true,
+          highRiskTools: Array.from(next).sort((a, b) => a.localeCompare(b)),
+          approvalTarget: node.hitl?.approvalTarget ?? "owner",
+          approvalTimeoutMs: node.hitl?.approvalTimeoutMs,
+        },
+      };
+    });
   };
 
   const onLoadWorkflowRef = async (value: string) => {
@@ -402,8 +488,15 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
   };
 
   const onRunEditor = async () => {
+    const input = triggerInputText.trim();
+    if (requiresTriggerInput && !input) {
+      notify("该工作流依赖 {{trigger.input}}，请先填写触发输入。", "error");
+      return;
+    }
     try {
-      await startRunFromEditor();
+      await startRunFromEditor({
+        input,
+      });
       notify("已触发模拟运行（当前图）");
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error), "error");
@@ -440,8 +533,9 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
         {
           id: nextId,
           role: roles[0]?.id ?? "scientist",
-          taskPrompt: "Describe this node task and return JSON output.",
+          taskPrompt: "Describe this node task and return JSON with key 'result'.",
           dependsOn: [],
+          outputKeys: ["result"],
           hitl: {
             enabled: false,
             highRiskTools: [],
@@ -641,7 +735,7 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
               </div>
             </div>
 
-            <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(0,1fr)_220px]">
+            <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(0,1fr)_220px_minmax(0,1fr)]">
               <label className="text-xs text-slate-600">
                 选择 Workflow
                 <select
@@ -675,6 +769,16 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
                   value={publishWorkflowId}
                   onChange={(event) => setPublishWorkflowId(event.target.value)}
                   placeholder={selectedDraftId ?? "wf_example"}
+                  className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+
+              <label className="text-xs text-slate-600">
+                触发输入 trigger.input
+                <input
+                  value={triggerInputText}
+                  onChange={(event) => setTriggerInputText(event.target.value)}
+                  placeholder="例如：AEM层在什么情况下干装优于湿装？"
                   className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
                 />
               </label>
@@ -826,6 +930,31 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
               />
             </label>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+              <p className="text-xs font-semibold text-slate-700">role 可用工具</p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {(selectedRole?.allowedTools.length ?? 0) === 0 ? (
+                  <span className="text-[11px] text-slate-500">当前 role 未声明 allowedTools</span>
+                ) : (
+                  selectedRole?.allowedTools.map((toolId) => {
+                    const toolMeta = selectableTools.find((item) => item.id === toolId) ?? null;
+                    return (
+                      <span
+                        key={`${selectedNode.id}:role-tool:${toolId}`}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                      >
+                        {toolId}
+                        {toolMeta?.source === "mcp" ? (
+                          <span className="rounded-full border border-violet-300 bg-violet-100 px-1 text-[10px] text-violet-700">
+                            MCP
+                          </span>
+                        ) : null}
+                      </span>
+                    );
+                  })
+                )}
+              </div>
+            </div>
 
             <label className="text-xs text-slate-600">
               taskPrompt
@@ -836,6 +965,59 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
                   updateSelectedNode((node) => ({
                     ...node,
                     taskPrompt: event.target.value,
+                  }))
+                }
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
+              />
+            </label>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+              <p className="text-xs font-semibold text-slate-700">skillNames</p>
+              <div className="mt-1 flex max-h-36 flex-wrap gap-1 overflow-auto">
+                {selectableSkills.length === 0 ? (
+                  <span className="text-[11px] text-slate-500">暂无技能</span>
+                ) : (
+                  selectableSkills.map((skill) => {
+                    const checked = (selectedNode.skillNames ?? []).includes(skill.name);
+                    return (
+                      <label
+                        key={`${selectedNode.id}:skill:${skill.name}`}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => toggleSelectedNodeSkill(skill.name, event.target.checked)}
+                        />
+                        {skill.name}
+                        {skill.source === "builtin" ? (
+                          <span className="rounded-full border border-blue-300 bg-blue-100 px-1 text-[10px] text-blue-700">
+                            builtin
+                          </span>
+                        ) : null}
+                        {!skill.available ? (
+                          <span className="rounded-full border border-red-300 bg-red-100 px-1 text-[10px] text-red-700">
+                            blocked
+                          </span>
+                        ) : null}
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <label className="text-xs text-slate-600">
+              outputKeys（逗号分隔）
+              <input
+                value={(selectedNode.outputKeys ?? []).join(",")}
+                onChange={(event) =>
+                  updateSelectedNode((node) => ({
+                    ...node,
+                    outputKeys: event.target.value
+                      .split(",")
+                      .map((item) => item.trim())
+                      .filter((item) => item.length > 0),
                   }))
                 }
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm"
@@ -900,27 +1082,66 @@ export function WorkflowPage({ studio, notify }: WorkflowPageProps) {
               </label>
 
               {selectedNode.hitl?.enabled ? (
-                <label className="mt-2 block text-xs text-slate-600">
-                  highRiskTools（逗号分隔）
-                  <input
-                    value={selectedNode.hitl.highRiskTools.join(",")}
-                    onChange={(event) =>
-                      updateSelectedNode((node) => ({
-                        ...node,
-                        hitl: {
-                          enabled: true,
-                          highRiskTools: event.target.value
-                            .split(",")
-                            .map((tool) => tool.trim())
-                            .filter((tool) => tool.length > 0),
-                          approvalTarget: node.hitl?.approvalTarget ?? "owner",
-                          approvalTimeoutMs: node.hitl?.approvalTimeoutMs,
-                        },
-                      }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                  />
-                </label>
+                <>
+                  <p className="mt-2 text-xs font-semibold text-slate-700">
+                    highRiskTools（从当前 role 可用工具中选择）
+                  </p>
+                  <div className="mt-1 flex max-h-36 flex-wrap gap-1 overflow-auto">
+                    {roleAllowedTools.length === 0 ? (
+                      <span className="text-[11px] text-slate-500">当前 role 无可选工具</span>
+                    ) : (
+                      roleAllowedTools.map((tool) => {
+                        const checked = selectedNode.hitl?.highRiskTools.includes(tool.id) ?? false;
+                        return (
+                          <label
+                            key={`${selectedNode.id}:hitl:${tool.id}`}
+                            className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) =>
+                                toggleSelectedNodeHighRiskTool(tool.id, event.target.checked)
+                              }
+                            />
+                            {tool.id}
+                            {tool.source === "mcp" ? (
+                              <span className="rounded-full border border-violet-300 bg-violet-100 px-1 text-[10px] text-violet-700">
+                                MCP
+                              </span>
+                            ) : null}
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                  {mcpToolsForNode.length > 0 ? (
+                    <p className="mt-1 text-[11px] text-violet-700">
+                      当前 role 含 {mcpToolsForNode.length} 个 MCP 工具，可直接纳入 HITL 审批。
+                    </p>
+                  ) : null}
+                  <label className="mt-2 block text-xs text-slate-600">
+                    highRiskTools（手动补充，逗号分隔）
+                    <input
+                      value={selectedNode.hitl.highRiskTools.join(",")}
+                      onChange={(event) =>
+                        updateSelectedNode((node) => ({
+                          ...node,
+                          hitl: {
+                            enabled: true,
+                            highRiskTools: event.target.value
+                              .split(",")
+                              .map((tool) => tool.trim())
+                              .filter((tool) => tool.length > 0),
+                            approvalTarget: node.hitl?.approvalTarget ?? "owner",
+                            approvalTimeoutMs: node.hitl?.approvalTimeoutMs,
+                          },
+                        }))
+                      }
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                    />
+                  </label>
+                </>
               ) : null}
             </div>
 

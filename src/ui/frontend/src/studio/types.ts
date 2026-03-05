@@ -13,7 +13,7 @@ export interface ToolDefinition {
   id: string;
   name: string;
   description: string;
-  source: "builtin";
+  source: "builtin" | "mcp";
   riskLevel: ToolRiskLevel;
 }
 
@@ -21,6 +21,9 @@ export interface RoleSummary {
   id: string;
   systemPrompt: string;
   allowedTools: string[];
+  memoryScope: "chat" | "papers";
+  maxIterations: number;
+  workspaceIsolation: boolean;
 }
 
 export interface SkillSummary {
@@ -277,8 +280,9 @@ export const starterWorkflow: ExecutableWorkflowDefinition = {
       id: "node_main",
       name: "Main task",
       role: "scientist",
-      taskPrompt: "Process {{trigger.input}} and return a JSON object.",
+      taskPrompt: "Process {{trigger.input}} and return JSON with key 'result'.",
       dependsOn: [],
+      outputKeys: ["result"],
       hitl: {
         enabled: false,
         highRiskTools: [],

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import type { StudioData } from "../studio/useStudioData";
+import type { EditableRoleInput, RoleSummary } from "../studio/types";
 
 interface RegistryPageProps {
   studio: StudioData;
@@ -8,7 +9,7 @@ interface RegistryPageProps {
 }
 
 export function RegistryPage({ studio, notify }: RegistryPageProps) {
-  const { roles, tools, skills, createRole, optimizeRole } = studio;
+  const { roles, tools, skills, createRole, optimizeRole, refreshAll } = studio;
 
   const [roleId, setRoleId] = useState("role_custom");
   const [systemPrompt, setSystemPrompt] = useState(
@@ -20,6 +21,7 @@ export function RegistryPage({ studio, notify }: RegistryPageProps) {
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [optimizeInstruction, setOptimizeInstruction] = useState("");
   const [optimizing, setOptimizing] = useState(false);
+  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
 
   const roleIds = useMemo(() => new Set(roles.map((role) => role.id)), [roles]);
 
@@ -35,16 +37,42 @@ export function RegistryPage({ studio, notify }: RegistryPageProps) {
     });
   };
 
+  const resetEditor = () => {
+    setRoleId("role_custom");
+    setSystemPrompt(
+      "You are a domain specialist. Think carefully, then return concise structured outputs.",
+    );
+    setSelectedTools([]);
+    setMemoryScope("chat");
+    setMaxIterations(15);
+    setWorkspaceIsolation(false);
+    setEditingRoleId(null);
+  };
+
+  const loadRoleToEditor = (role: RoleSummary) => {
+    setRoleId(role.id);
+    setSystemPrompt(role.systemPrompt);
+    setSelectedTools(role.allowedTools);
+    setMemoryScope(role.memoryScope);
+    setMaxIterations(role.maxIterations);
+    setWorkspaceIsolation(role.workspaceIsolation);
+    setEditingRoleId(role.id);
+  };
+
   const onSaveRole = async () => {
     try {
-      await createRole({
+      const payload: EditableRoleInput = {
         id: roleId,
         systemPrompt,
         allowedTools: selectedTools,
         memoryScope,
         maxIterations,
         workspaceIsolation,
+      };
+      await createRole({
+        ...payload,
       });
+      setEditingRoleId(roleId);
       notify(roleIds.has(roleId) ? `角色 ${roleId} 已更新` : `角色 ${roleId} 已新增`);
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error), "error");
@@ -83,11 +111,40 @@ export function RegistryPage({ studio, notify }: RegistryPageProps) {
   return (
     <section className="grid min-h-0 flex-1 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <div className="min-h-0 overflow-auto rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-panel">
-        <h2 className="text-base font-bold">Roles</h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-base font-bold">Roles</h2>
+          <button
+            type="button"
+            onClick={() => {
+              void refreshAll()
+                .then(() => notify("已刷新 catalog / roles"))
+                .catch((error) => notify(error instanceof Error ? error.message : String(error), "error"));
+            }}
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+          >
+            刷新目录
+          </button>
+        </div>
         <p className="mt-1 text-sm text-slate-500">可手工新增/更新角色；保存后写入真实配置并立即可用于 workflow。</p>
 
         <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-          <h3 className="text-sm font-semibold text-slate-800">Role Editor</h3>
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-slate-800">Role Editor</h3>
+            <div className="flex items-center gap-2">
+              {editingRoleId ? (
+                <span className="rounded-full border border-blue-300 bg-blue-100 px-2 py-0.5 text-[10px] text-blue-700">
+                  editing: {editingRoleId}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={resetEditor}
+                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                新建角色
+              </button>
+            </div>
+          </div>
 
           <div className="mt-2 grid gap-2 md:grid-cols-2">
             <label className="text-xs text-slate-600">
@@ -204,9 +261,22 @@ export function RegistryPage({ studio, notify }: RegistryPageProps) {
           ) : (
             roles.map((role) => (
               <article key={role.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
-                <h3 className="font-semibold text-slate-800">{role.id}</h3>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-semibold text-slate-800">{role.id}</h3>
+                  <button
+                    type="button"
+                    onClick={() => loadRoleToEditor(role)}
+                    className="rounded-lg border border-blue-300 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
+                  >
+                    加载到编辑器
+                  </button>
+                </div>
                 <p className="mt-1 whitespace-pre-wrap text-slate-600">{role.systemPrompt}</p>
                 <p className="mt-2 text-slate-500">allowedTools: {role.allowedTools.join(", ") || "-"}</p>
+                <p className="mt-1 text-slate-500">
+                  memoryScope: {role.memoryScope} · maxIterations: {role.maxIterations} · workspaceIsolation:{" "}
+                  {role.workspaceIsolation ? "true" : "false"}
+                </p>
               </article>
             ))
           )}
@@ -226,15 +296,26 @@ export function RegistryPage({ studio, notify }: RegistryPageProps) {
               <article key={tool.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <h4 className="font-semibold text-slate-800">{tool.name}</h4>
-                  <span
-                    className={`rounded-full border px-2 py-0.5 text-[10px] ${
-                      tool.riskLevel === "high"
-                        ? "border-amber-300 bg-amber-100 text-amber-700"
-                        : "border-emerald-300 bg-emerald-100 text-emerald-700"
-                    }`}
-                  >
-                    {tool.riskLevel}
-                  </span>
+                  <div className="flex items-center gap-1">
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                        tool.source === "mcp"
+                          ? "border-violet-300 bg-violet-100 text-violet-700"
+                          : "border-slate-300 bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      {tool.source}
+                    </span>
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                        tool.riskLevel === "high"
+                          ? "border-amber-300 bg-amber-100 text-amber-700"
+                          : "border-emerald-300 bg-emerald-100 text-emerald-700"
+                      }`}
+                    >
+                      {tool.riskLevel}
+                    </span>
+                  </div>
                 </div>
                 <p className="mt-1 text-slate-500">{tool.description}</p>
               </article>
