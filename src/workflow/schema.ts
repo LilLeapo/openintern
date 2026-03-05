@@ -64,6 +64,8 @@ export interface NormalizedWorkflowDefinition
   nodes: NormalizedWorkflowNodeDefinition[];
 }
 
+const INTERPOLATION_PATTERN = /\{\{\s*([^{}\s]+)\s*\}\}/g;
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -262,6 +264,71 @@ function parseExecution(value: unknown, nodeCount: number): WorkflowExecution {
   };
 }
 
+function extractInterpolationExpressions(taskPrompt: string): string[] {
+  const out: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = INTERPOLATION_PATTERN.exec(taskPrompt)) !== null) {
+    const expr = match[1]?.trim();
+    if (!expr) {
+      continue;
+    }
+    out.push(expr);
+  }
+  return out;
+}
+
+function validateInterpolationReferences(definition: NormalizedWorkflowDefinition): void {
+  const nodeById = new Map(definition.nodes.map((node) => [node.id, node]));
+  for (const node of definition.nodes) {
+    const expressions = extractInterpolationExpressions(node.taskPrompt);
+    for (const expr of expressions) {
+      const segments = expr.split(".").filter((segment) => segment.length > 0);
+      if (segments.length < 2) {
+        throw new Error(
+          `Workflow node '${node.id}' has invalid interpolation '{{${expr}}}'. Use {{trigger.xxx}} or {{nodeId.key}}.`,
+        );
+      }
+
+      const [prefix, key] = segments;
+      if (prefix === "trigger") {
+        continue;
+      }
+
+      const sourceNode = nodeById.get(prefix);
+      if (!sourceNode) {
+        throw new Error(
+          `Workflow node '${node.id}' references unknown interpolation source node '${prefix}' in '{{${expr}}}'.`,
+        );
+      }
+      if (!node.dependsOn.includes(prefix)) {
+        throw new Error(
+          `Workflow node '${node.id}' references '{{${expr}}}' but '${prefix}' is not listed in dependsOn.`,
+        );
+      }
+
+      if (sourceNode.outputKeys.length === 0) {
+        throw new Error(
+          `Workflow node '${node.id}' references '{{${expr}}}', but source node '${prefix}' does not declare outputKeys. ` +
+            `Declare '${prefix}'.outputKeys to include '${key}'.`,
+        );
+      }
+
+      if (key === "output" && !sourceNode.outputKeys.includes("output")) {
+        throw new Error(
+          `Workflow node '${node.id}' uses '{{${expr}}}', but source node '${prefix}' does not declare outputKeys including 'output'. ` +
+            `Use a concrete key like '{{${prefix}.summary}}' and declare it in '${prefix}'.outputKeys.`,
+        );
+      }
+
+      if (sourceNode.outputKeys.length > 0 && !sourceNode.outputKeys.includes(key)) {
+        throw new Error(
+          `Workflow node '${node.id}' references '{{${expr}}}', but '${prefix}'.outputKeys does not include '${key}'.`,
+        );
+      }
+    }
+  }
+}
+
 export function topologicalSort(definition: NormalizedWorkflowDefinition): string[] {
   const nodes = definition.nodes;
   const nodeIds = new Set(nodes.map((node) => node.id));
@@ -349,5 +416,6 @@ export function parseWorkflowDefinition(input: unknown): NormalizedWorkflowDefin
   };
 
   topologicalSort(normalized);
+  validateInterpolationReferences(normalized);
   return normalized;
 }

@@ -40,6 +40,7 @@ describe("workflow schema hint", () => {
     expect(tool.description).toContain("role");
     expect(tool.description).toContain("taskPrompt");
     expect(tool.description).toContain("dependsOn");
+    expect(tool.description).toContain("outputKeys");
     expect(tool.description).toContain("highRiskTools");
     expect(tool.description).toContain("Common mistakes to avoid");
     expect(tool.description).toContain(WORKFLOW_SCHEMA_HINT);
