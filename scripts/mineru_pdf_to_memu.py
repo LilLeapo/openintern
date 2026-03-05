@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import io
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -35,7 +36,8 @@ except Exception:  # pragma: no cover - runtime guard
 TERMINAL_STATES = {"done", "failed"}
 RUNNING_STATES = {"waiting-file", "pending", "running", "converting"}
 DEFAULT_MINERU_BASE = "https://mineru.net"
-DEFAULT_MEMU_BASE = "http://192.168.111.1:8000"
+DEFAULT_MEMU_BASE = "https://api.memu.so"
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 @dataclass
@@ -44,6 +46,12 @@ class FileJob:
     name: str
     sha256: str
     data_id: str
+
+
+@dataclass
+class ExtractedImage:
+    name: str
+    data: bytes
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +68,11 @@ def parse_args() -> argparse.Namespace:
         "--save-extracted",
         action="store_true",
         help="Save merged extracted text for each PDF to local files.",
+    )
+    parser.add_argument(
+        "--save-extracted-images",
+        action="store_true",
+        help="Save extracted images from MinerU zip to local files.",
     )
     parser.add_argument(
         "--extracted-dir",
@@ -81,6 +94,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memu-api-key", default="", help="MemU API key. Fallback config/env.")
     parser.add_argument("--memu-api-style", default="", choices=["cloudV3", "localSimple", "mem0V1"], help="MemU API style.")
     parser.add_argument("--memu-endpoint-memorize", default="", help="Override memorize endpoint path.")
+    parser.add_argument(
+        "--memu-endpoint-memorize-file",
+        default="",
+        help="Override memorize file endpoint path (default localSimple: /memorize/file).",
+    )
     parser.add_argument("--memu-user-id", default="", help="MemU user_id.")
     parser.add_argument("--memu-agent-id", default="", help="MemU agent_id.")
     parser.add_argument(
@@ -109,6 +127,22 @@ def parse_args() -> argparse.Namespace:
         "--fail-fast",
         action="store_true",
         help="Stop immediately on first MemU write failure (default is continue).",
+    )
+    parser.add_argument(
+        "--ingest-images",
+        action="store_true",
+        help="Ingest MinerU extracted images into MemU using /memorize/file.",
+    )
+    parser.add_argument(
+        "--max-images-per-file",
+        type=int,
+        default=0,
+        help="Limit image ingestion per PDF, 0 means no limit.",
+    )
+    parser.add_argument(
+        "--disable-image-anchor-text",
+        action="store_true",
+        help="Disable companion text memory per ingested image.",
     )
     parser.add_argument("--openintern-config", default="~/.openintern/config.json", help="OpenIntern config path for MemU defaults.")
 
@@ -168,6 +202,7 @@ def load_openintern_memu_defaults(
         "scoped_agent_id": scoped_agent,
         "default_user_id": f"{channel}:{chat_id}",
         "endpoint_memorize": str(endpoints.get("memorize") or "").strip(),
+        "endpoint_memorize_file": str(endpoints.get("memorizeFile") or "").strip(),
         "timeout_ms": str(memu.get("timeoutMs") or "").strip(),
     }
 
@@ -343,6 +378,7 @@ class MemUIngestClient:
         api_key: str,
         api_style: str,
         endpoint_memorize: str,
+        endpoint_memorize_file: str,
         user_id: str,
         agent_id: str,
         timeout: int = 60,
@@ -363,6 +399,15 @@ class MemUIngestClient:
                 self.endpoint_memorize = "/api/v1/memories"
             else:
                 self.endpoint_memorize = "/api/v3/memory/memorize"
+
+        if endpoint_memorize_file:
+            self.endpoint_memorize_file = (
+                endpoint_memorize_file
+                if endpoint_memorize_file.startswith("/")
+                else f"/{endpoint_memorize_file}"
+            )
+        else:
+            self.endpoint_memorize_file = "/memorize/file" if api_style == "localSimple" else ""
 
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
@@ -421,6 +466,49 @@ class MemUIngestClient:
                 time.sleep(min(2 ** (attempt - 1), 8))
         raise RuntimeError("Unreachable")
 
+    def memorize_file(self, file_name: str, file_bytes: bytes) -> Dict[str, Any]:
+        if not self.endpoint_memorize_file:
+            raise RuntimeError("MemU file memorize endpoint is not configured.")
+
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        data = {
+            "user_id": self.user_id,
+            "agent_id": self.agent_id,
+        }
+        files = {
+            "file": (file_name, file_bytes, mime_type),
+        }
+        url = f"{self.base_url}{self.endpoint_memorize_file}"
+        last_error: Optional[str] = None
+        for attempt in range(1, 5):
+            try:
+                resp = self.session.post(
+                    url,
+                    data=data,
+                    files=files,
+                    timeout=self.timeout,
+                )
+                if resp.status_code >= 500:
+                    raise RuntimeError(f"MemU HTTP {resp.status_code}: {resp.text[:400]}")
+                if resp.status_code >= 400:
+                    raise ValueError(f"MemU HTTP {resp.status_code}: {resp.text[:400]}")
+                if not resp.content:
+                    return {}
+                try:
+                    data_json = resp.json()
+                except Exception:
+                    return {"text": resp.text[:1000]}
+                return data_json if isinstance(data_json, dict) else {}
+            except ValueError:
+                raise
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                if attempt >= 4:
+                    suffix = f"; last_error={last_error}" if last_error else ""
+                    raise RuntimeError(f"MemU file memorize failed after retries: {url}{suffix}") from exc
+                time.sleep(min(2 ** (attempt - 1), 8))
+        raise RuntimeError("Unreachable")
+
 
 def decode_bytes(data: bytes) -> str:
     for enc in ("utf-8", "utf-8-sig", "gb18030", "latin-1"):
@@ -462,7 +550,7 @@ def extract_json_strings(obj: Any, parent_key: str = "") -> List[str]:
     return out
 
 
-def extract_text_from_zip(zip_bytes: bytes) -> str:
+def extract_zip_artifacts(zip_bytes: bytes) -> Tuple[str, List[ExtractedImage]]:
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         names = [name for name in zf.namelist() if not name.endswith("/")]
         if not names:
@@ -482,10 +570,14 @@ def extract_text_from_zip(zip_bytes: bytes) -> str:
             return (order.get(suffix, 99), name)
 
         chunks: List[str] = []
+        images: List[ExtractedImage] = []
         seen = set()
         for name in sorted(names, key=priority):
             suffix = Path(name).suffix.lower()
             raw = zf.read(name)
+            if suffix in IMAGE_SUFFIXES:
+                images.append(ExtractedImage(name=name, data=raw))
+                continue
             if suffix in {".md", ".markdown", ".txt", ".html", ".tex", ".latex"}:
                 text = decode_bytes(raw).strip()
                 if text:
@@ -514,7 +606,7 @@ def extract_text_from_zip(zip_bytes: bytes) -> str:
         merged = "\n\n".join(chunks)
         merged = merged.replace("\r\n", "\n").replace("\r", "\n")
         merged = re.sub(r"\n{3,}", "\n\n", merged)
-        return merged.strip()
+        return merged.strip(), images
 
 
 def split_text_chunks(text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
@@ -596,6 +688,60 @@ def save_extracted_text(
     return output_path
 
 
+def resolve_extracted_assets_root(
+    job: FileJob,
+    input_root: Path,
+    extracted_root: Path,
+) -> Path:
+    text_path = resolve_extracted_output_path(job, input_root, extracted_root)
+    return text_path.with_suffix("").parent / f"{text_path.stem}_assets"
+
+
+def save_extracted_images(
+    job: FileJob,
+    input_root: Path,
+    extracted_root: Path,
+    images: Sequence[ExtractedImage],
+) -> List[str]:
+    assets_root = resolve_extracted_assets_root(job, input_root, extracted_root)
+    saved: List[str] = []
+    for image in images:
+        target = assets_root / image.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(image.data)
+        saved.append(str(target))
+    return saved
+
+
+def extract_image_anchor_snippet(merged_text: str, image_name: str, max_len: int = 320) -> str:
+    idx = merged_text.find(image_name)
+    if idx < 0:
+        return ""
+    start = max(0, idx - 260)
+    end = min(len(merged_text), idx + 260)
+    snippet = merged_text[start:end]
+    snippet = re.sub(r"\s+", " ", snippet).strip()
+    if len(snippet) > max_len:
+        snippet = snippet[:max_len].rstrip() + "..."
+    return snippet
+
+
+def build_image_anchor_text(
+    file_name: str,
+    data_id: str,
+    image_name: str,
+    merged_text: str,
+) -> str:
+    snippet = extract_image_anchor_snippet(merged_text, image_name)
+    base = (
+        f"[source_file={file_name}] [data_id={data_id}] [image={image_name}] "
+        "Image extracted from MinerU output and stored as multimodal memory."
+    )
+    if snippet:
+        return f"{base}\n\nContext snippet: {snippet}"
+    return base
+
+
 def download_bytes(url: str, timeout: int = 300) -> bytes:
     resp = requests.get(url, timeout=timeout)
     if resp.status_code >= 400:
@@ -653,6 +799,11 @@ def resolve_memu_options(args: argparse.Namespace) -> Dict[str, Any]:
         or str(os.getenv("MEMU_ENDPOINT_MEMORIZE", "")).strip()
         or config_defaults.get("endpoint_memorize", "")
     )
+    endpoint_memorize_file = (
+        args.memu_endpoint_memorize_file.strip()
+        or str(os.getenv("MEMU_ENDPOINT_MEMORIZE_FILE", "")).strip()
+        or config_defaults.get("endpoint_memorize_file", "")
+    )
     timeout_s = (
         args.memu_timeout
         if args.memu_timeout > 0
@@ -678,6 +829,7 @@ def resolve_memu_options(args: argparse.Namespace) -> Dict[str, Any]:
         "user_id": memu_user,
         "agent_id": memu_agent,
         "endpoint_memorize": endpoint_memorize,
+        "endpoint_memorize_file": endpoint_memorize_file,
         "timeout_s": timeout_s,
         "scope": scope,
     }
@@ -717,10 +869,16 @@ def main() -> int:
             api_key=memu_opts["api_key"],
             api_style=memu_opts["api_style"],
             endpoint_memorize=str(memu_opts.get("endpoint_memorize") or "").strip(),
+            endpoint_memorize_file=str(memu_opts.get("endpoint_memorize_file") or "").strip(),
             user_id=memu_opts["user_id"],
             agent_id=memu_opts["agent_id"],
             timeout=int(memu_opts.get("timeout_s", 60)),
         )
+        if args.ingest_images and not memu_client.endpoint_memorize_file:
+            raise SystemExit(
+                "Image ingestion is enabled but MemU file endpoint is not configured. "
+                "Use --memu-endpoint-memorize-file or configure localSimple /memorize/file."
+            )
 
     mineru_client = MinerUClient(
         token=mineru_token,
@@ -728,7 +886,11 @@ def main() -> int:
     )
 
     state_file = normalize_path(args.state_file)
-    extracted_dir = normalize_path(args.extracted_dir) if args.save_extracted else None
+    extracted_dir = (
+        normalize_path(args.extracted_dir)
+        if (args.save_extracted or args.save_extracted_images)
+        else None
+    )
     state: Dict[str, Any] = read_json(state_file)
     if not state:
         state = {"version": 1, "files": {}}
@@ -772,10 +934,14 @@ def main() -> int:
             f"MemU target={memu_opts.get('base_url')} "
             f"user_id={memu_opts.get('user_id')} "
             f"agent_id={memu_opts.get('agent_id')} "
-            f"scope={memu_opts.get('scope')}"
+            f"scope={memu_opts.get('scope')} "
+            f"endpoint_memorize={memu_opts.get('endpoint_memorize') or '/memorize'} "
+            f"endpoint_memorize_file={memu_opts.get('endpoint_memorize_file') or '/memorize/file'}"
         )
-    if args.save_extracted and extracted_dir is not None:
+    if extracted_dir is not None and args.save_extracted:
         log(f"Extracted text output dir: {extracted_dir}")
+    if extracted_dir is not None and args.save_extracted_images:
+        log(f"Extracted image output dir: {extracted_dir}")
 
     try:
         for batch_jobs in chunked(jobs, args.batch_size):
@@ -872,18 +1038,30 @@ def main() -> int:
 
                 log(f"[DONE] {job.name} -> download zip")
                 zip_bytes = download_bytes(zip_url)
-                extracted_text = extract_text_from_zip(zip_bytes)
+                extracted_text, extracted_images = extract_zip_artifacts(zip_bytes)
                 extracted_path = ""
                 if extracted_dir is not None:
-                    extracted_output = save_extracted_text(
-                        job=job,
-                        input_root=input_dir,
-                        extracted_root=extracted_dir,
-                        text=extracted_text,
-                    )
-                    extracted_path = str(extracted_output)
-                    log(f"[SAVE] {job.name} -> {extracted_output}")
+                    if args.save_extracted:
+                        extracted_output = save_extracted_text(
+                            job=job,
+                            input_root=input_dir,
+                            extracted_root=extracted_dir,
+                            text=extracted_text,
+                        )
+                        extracted_path = str(extracted_output)
+                        log(f"[SAVE] {job.name} -> {extracted_output}")
+                    if args.save_extracted_images and extracted_images:
+                        saved_images = save_extracted_images(
+                            job=job,
+                            input_root=input_dir,
+                            extracted_root=extracted_dir,
+                            images=extracted_images,
+                        )
+                        log(f"[SAVE-IMAGES] {job.name}: {len(saved_images)}")
                 chunks = split_text_chunks(extracted_text, args.chunk_size, args.chunk_overlap)
+                image_total = len(extracted_images)
+                if args.max_images_per_file > 0:
+                    image_total = min(image_total, args.max_images_per_file)
                 if not chunks:
                     update_state_entry(
                         state,
@@ -891,6 +1069,7 @@ def main() -> int:
                         {
                             "status": "failed",
                             "error": "No extracted chunks generated from MinerU result.",
+                            "images_total": image_total,
                             "updated_at": int(time.time()),
                         },
                     )
@@ -908,10 +1087,12 @@ def main() -> int:
                             "chunk_overlap": args.chunk_overlap,
                             "zip_url": zip_url,
                             "extracted_path": extracted_path,
+                            "images_total": image_total,
+                            "images_ingested": 0,
                             "updated_at": int(time.time()),
                         },
                     )
-                    log(f"[DRY-RUN] {job.name}: chunks={len(chunks)}")
+                    log(f"[DRY-RUN] {job.name}: chunks={len(chunks)} images={image_total}")
                     continue
 
                 ingested = 0
@@ -927,13 +1108,15 @@ def main() -> int:
                         and previous_status == "failed"
                         and previous_total == len(chunks)
                         and previous_ingested > 0
-                        and previous_ingested < len(chunks)
                     ):
-                        resume_ingested = previous_ingested
+                        resume_ingested = min(previous_ingested, len(chunks))
                         ingested = previous_ingested
-                        log(
-                            f"[RESUME] {job.name}: continue from chunk {resume_ingested + 1}/{len(chunks)}"
-                        )
+                        if resume_ingested >= len(chunks):
+                            log(f"[RESUME] {job.name}: text chunks already ingested, skip text writes")
+                        else:
+                            log(
+                                f"[RESUME] {job.name}: continue from chunk {resume_ingested + 1}/{len(chunks)}"
+                            )
 
                 memu_error: Optional[str] = None
                 for idx, chunk in enumerate(chunks, start=1):
@@ -973,6 +1156,79 @@ def main() -> int:
                             "chunk_overlap": args.chunk_overlap,
                             "zip_url": zip_url,
                             "extracted_path": extracted_path,
+                            "images_total": image_total,
+                            "images_ingested": 0,
+                            "updated_at": int(time.time()),
+                        },
+                    )
+                    continue
+
+                images_ingested = 0
+                image_error: Optional[str] = None
+                if args.ingest_images and image_total > 0:
+                    previous_row = (state.get("files", {}) or {}).get(str(job.path.resolve()), {})
+                    resume_images = 0
+                    if (
+                        not args.force
+                        and isinstance(previous_row, dict)
+                        and str(previous_row.get("sha256") or "") == job.sha256
+                        and str(previous_row.get("status") or "") == "failed"
+                        and int(previous_row.get("chunks_ingested") or 0) >= len(chunks)
+                        and int(previous_row.get("images_total") or 0) == image_total
+                    ):
+                        prev_img_ingested = int(previous_row.get("images_ingested") or 0)
+                        if prev_img_ingested > 0:
+                            resume_images = min(prev_img_ingested, image_total)
+                            images_ingested = resume_images
+                            if resume_images >= image_total:
+                                log(
+                                    f"[RESUME] {job.name}: images already ingested, skip image writes"
+                                )
+                            else:
+                                log(
+                                    f"[RESUME] {job.name}: continue from image {resume_images + 1}/{image_total}"
+                                )
+
+                    for image_idx, image in enumerate(extracted_images[:image_total], start=1):
+                        if image_idx <= resume_images:
+                            continue
+                        if memu_client is None:
+                            raise RuntimeError("MemU client is not initialized.")
+                        try:
+                            memu_client.memorize_file(file_name=Path(image.name).name, file_bytes=image.data)
+                            images_ingested += 1
+                            if not args.disable_image_anchor_text:
+                                anchor_text = build_image_anchor_text(
+                                    file_name=job.name,
+                                    data_id=job.data_id,
+                                    image_name=image.name,
+                                    merged_text=extracted_text,
+                                )
+                                memu_client.memorize(anchor_text)
+                        except Exception as exc:
+                            image_error = (
+                                f"image {image_idx}/{image_total} ({image.name}) failed: {exc}"
+                            )
+                            log(f"[MEMU-IMAGE-FAILED] {job.name}: {image_error}")
+                            if args.fail_fast:
+                                raise
+                            break
+
+                if image_error:
+                    update_state_entry(
+                        state,
+                        job.path,
+                        {
+                            "status": "failed",
+                            "error": image_error,
+                            "chunks_total": len(chunks),
+                            "chunks_ingested": ingested,
+                            "chunk_size": args.chunk_size,
+                            "chunk_overlap": args.chunk_overlap,
+                            "images_total": image_total,
+                            "images_ingested": images_ingested,
+                            "zip_url": zip_url,
+                            "extracted_path": extracted_path,
                             "updated_at": int(time.time()),
                         },
                     )
@@ -987,12 +1243,14 @@ def main() -> int:
                         "chunks_ingested": ingested,
                         "chunk_size": args.chunk_size,
                         "chunk_overlap": args.chunk_overlap,
+                        "images_total": image_total,
+                        "images_ingested": images_ingested,
                         "zip_url": zip_url,
                         "extracted_path": extracted_path,
                         "updated_at": int(time.time()),
                     },
                 )
-                log(f"[INGESTED] {job.name}: chunks={ingested}")
+                log(f"[INGESTED] {job.name}: chunks={ingested} images={images_ingested}/{image_total}")
 
             write_json(state_file, state)
 
