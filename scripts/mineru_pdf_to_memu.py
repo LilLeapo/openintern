@@ -92,7 +92,12 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--memu-base-url", default="", help="MemU base URL. Fallback config/env.")
     parser.add_argument("--memu-api-key", default="", help="MemU API key. Fallback config/env.")
-    parser.add_argument("--memu-api-style", default="", choices=["cloudV3", "localSimple", "mem0V1"], help="MemU API style.")
+    parser.add_argument(
+        "--memu-api-style",
+        default="",
+        choices=["cloudV3", "localSimple", "sealosAssistant", "mem0V1"],
+        help="MemU API style.",
+    )
     parser.add_argument("--memu-endpoint-memorize", default="", help="Override memorize endpoint path.")
     parser.add_argument(
         "--memu-endpoint-memorize-file",
@@ -122,6 +127,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="MemU request timeout in seconds. 0 means config/env/default.",
+    )
+    parser.add_argument(
+        "--memu-source-type",
+        default="pdf",
+        help="Source type tag for text memories (recommended: pdf/chat/image/file_text).",
+    )
+    parser.add_argument(
+        "--memu-file-source-type",
+        default="",
+        help="Optional source_type for /memorize/file; defaults to --memu-source-type when empty.",
+    )
+    parser.add_argument(
+        "--memu-local-include-agent-id",
+        action="store_true",
+        help="Include agent_id for localSimple/sealosAssistant payloads for legacy compatibility.",
     )
     parser.add_argument(
         "--fail-fast",
@@ -381,6 +401,9 @@ class MemUIngestClient:
         endpoint_memorize_file: str,
         user_id: str,
         agent_id: str,
+        default_source_type: str = "",
+        default_file_source_type: str = "",
+        local_include_agent_id: bool = False,
         timeout: int = 60,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -388,12 +411,16 @@ class MemUIngestClient:
         self.api_style = api_style
         self.user_id = user_id
         self.agent_id = agent_id
+        self.default_source_type = default_source_type.strip()
+        self.default_file_source_type = default_file_source_type.strip()
+        self.local_include_agent_id = local_include_agent_id
         self.timeout = timeout
+        local_styles = {"localSimple", "sealosAssistant"}
 
         if endpoint_memorize:
             self.endpoint_memorize = endpoint_memorize if endpoint_memorize.startswith("/") else f"/{endpoint_memorize}"
         else:
-            if api_style == "localSimple":
+            if api_style in local_styles:
                 self.endpoint_memorize = "/memorize"
             elif api_style == "mem0V1":
                 self.endpoint_memorize = "/api/v1/memories"
@@ -407,23 +434,27 @@ class MemUIngestClient:
                 else f"/{endpoint_memorize_file}"
             )
         else:
-            self.endpoint_memorize_file = "/memorize/file" if api_style == "localSimple" else ""
+            self.endpoint_memorize_file = "/memorize/file" if api_style in local_styles else ""
 
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
         if self.api_key:
             self.session.headers["Authorization"] = f"Bearer {self.api_key}"
 
-    def memorize(self, content: str) -> Dict[str, Any]:
+    def memorize(self, content: str, source_type: str = "") -> Dict[str, Any]:
         now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         headers: Dict[str, str] = {"Content-Type": "application/json"}
+        effective_source_type = source_type.strip() or self.default_source_type
 
-        if self.api_style == "localSimple":
+        if self.api_style in {"localSimple", "sealosAssistant"}:
             payload: Dict[str, Any] = {
                 "content": content,
                 "user_id": self.user_id,
-                "agent_id": self.agent_id,
             }
+            if effective_source_type:
+                payload["source_type"] = effective_source_type
+            if self.local_include_agent_id and self.agent_id:
+                payload["agent_id"] = self.agent_id
         elif self.api_style == "mem0V1":
             payload = {
                 "messages": [{"role": "user", "content": content}],
@@ -466,15 +497,16 @@ class MemUIngestClient:
                 time.sleep(min(2 ** (attempt - 1), 8))
         raise RuntimeError("Unreachable")
 
-    def memorize_file(self, file_name: str, file_bytes: bytes) -> Dict[str, Any]:
+    def memorize_file(self, file_name: str, file_bytes: bytes, source_type: str = "") -> Dict[str, Any]:
         if not self.endpoint_memorize_file:
             raise RuntimeError("MemU file memorize endpoint is not configured.")
 
         mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
-        data = {
-            "user_id": self.user_id,
-            "agent_id": self.agent_id,
-        }
+        effective_source_type = (
+            source_type.strip()
+            or self.default_file_source_type
+            or self.default_source_type
+        )
         files = {
             "file": (file_name, file_bytes, mime_type),
         }
@@ -482,12 +514,32 @@ class MemUIngestClient:
         last_error: Optional[str] = None
         for attempt in range(1, 5):
             try:
-                resp = self.session.post(
-                    url,
-                    data=data,
-                    files=files,
-                    timeout=self.timeout,
-                )
+                if self.api_style in {"localSimple", "sealosAssistant"}:
+                    params: Dict[str, str] = {"user_id": self.user_id}
+                    if effective_source_type:
+                        params["source_type"] = effective_source_type
+                    # Keep legacy compatibility for backends that read user_id/agent_id from form.
+                    data: Dict[str, str] = {"user_id": self.user_id}
+                    if self.local_include_agent_id and self.agent_id:
+                        data["agent_id"] = self.agent_id
+                    resp = self.session.post(
+                        url,
+                        params=params,
+                        data=data,
+                        files=files,
+                        timeout=self.timeout,
+                    )
+                else:
+                    data = {
+                        "user_id": self.user_id,
+                        "agent_id": self.agent_id,
+                    }
+                    resp = self.session.post(
+                        url,
+                        data=data,
+                        files=files,
+                        timeout=self.timeout,
+                    )
                 if resp.status_code >= 500:
                     raise RuntimeError(f"MemU HTTP {resp.status_code}: {resp.text[:400]}")
                 if resp.status_code >= 400:
@@ -817,7 +869,7 @@ def resolve_memu_options(args: argparse.Namespace) -> Dict[str, Any]:
 
     if not memu_user:
         raise ValueError("Missing memu user_id. Use --memu-user-id or set MEMU_USER_ID.")
-    if not memu_agent:
+    if memu_style in {"cloudV3", "mem0V1"} and not memu_agent:
         raise ValueError("Missing memu agent_id. Use --memu-agent-id or set MEMU_AGENT_ID.")
     if memu_style == "cloudV3" and not memu_key:
         raise ValueError("Missing memu api_key for cloudV3. Use --memu-api-key or set MEMU_API_KEY.")
@@ -832,6 +884,9 @@ def resolve_memu_options(args: argparse.Namespace) -> Dict[str, Any]:
         "endpoint_memorize_file": endpoint_memorize_file,
         "timeout_s": timeout_s,
         "scope": scope,
+        "source_type": args.memu_source_type.strip(),
+        "file_source_type": args.memu_file_source_type.strip(),
+        "local_include_agent_id": bool(args.memu_local_include_agent_id),
     }
 
 
@@ -871,13 +926,16 @@ def main() -> int:
             endpoint_memorize=str(memu_opts.get("endpoint_memorize") or "").strip(),
             endpoint_memorize_file=str(memu_opts.get("endpoint_memorize_file") or "").strip(),
             user_id=memu_opts["user_id"],
-            agent_id=memu_opts["agent_id"],
+            agent_id=str(memu_opts.get("agent_id") or "").strip(),
+            default_source_type=str(memu_opts.get("source_type") or "").strip(),
+            default_file_source_type=str(memu_opts.get("file_source_type") or "").strip(),
+            local_include_agent_id=bool(memu_opts.get("local_include_agent_id")),
             timeout=int(memu_opts.get("timeout_s", 60)),
         )
         if args.ingest_images and not memu_client.endpoint_memorize_file:
             raise SystemExit(
                 "Image ingestion is enabled but MemU file endpoint is not configured. "
-                "Use --memu-endpoint-memorize-file or configure localSimple /memorize/file."
+                "Use --memu-endpoint-memorize-file or configure localSimple/sealosAssistant /memorize/file."
             )
 
     mineru_client = MinerUClient(
@@ -935,6 +993,8 @@ def main() -> int:
             f"user_id={memu_opts.get('user_id')} "
             f"agent_id={memu_opts.get('agent_id')} "
             f"scope={memu_opts.get('scope')} "
+            f"source_type={memu_opts.get('source_type') or '(none)'} "
+            f"file_source_type={memu_opts.get('file_source_type') or '(follow source_type)'} "
             f"endpoint_memorize={memu_opts.get('endpoint_memorize') or '/memorize'} "
             f"endpoint_memorize_file={memu_opts.get('endpoint_memorize_file') or '/memorize/file'}"
         )
@@ -1132,7 +1192,10 @@ def main() -> int:
                         chunk_text=chunk,
                     )
                     try:
-                        memu_client.memorize(payload)
+                        memu_client.memorize(
+                            payload,
+                            source_type=str(memu_opts.get("source_type") or "").strip(),
+                        )
                     except Exception as exc:
                         memu_error = f"chunk {idx}/{len(chunks)} failed: {exc}"
                         log(f"[MEMU-FAILED] {job.name}: {memu_error}")
@@ -1195,7 +1258,14 @@ def main() -> int:
                         if memu_client is None:
                             raise RuntimeError("MemU client is not initialized.")
                         try:
-                            memu_client.memorize_file(file_name=Path(image.name).name, file_bytes=image.data)
+                            memu_client.memorize_file(
+                                file_name=Path(image.name).name,
+                                file_bytes=image.data,
+                                source_type=(
+                                    str(memu_opts.get("file_source_type") or "").strip()
+                                    or str(memu_opts.get("source_type") or "").strip()
+                                ),
+                            )
                             images_ingested += 1
                             if not args.disable_image_anchor_text:
                                 anchor_text = build_image_anchor_text(
@@ -1204,7 +1274,10 @@ def main() -> int:
                                     image_name=image.name,
                                     merged_text=extracted_text,
                                 )
-                                memu_client.memorize(anchor_text)
+                                memu_client.memorize(
+                                    anchor_text,
+                                    source_type=str(memu_opts.get("source_type") or "").strip(),
+                                )
                         except Exception as exc:
                             image_error = (
                                 f"image {image_idx}/{image_total} ({image.name}) failed: {exc}"
