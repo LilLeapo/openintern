@@ -1,4 +1,10 @@
 import type { ChatRequest, LLMProvider, LLMResponse, ToolCallRequest } from "./provider.js";
+import {
+  isRetryableFetchError,
+  llmMaxAttempts,
+  shouldRetryHttpStatus,
+  waitBeforeRetry,
+} from "./retry.js";
 
 export interface OpenAICompatibleProviderOptions {
   apiKey: string;
@@ -99,70 +105,98 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   async chat(request: ChatRequest): Promise<LLMResponse> {
     const model = request.model ?? this.defaultModel;
+    const maxAttempts = llmMaxAttempts();
 
-    try {
-      const response = await fetch(`${this.apiBase}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${this.apiKey}`,
-          ...this.extraHeaders,
-        },
-        body: JSON.stringify({
-          model,
-          messages: sanitizeMessages(request.messages),
-          tools: request.tools && request.tools.length > 0 ? request.tools : undefined,
-          tool_choice: request.tools && request.tools.length > 0 ? "auto" : undefined,
-          max_tokens: Math.max(1, request.maxTokens ?? 4096),
-          temperature: request.temperature ?? 0.7,
-          reasoning_effort: request.reasoningEffort ?? undefined,
-        }),
-        signal: request.signal,
-      });
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const response = await fetch(`${this.apiBase}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${this.apiKey}`,
+            ...this.extraHeaders,
+          },
+          body: JSON.stringify({
+            model,
+            messages: sanitizeMessages(request.messages),
+            tools: request.tools && request.tools.length > 0 ? request.tools : undefined,
+            tool_choice: request.tools && request.tools.length > 0 ? "auto" : undefined,
+            max_tokens: Math.max(1, request.maxTokens ?? 4096),
+            temperature: request.temperature ?? 0.7,
+            reasoning_effort: request.reasoningEffort ?? undefined,
+          }),
+          signal: request.signal,
+        });
 
-      if (!response.ok) {
-        const errorText = await response.text();
+        if (!response.ok) {
+          const errorText = await response.text();
+          if (attempt < maxAttempts && shouldRetryHttpStatus(response.status)) {
+            await waitBeforeRetry(attempt, request.signal);
+            continue;
+          }
+
+          return {
+            content: `Error calling LLM: HTTP ${response.status} ${response.statusText}. ${errorText}`,
+            toolCalls: [],
+            finishReason: "error",
+          };
+        }
+
+        const payload = (await response.json()) as Record<string, unknown>;
+        const choices = Array.isArray(payload.choices) ? payload.choices : [];
+        const firstChoice =
+          choices.length > 0 && typeof choices[0] === "object" && choices[0] !== null
+            ? (choices[0] as Record<string, unknown>)
+            : {};
+        const message =
+          typeof firstChoice.message === "object" && firstChoice.message !== null
+            ? (firstChoice.message as Record<string, unknown>)
+            : {};
+
         return {
-          content: `Error calling LLM: HTTP ${response.status} ${response.statusText}. ${errorText}`,
+          content: typeof message.content === "string" ? message.content : null,
+          toolCalls: parseToolCalls(message.tool_calls),
+          finishReason:
+            typeof firstChoice.finish_reason === "string" ? firstChoice.finish_reason : "stop",
+          usage:
+            typeof payload.usage === "object" && payload.usage !== null
+              ? (payload.usage as Record<string, number>)
+              : {},
+          reasoningContent:
+            typeof message.reasoning_content === "string" ? message.reasoning_content : null,
+          thinkingBlocks: Array.isArray(message.thinking_blocks)
+            ? (message.thinking_blocks as Array<Record<string, unknown>>)
+            : undefined,
+        };
+      } catch (error) {
+        if (attempt < maxAttempts && isRetryableFetchError(error)) {
+          try {
+            await waitBeforeRetry(attempt, request.signal);
+            continue;
+          } catch (sleepError) {
+            const sleepMessage =
+              sleepError instanceof Error ? sleepError.message : String(sleepError);
+            return {
+              content: `Error calling LLM: ${sleepMessage}`,
+              toolCalls: [],
+              finishReason: "error",
+            };
+          }
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: `Error calling LLM: ${message}`,
           toolCalls: [],
           finishReason: "error",
         };
       }
-
-      const payload = (await response.json()) as Record<string, unknown>;
-      const choices = Array.isArray(payload.choices) ? payload.choices : [];
-      const firstChoice =
-        choices.length > 0 && typeof choices[0] === "object" && choices[0] !== null
-          ? (choices[0] as Record<string, unknown>)
-          : {};
-      const message =
-        typeof firstChoice.message === "object" && firstChoice.message !== null
-          ? (firstChoice.message as Record<string, unknown>)
-          : {};
-
-      return {
-        content: typeof message.content === "string" ? message.content : null,
-        toolCalls: parseToolCalls(message.tool_calls),
-        finishReason:
-          typeof firstChoice.finish_reason === "string" ? firstChoice.finish_reason : "stop",
-        usage:
-          typeof payload.usage === "object" && payload.usage !== null
-            ? (payload.usage as Record<string, number>)
-            : {},
-        reasoningContent:
-          typeof message.reasoning_content === "string" ? message.reasoning_content : null,
-        thinkingBlocks: Array.isArray(message.thinking_blocks)
-          ? (message.thinking_blocks as Array<Record<string, unknown>>)
-          : undefined,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        content: `Error calling LLM: ${message}`,
-        toolCalls: [],
-        finishReason: "error",
-      };
     }
+
+    return {
+      content: `Error calling LLM: Request failed after ${maxAttempts} attempts.`,
+      toolCalls: [],
+      finishReason: "error",
+    };
   }
 }
-

@@ -103,7 +103,10 @@ Scheduled instruction: ${job.payload.message}`;
   await heartbeat.start();
   if (feishu.isEnabled) {
     await feishu.start();
-    stdout.write("Feishu long connection started (WebSocket)\n");
+    const appId = config.channels.feishu.appId || "";
+    const appIdMasked =
+      appId.length > 8 ? `${appId.slice(0, 6)}***${appId.slice(-4)}` : appId || "(empty)";
+    stdout.write(`Feishu long connection started (WebSocket, appId=${appIdMasked})\n`);
   }
 
   const pending = new Map<string, (value: string) => void>();

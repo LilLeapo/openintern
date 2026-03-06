@@ -1,4 +1,10 @@
 import type { ChatRequest, LLMProvider, LLMResponse, ToolCallRequest } from "./provider.js";
+import {
+  isRetryableFetchError,
+  llmMaxAttempts,
+  shouldRetryHttpStatus,
+  waitBeforeRetry,
+} from "./retry.js";
 
 export interface AnthropicCompatibleProviderOptions {
   apiKey: string;
@@ -301,55 +307,83 @@ export class AnthropicCompatibleProvider implements LLMProvider {
   async chat(request: ChatRequest): Promise<LLMResponse> {
     const model = request.model ?? this.defaultModel;
     const converted = convertMessages(request.messages);
+    const maxAttempts = llmMaxAttempts();
 
-    try {
-      const response = await fetch(`${this.apiBase}/messages`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": this.apiKey,
-          "anthropic-version": this.anthropicVersion,
-          ...this.extraHeaders,
-        },
-        body: JSON.stringify({
-          model,
-          system: converted.system || undefined,
-          messages: converted.messages,
-          tools: mapTools(request.tools),
-          max_tokens: Math.max(1, request.maxTokens ?? 4096),
-          temperature: request.temperature ?? 0.7,
-        }),
-        signal: request.signal,
-      });
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const response = await fetch(`${this.apiBase}/messages`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": this.apiKey,
+            "anthropic-version": this.anthropicVersion,
+            ...this.extraHeaders,
+          },
+          body: JSON.stringify({
+            model,
+            system: converted.system || undefined,
+            messages: converted.messages,
+            tools: mapTools(request.tools),
+            max_tokens: Math.max(1, request.maxTokens ?? 4096),
+            temperature: request.temperature ?? 0.7,
+          }),
+          signal: request.signal,
+        });
 
-      if (!response.ok) {
-        const errorText = await response.text();
+        if (!response.ok) {
+          const errorText = await response.text();
+          if (attempt < maxAttempts && shouldRetryHttpStatus(response.status)) {
+            await waitBeforeRetry(attempt, request.signal);
+            continue;
+          }
+
+          return {
+            content: `Error calling LLM: HTTP ${response.status} ${response.statusText}. ${errorText}`,
+            toolCalls: [],
+            finishReason: "error",
+          };
+        }
+
+        const payload = (await response.json()) as Record<string, unknown>;
+        const content = payload.content;
         return {
-          content: `Error calling LLM: HTTP ${response.status} ${response.statusText}. ${errorText}`,
+          content: parseTextContent(content),
+          toolCalls: parseToolCalls(content),
+          finishReason: typeof payload.stop_reason === "string" ? payload.stop_reason : "stop",
+          usage:
+            typeof payload.usage === "object" && payload.usage !== null
+              ? (payload.usage as Record<string, number>)
+              : {},
+        };
+      } catch (error) {
+        if (attempt < maxAttempts && isRetryableFetchError(error)) {
+          try {
+            await waitBeforeRetry(attempt, request.signal);
+            continue;
+          } catch (sleepError) {
+            const sleepMessage =
+              sleepError instanceof Error ? sleepError.message : String(sleepError);
+            return {
+              content: `Error calling LLM: ${sleepMessage}`,
+              toolCalls: [],
+              finishReason: "error",
+            };
+          }
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: `Error calling LLM: ${message}`,
           toolCalls: [],
           finishReason: "error",
         };
       }
-
-      const payload = (await response.json()) as Record<string, unknown>;
-      const content = payload.content;
-      return {
-        content: parseTextContent(content),
-        toolCalls: parseToolCalls(content),
-        finishReason:
-          typeof payload.stop_reason === "string" ? payload.stop_reason : "stop",
-        usage:
-          typeof payload.usage === "object" && payload.usage !== null
-            ? (payload.usage as Record<string, number>)
-            : {},
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        content: `Error calling LLM: ${message}`,
-        toolCalls: [],
-        finishReason: "error",
-      };
     }
+
+    return {
+      content: `Error calling LLM: Request failed after ${maxAttempts} attempts.`,
+      toolCalls: [],
+      finishReason: "error",
+    };
   }
 }
