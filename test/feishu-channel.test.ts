@@ -1,5 +1,3 @@
-import { createServer } from "node:http";
-
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OutboundMessage } from "../src/bus/events.js";
@@ -7,27 +5,49 @@ import { MessageBus } from "../src/bus/message-bus.js";
 import { FeishuChannel } from "../src/channels/feishu.js";
 import type { FeishuChannelConfig } from "../src/config/schema.js";
 
-async function pickFreePort(): Promise<number> {
-  return new Promise<number>((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      if (!addr || typeof addr === "string") {
-        reject(new Error("failed to allocate free port"));
-        return;
-      }
-      const port = addr.port;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
+const sdkState = vi.hoisted(() => ({
+  wsStart: vi.fn(async (_params?: unknown) => undefined),
+  wsClose: vi.fn((_params?: unknown) => undefined),
+  registeredHandlers: {} as Record<string, (payload: unknown) => Promise<unknown> | unknown>,
+  lastWsParams: undefined as unknown,
+  lastDispatcherParams: undefined as unknown,
+}));
+
+vi.mock("@larksuiteoapi/node-sdk", () => {
+  class MockEventDispatcher {
+    constructor(params: unknown) {
+      sdkState.lastDispatcherParams = params;
+    }
+
+    register(handles: Record<string, (payload: unknown) => Promise<unknown> | unknown>): this {
+      sdkState.registeredHandlers = handles;
+      return this;
+    }
+  }
+
+  class MockWSClient {
+    constructor(params: unknown) {
+      sdkState.lastWsParams = params;
+    }
+
+    async start(params: unknown): Promise<void> {
+      await sdkState.wsStart(params);
+    }
+
+    close(params?: unknown): void {
+      sdkState.wsClose(params);
+    }
+  }
+
+  return {
+    EventDispatcher: MockEventDispatcher,
+    WSClient: MockWSClient,
+    LoggerLevel: {
+      error: 1,
+      info: 3,
+    },
+  };
+});
 
 function makeConfig(overrides?: Partial<FeishuChannelConfig>): FeishuChannelConfig {
   return {
@@ -45,81 +65,84 @@ function makeConfig(overrides?: Partial<FeishuChannelConfig>): FeishuChannelConf
 describe("FeishuChannel", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    sdkState.wsStart.mockClear();
+    sdkState.wsClose.mockClear();
+    sdkState.registeredHandlers = {};
+    sdkState.lastWsParams = undefined;
+    sdkState.lastDispatcherParams = undefined;
   });
 
-  it("handles url verification challenge", async () => {
-    const bus = new MessageBus();
-    const port = await pickFreePort();
+  it("starts long connection with official SDK and closes cleanly", async () => {
     const channel = new FeishuChannel({
       config: makeConfig(),
-      bus,
-      host: "127.0.0.1",
-      port,
+      bus: new MessageBus(),
     });
     await channel.start();
-
-    const response = await fetch(`http://127.0.0.1:${port}/feishu/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "url_verification",
-        token: "verify-token",
-        challenge: "challenge-123",
-      }),
+    expect(sdkState.lastDispatcherParams).toMatchObject({
+      verificationToken: "verify-token",
     });
-    const body = (await response.json()) as Record<string, unknown>;
-
-    expect(response.status).toBe(200);
-    expect(body.challenge).toBe("challenge-123");
-    expect(bus.inboundSize).toBe(0);
+    expect(sdkState.lastWsParams).toMatchObject({
+      appId: "cli_default",
+      appSecret: "secret_default",
+      autoReconnect: true,
+    });
+    expect(sdkState.wsStart).toHaveBeenCalledTimes(1);
 
     await channel.stop();
+    expect(sdkState.wsClose).toHaveBeenCalledWith({ force: true });
   });
 
-  it("publishes inbound message event to bus when sender is allowed", async () => {
+  it("publishes inbound message event to bus from websocket handler", async () => {
     const bus = new MessageBus();
-    const port = await pickFreePort();
     const channel = new FeishuChannel({
       config: makeConfig({ allowFrom: ["ou_allowed"] }),
       bus,
-      host: "127.0.0.1",
-      port,
     });
     await channel.start();
 
-    const response = await fetch(`http://127.0.0.1:${port}/feishu/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        schema: "2.0",
-        header: {
-          event_type: "im.message.receive_v1",
+    const handler = sdkState.registeredHandlers["im.message.receive_v1"];
+    expect(handler).toBeTruthy();
+    await handler?.({
+      sender: {
+        sender_type: "user",
+        sender_id: {
+          open_id: "ou_allowed",
         },
-        event: {
-          sender: {
-            sender_type: "user",
-            sender_id: {
-              open_id: "ou_allowed",
-            },
-          },
-          message: {
-            message_id: "om_1",
-            chat_id: "oc_abc",
-            chat_type: "p2p",
-            message_type: "text",
-            content: JSON.stringify({ text: "hello from feishu" }),
-          },
-        },
-      }),
+      },
+      message: {
+        message_id: "om_1",
+        chat_id: "oc_abc",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello from feishu" }),
+      },
     });
 
-    expect(response.status).toBe(200);
     const inbound = await bus.consumeInbound(1000);
     expect(inbound?.channel).toBe("feishu");
     expect(inbound?.senderId).toBe("ou_allowed");
     expect(inbound?.chatId).toBe("ou_allowed");
     expect(inbound?.content).toBe("hello from feishu");
     expect(inbound?.metadata?.message_id).toBe("om_1");
+
+    // Dedup check
+    await handler?.({
+      sender: {
+        sender_type: "user",
+        sender_id: {
+          open_id: "ou_allowed",
+        },
+      },
+      message: {
+        message_id: "om_1",
+        chat_id: "oc_abc",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello from feishu" }),
+      },
+    });
+    const duplicate = await bus.consumeInbound(20);
+    expect(duplicate).toBeNull();
 
     await channel.stop();
   });
@@ -164,8 +187,6 @@ describe("FeishuChannel", () => {
         appSecret: "secret_456",
       }),
       bus: new MessageBus(),
-      host: "127.0.0.1",
-      port: 18080,
     });
 
     const outbound: OutboundMessage = {

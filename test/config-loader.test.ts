@@ -45,8 +45,14 @@ describe("config loader", () => {
     expect(config.gateway.port).toBe(18790);
     expect(config.memory.memu.enabled).toBe(false);
     expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
+    expect(config.memory.memu.scopes.chat).toBe("chat");
+    expect(config.memory.memu.scopes.papers).toBe("papers");
     expect(config.memory.memu.apiStyle).toBe("cloudV3");
+    expect(config.memory.memu.memorizeMode).toBe("tool");
     expect(config.memory.memu.endpoints).toEqual({});
+    expect(config.agents.subagentConcurrency.maxConcurrent).toBe(3);
+    expect(config.roles.researcher.memoryScope).toBe("papers");
+    expect(config.roles.scientist.workspaceIsolation).toBe(true);
   });
 
   it("migrates old key names", async () => {
@@ -95,12 +101,30 @@ describe("config loader", () => {
             api_key: "memu-key",
             base_url: "https://api.memu.so",
             agent_id: "agent-1",
+            chat_scope: "dialog",
+            papers_scope: "kb",
             timeout_ms: 9999,
             retrieve_enabled: false,
             memorize_enabled: false,
+            memorize_mode: "auto",
             api_style: "localSimple",
             memorize_endpoint: "/memorize",
             retrieve_endpoint: "/recall",
+            clear_endpoint: "/clear",
+          },
+        },
+        agents: {
+          subagent_concurrency: {
+            max_concurrent: 7,
+          },
+        },
+        roles: {
+          archivist: {
+            system_prompt: "Archive key findings.",
+            allowed_tools: ["memory_save"],
+            memory_scope: "papers",
+            max_iterations: 9,
+            workspace_isolation: false,
           },
         },
       }),
@@ -125,12 +149,21 @@ describe("config loader", () => {
     expect(config.memory.memu.apiKey).toBe("memu-key");
     expect(config.memory.memu.baseUrl).toBe("https://api.memu.so");
     expect(config.memory.memu.agentId).toBe("agent-1");
+    expect(config.memory.memu.scopes.chat).toBe("dialog");
+    expect(config.memory.memu.scopes.papers).toBe("kb");
     expect(config.memory.memu.timeoutMs).toBe(9999);
     expect(config.memory.memu.retrieve).toBe(false);
     expect(config.memory.memu.memorize).toBe(false);
+    expect(config.memory.memu.memorizeMode).toBe("auto");
     expect(config.memory.memu.apiStyle).toBe("localSimple");
     expect(config.memory.memu.endpoints.memorize).toBe("/memorize");
     expect(config.memory.memu.endpoints.retrieve).toBe("/recall");
+    expect(config.memory.memu.endpoints.clear).toBe("/clear");
+    expect(config.agents.subagentConcurrency.maxConcurrent).toBe(7);
+    expect(config.roles.archivist.systemPrompt).toBe("Archive key findings.");
+    expect(config.roles.archivist.allowedTools).toEqual(["memory_save"]);
+    expect(config.roles.archivist.memoryScope).toBe("papers");
+    expect(config.roles.archivist.maxIterations).toBe(9);
   });
 
   it("creates config when missing", async () => {

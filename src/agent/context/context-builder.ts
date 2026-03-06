@@ -146,7 +146,12 @@ Your workspace is at: ${workspacePath}
 - Before modifying a file, read it first.
 - After writing or editing a file, re-read it if accuracy matters.
 - If a tool call fails, analyze the error before retrying with a different approach.
-- Ask for clarification when the request is ambiguous.`;
+- Ask for clarification when the request is ambiguous.
+- Use memory tools selectively: save only stable high-value facts/decisions.
+- Prefer scope "chat" for conversational memory and scope "papers" for document knowledge.
+- Ask for user confirmation before saving sensitive personal information.
+- For workflow execution and progress, use trigger_workflow/query_workflow_status directly.
+`;
   }
 
   private async loadBootstrapFiles(): Promise<string> {

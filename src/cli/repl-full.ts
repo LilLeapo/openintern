@@ -10,7 +10,6 @@ import type { OutboundMessage } from "../bus/events.js";
 import { FeishuChannel } from "../channels/feishu.js";
 import { CronService } from "../cron/service.js";
 import { loadOrCreateConfig, resolveWorkspacePath, getDataDir } from "../config/loader.js";
-import { HeartbeatService } from "../heartbeat/service.js";
 import { syncWorkspaceTemplates } from "../templates/sync.js";
 
 async function main(): Promise<void> {
@@ -61,8 +60,6 @@ async function main(): Promise<void> {
   const feishu = new FeishuChannel({
     config: config.channels.feishu,
     bus,
-    host: config.gateway.host,
-    port: config.gateway.port,
   });
 
   let running = true;
@@ -71,9 +68,7 @@ async function main(): Promise<void> {
 
   if (feishu.isEnabled) {
     await feishu.start();
-    stdout.write(
-      `飞书 webhook 监听地址: http://${config.gateway.host}:${config.gateway.port}${feishu.webhookPath}\n`,
-    );
+    stdout.write("Feishu long connection started (WebSocket)\n");
   }
 
   const pending = new Map<string, (value: string) => void>();

@@ -9,6 +9,18 @@ export interface AgentDefaultsConfig {
   reasoningEffort: string | null;
 }
 
+export interface RoleConfig {
+  systemPrompt: string;
+  allowedTools: string[];
+  memoryScope: "chat" | "papers";
+  maxIterations?: number;
+  workspaceIsolation?: boolean;
+}
+
+export interface SubagentConcurrencyConfig {
+  maxConcurrent: number;
+}
+
 export interface ProviderConfig {
   apiKey: string;
   apiBase: string;
@@ -87,15 +99,21 @@ export interface MemUConfig {
   apiKey: string;
   baseUrl: string;
   agentId: string;
+  scopes: {
+    chat: string;
+    papers: string;
+  };
   timeoutMs: number;
   retrieve: boolean;
   memorize: boolean;
+  memorizeMode: "auto" | "tool";
   apiStyle: "cloudV3" | "localSimple" | "mem0V1";
   endpoints: {
     memorize?: string;
     retrieve?: string;
     categories?: string;
     status?: string;
+    clear?: string;
   };
 }
 
@@ -106,7 +124,9 @@ export interface MemoryConfig {
 export interface AppConfig {
   agents: {
     defaults: AgentDefaultsConfig;
+    subagentConcurrency: SubagentConcurrencyConfig;
   };
+  roles: Record<string, RoleConfig>;
   providers: ProvidersConfig;
   tools: ToolsConfig;
   memory: MemoryConfig;
@@ -126,6 +146,35 @@ export const DEFAULT_CONFIG: AppConfig = {
       maxToolIterations: 40,
       memoryWindow: 100,
       reasoningEffort: null,
+    },
+    subagentConcurrency: {
+      maxConcurrent: 3,
+    },
+  },
+  roles: {
+    researcher: {
+      systemPrompt:
+        "You are a research assistant. Search the web for academic papers, summarize findings, and save important references to memory.",
+      allowedTools: ["web_search", "web_fetch", "memory_save", "memory_retrieve"],
+      memoryScope: "papers",
+      maxIterations: 20,
+      workspaceIsolation: false,
+    },
+    scientist: {
+      systemPrompt:
+        "You are a scientist subagent. Analyze data, write code, and produce structured reports.",
+      allowedTools: [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "exec",
+        "memory_save",
+        "memory_retrieve",
+      ],
+      memoryScope: "chat",
+      maxIterations: 15,
+      workspaceIsolation: true,
     },
   },
   providers: {
@@ -160,9 +209,14 @@ export const DEFAULT_CONFIG: AppConfig = {
       apiKey: "",
       baseUrl: "https://api.memu.so",
       agentId: "openintern",
+      scopes: {
+        chat: "chat",
+        papers: "papers",
+      },
       timeoutMs: 15_000,
       retrieve: true,
       memorize: true,
+      memorizeMode: "tool",
       apiStyle: "cloudV3",
       endpoints: {},
     },

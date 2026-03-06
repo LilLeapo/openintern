@@ -23,6 +23,12 @@ Available core tools:
 - message
 - web_search
 - web_fetch
+- memory_retrieve
+- memory_save
+- memory_delete
+- trigger_workflow
+- query_workflow_status
+- draft_workflow
 `,
   "HEARTBEAT.md": `# HEARTBEAT
 
@@ -39,4 +45,3 @@ Append short timeline entries:
 - [YYYY-MM-DD HH:MM] summary
 `,
 };
-

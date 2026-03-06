@@ -11,5 +11,6 @@
     "types": ["node", "vitest/globals"],
     "rootDir": "."
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  "exclude": ["src/ui/frontend"]
 }

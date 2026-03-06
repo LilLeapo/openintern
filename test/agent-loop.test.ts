@@ -249,6 +249,115 @@ describe("AgentLoop", () => {
     expect(response).toContain("maximum number of tool call iterations (2)");
   });
 
+  it("stops repeated workflow status polling and returns a visible status", async () => {
+    const workspace = await makeWorkspace();
+    const provider = new ScriptedProvider([
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: "tc_1",
+            name: "query_workflow_status",
+            arguments: { instance_id: "run_1" },
+          },
+        ],
+      },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: "tc_2",
+            name: "query_workflow_status",
+            arguments: { instance_id: "run_1" },
+          },
+        ],
+      },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: "tc_3",
+            name: "query_workflow_status",
+            arguments: { instance_id: "run_1" },
+          },
+        ],
+      },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: "tc_4",
+            name: "query_workflow_status",
+            arguments: { instance_id: "run_1" },
+          },
+        ],
+      },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: "tc_5",
+            name: "query_workflow_status",
+            arguments: { instance_id: "run_1" },
+          },
+        ],
+      },
+    ]);
+    const agent = new AgentLoop({
+      bus: new MessageBus(),
+      provider,
+      workspace,
+    });
+
+    const response = await agent.processDirect({
+      content: "继续查一下 run_1 的进度",
+      sessionKey: "cli:test",
+      channel: "cli",
+      chatId: "test",
+    });
+    expect(response).toContain("paused repeated workflow status polling");
+  });
+
+  it("does not forward speculative assistant text while tool calls are pending", async () => {
+    const workspace = await makeWorkspace();
+    const provider = new ScriptedProvider([
+      {
+        content: "I already know this is failing.",
+        toolCalls: [
+          {
+            id: "tc_1",
+            name: "list_dir",
+            arguments: { path: "." },
+          },
+        ],
+      },
+      {
+        content: "Done",
+        toolCalls: [],
+      },
+    ]);
+
+    const progress: string[] = [];
+    const agent = new AgentLoop({
+      bus: new MessageBus(),
+      provider,
+      workspace,
+    });
+
+    await agent.processDirect({
+      content: "check files",
+      sessionKey: "cli:test",
+      channel: "cli",
+      chatId: "test",
+      onProgress: async (msg) => {
+        progress.push(msg);
+      },
+    });
+
+    expect(progress.some((msg) => msg.includes("I already know this is failing."))).toBe(false);
+    expect(progress.some((msg) => msg.includes("list_dir"))).toBe(true);
+  });
+
   it("handles /stop and aborts active session task", async () => {
     const workspace = await makeWorkspace();
     const bus = new MessageBus();
@@ -321,9 +430,14 @@ describe("AgentLoop", () => {
           apiKey: "memu-key",
           baseUrl: "https://api.memu.so",
           agentId: "openintern-test",
+          scopes: {
+            chat: "chat",
+            papers: "papers",
+          },
           timeoutMs: 3000,
           retrieve: true,
           memorize: true,
+          memorizeMode: "auto",
           apiStyle: "cloudV3",
           endpoints: {},
         },
@@ -367,6 +481,6 @@ describe("AgentLoop", () => {
     expect(typeof retrieveBodyRaw).toBe("string");
     const retrieveBody = JSON.parse(String(retrieveBodyRaw)) as Record<string, unknown>;
     expect(retrieveBody.user_id).toBe("cli:test");
-    expect(retrieveBody.agent_id).toBe("openintern-test");
+    expect(retrieveBody.agent_id).toBe("openintern-test:chat");
   });
 });

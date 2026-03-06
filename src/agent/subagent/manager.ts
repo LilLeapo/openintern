@@ -1,8 +1,19 @@
 import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 
-import type { InboundMessage } from "../../bus/events.js";
+import type {
+  ApprovalToolCall,
+  InboundMessage,
+  SubagentApprovalGrantedEvent,
+  SubagentTaskMessage,
+  SubagentTaskEvent,
+  SubagentTaskToolCall,
+} from "../../bus/events.js";
 import { MessageBus } from "../../bus/message-bus.js";
-import type { LLMProvider } from "../../llm/provider.js";
+import { resolveRole, validateRoleName } from "../../config/role-resolver.js";
+import type { AppConfig, RoleConfig } from "../../config/schema.js";
+import type { LLMProvider, ToolCallRequest } from "../../llm/provider.js";
 import { ExecTool } from "../../tools/builtins/exec.js";
 import {
   EditFileTool,
@@ -10,13 +21,47 @@ import {
   ReadFileTool,
   WriteFileTool,
 } from "../../tools/builtins/filesystem.js";
+import {
+  MemoryRetrieveTool,
+  MemorySaveTool,
+  type MemoryScopeResolver,
+} from "../../tools/builtins/memory.js";
+import {
+  ScopedMemoryRetrieveTool,
+  ScopedMemorySaveTool,
+} from "../../tools/builtins/scoped-memory.js";
 import { WebFetchTool, WebSearchTool } from "../../tools/builtins/web.js";
+import type { Tool } from "../../tools/core/tool.js";
 import { ToolRegistry } from "../../tools/core/tool-registry.js";
 import { ContextBuilder } from "../context/context-builder.js";
+import type { MemUClient } from "../memory/memu-client.js";
+import { SkillsLoader } from "../skills/loader.js";
 
 interface RunningTask {
   task: Promise<void>;
   abortController: AbortController;
+}
+
+interface PendingApproval {
+  approvalId: string;
+  taskId: string;
+  sessionKey: string;
+  timer: NodeJS.Timeout;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+const MAX_LOG_CONTENT = 6_000;
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function truncateLogContent(value: string): string {
+  if (value.length <= MAX_LOG_CONTENT) {
+    return value;
+  }
+  return `${value.slice(0, MAX_LOG_CONTENT)}\n...(truncated)`;
 }
 
 export interface SubagentManagerOptions {
@@ -32,11 +77,49 @@ export interface SubagentManagerOptions {
   webProxy?: string | null;
   execTimeoutSeconds?: number;
   restrictToWorkspace?: boolean;
+  config: AppConfig;
+  memuClient?: MemUClient | null;
+  memuScopeResolver?: MemoryScopeResolver;
+  maxConcurrent?: number;
+  externalToolRegistry?: ToolRegistry;
+}
+
+export interface SpawnTaskOptions {
+  task: string;
+  role?: string | null;
+  label?: string | null;
+  originChannel: string;
+  originChatId: string;
+  sessionKey: string;
+  skillNames?: string[];
+  announceToMainAgent?: boolean;
+  workflowContext?: {
+    runId: string;
+    nodeId: string;
+    nodeName: string;
+    hitl?: {
+      enabled: boolean;
+      highRiskTools: string[];
+      approvalTarget: "owner" | "group";
+      approvalTimeoutMs: number;
+    };
+  };
+}
+
+export interface SpawnTaskResult {
+  taskId: string;
+  label: string;
+  queued: boolean;
+  queuePosition: number | null;
+  ack: string;
 }
 
 export class SubagentManager {
   private readonly runningTasks = new Map<string, RunningTask>();
   private readonly sessionTasks = new Map<string, Set<string>>();
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly taskToApprovals = new Map<string, Set<string>>();
+  private readonly unsubscribeApprovalGranted: () => void;
 
   private readonly provider: LLMProvider;
   private readonly workspace: string;
@@ -50,6 +133,14 @@ export class SubagentManager {
   private readonly webProxy: string | null;
   private readonly execTimeoutSeconds: number;
   private readonly restrictToWorkspace: boolean;
+  private readonly configRef: AppConfig;
+  private readonly memuClient: MemUClient | null;
+  private readonly memuScopeResolver?: MemoryScopeResolver;
+  private readonly externalToolRegistry?: ToolRegistry;
+
+  private readonly maxConcurrent: number;
+  private runningCount = 0;
+  private readonly waitQueue: Array<() => void> = [];
 
   constructor(options: SubagentManagerOptions) {
     this.provider = options.provider;
@@ -64,32 +155,111 @@ export class SubagentManager {
     this.webProxy = options.webProxy ?? null;
     this.execTimeoutSeconds = options.execTimeoutSeconds ?? 60;
     this.restrictToWorkspace = options.restrictToWorkspace ?? false;
+    this.configRef = options.config;
+    this.memuClient = options.memuClient ?? null;
+    this.memuScopeResolver = options.memuScopeResolver;
+    this.externalToolRegistry = options.externalToolRegistry;
+
+    const configMax = options.config.agents.subagentConcurrency.maxConcurrent;
+    const inputMax = options.maxConcurrent ?? configMax;
+    const normalized = Number.isFinite(inputMax) ? Math.floor(inputMax) : 1;
+    this.maxConcurrent = Math.max(1, normalized);
+
+    this.unsubscribeApprovalGranted = this.bus.onSubagentApprovalGranted((event) => {
+      this.onApprovalGranted(event);
+    });
   }
 
   async spawn(options: {
     task: string;
+    role?: string | null;
     label?: string | null;
     originChannel: string;
     originChatId: string;
     sessionKey: string;
   }): Promise<string> {
+    try {
+      const started = await this.spawnTask(options);
+      return started.ack;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async spawnTask(options: SpawnTaskOptions): Promise<SpawnTaskResult> {
+    const role = options.role?.trim() ? options.role.trim() : null;
+    if (role) {
+      const roleError = validateRoleName(this.configRef, role);
+      if (roleError) {
+        throw new Error(roleError);
+      }
+    }
+
+    const roleConfig = role ? resolveRole(this.configRef, role) : null;
+    if (role && !roleConfig) {
+      throw new Error(`Error: Role '${role}' is invalid in config.`);
+    }
+
+    const skillNames = Array.from(
+      new Set(
+        (options.skillNames ?? [])
+          .map((name) => name.trim())
+          .filter((name) => name.length > 0),
+      ),
+    );
+    const announceToMainAgent = options.announceToMainAgent ?? true;
+    const workflowContext = options.workflowContext
+      ? {
+          runId: options.workflowContext.runId,
+          nodeId: options.workflowContext.nodeId,
+          nodeName: options.workflowContext.nodeName,
+          hitl: options.workflowContext.hitl
+            ? {
+                enabled: options.workflowContext.hitl.enabled === true,
+                highRiskTools: Array.from(
+                  new Set(
+                    options.workflowContext.hitl.highRiskTools
+                      .map((name) => name.trim())
+                      .filter((name) => name.length > 0),
+                  ),
+                ),
+                approvalTarget: options.workflowContext.hitl.approvalTarget,
+                approvalTimeoutMs: options.workflowContext.hitl.approvalTimeoutMs,
+              }
+            : undefined,
+        }
+      : undefined;
+
     const taskId = randomUUID().slice(0, 8);
     const label =
       options.label?.trim() ||
       (options.task.length > 30 ? `${options.task.slice(0, 30)}...` : options.task);
 
+    const queued = this.runningCount >= this.maxConcurrent;
+    const queuePosition = queued ? this.waitQueue.length + 1 : null;
+
     const abortController = new AbortController();
     const runTask = this.runSubagent({
       taskId,
+      role,
+      roleConfig,
       label,
       task: options.task,
       originChannel: options.originChannel,
       originChatId: options.originChatId,
+      sessionKey: options.sessionKey,
+      skillNames,
+      announceToMainAgent,
+      workflowContext,
       signal: abortController.signal,
     });
     const wrapped: RunningTask = {
       abortController,
       task: runTask.finally(() => {
+        this.cancelPendingApprovalsByTask(
+          taskId,
+          "Task ended before approval was completed.",
+        );
         this.runningTasks.delete(taskId);
         const set = this.sessionTasks.get(options.sessionKey);
         if (!set) {
@@ -107,10 +277,67 @@ export class SubagentManager {
     }
     this.sessionTasks.get(options.sessionKey)?.add(taskId);
 
-    return `Subagent [${label}] started (id: ${taskId}). I'll notify you when it completes.`;
+    const ack =
+      queued && queuePosition !== null
+        ? `Subagent [${label}] queued (id: ${taskId}, position: ${queuePosition} in queue). I'll notify you when it completes.`
+        : `Subagent [${label}] started (id: ${taskId}). I'll notify you when it completes.`;
+
+    return {
+      taskId,
+      label,
+      queued,
+      queuePosition,
+      ack,
+    };
+  }
+
+  cancelPendingApprovalsByTask(taskId: string, reason = "Approval cancelled."): number {
+    const ids = Array.from(this.taskToApprovals.get(taskId) ?? []);
+    if (ids.length === 0) {
+      return 0;
+    }
+
+    let cancelled = 0;
+    for (const approvalId of ids) {
+      const pending = this.takePendingApproval(approvalId);
+      if (!pending) {
+        continue;
+      }
+      cancelled += 1;
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+      void this.bus.emitSubagentApprovalCancelled({
+        type: "SUBAGENT_APPROVAL_CANCELLED",
+        approvalId: pending.approvalId,
+        taskId: pending.taskId,
+        cancelledAt: new Date(),
+        reason,
+      });
+    }
+
+    return cancelled;
+  }
+
+  cancelPendingApprovalsBySession(
+    sessionKey: string,
+    reason = "Approval cancelled by session shutdown.",
+  ): number {
+    const taskIds = Array.from(this.sessionTasks.get(sessionKey) ?? []);
+    if (taskIds.length === 0) {
+      return 0;
+    }
+    let total = 0;
+    for (const taskId of taskIds) {
+      total += this.cancelPendingApprovalsByTask(taskId, reason);
+    }
+    return total;
   }
 
   async cancelBySession(sessionKey: string): Promise<number> {
+    this.cancelPendingApprovalsBySession(
+      sessionKey,
+      "Approval cancelled because session was stopped.",
+    );
     const ids = Array.from(this.sessionTasks.get(sessionKey) ?? []);
     if (ids.length === 0) {
       return 0;
@@ -131,12 +358,275 @@ export class SubagentManager {
   }
 
   getRunningCount(): number {
-    return this.runningTasks.size;
+    return this.runningCount;
   }
 
-  private buildSubagentPrompt(): string {
-    const timeCtx = new ContextBuilder(this.workspace).buildRuntimeContext();
-    return `# Subagent
+  private async acquireSlot(): Promise<void> {
+    if (this.runningCount < this.maxConcurrent) {
+      this.runningCount += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.waitQueue.push(resolve);
+    });
+    this.runningCount += 1;
+  }
+
+  private releaseSlot(): void {
+    this.runningCount = Math.max(0, this.runningCount - 1);
+    const next = this.waitQueue.shift();
+    if (next) {
+      next();
+    }
+  }
+
+  private setToolContext(tool: Tool, channel: string, chatId: string): void {
+    const contextAware = tool as Tool & {
+      setContext?: (originChannel: string, originChatId: string) => void;
+    };
+    if (typeof contextAware.setContext === "function") {
+      contextAware.setContext(channel, chatId);
+    }
+  }
+
+  private buildToolRegistry(options: {
+    roleConfig: RoleConfig | null;
+    taskWorkspace: string;
+    originChannel: string;
+    originChatId: string;
+  }): ToolRegistry {
+    const tools = new ToolRegistry();
+    const forceWorkspaceSandbox =
+      this.restrictToWorkspace || options.roleConfig?.workspaceIsolation === true;
+    const allowedDir = forceWorkspaceSandbox ? options.taskWorkspace : undefined;
+
+    const factories: Record<string, () => Tool> = {
+      read_file: () => new ReadFileTool(options.taskWorkspace, allowedDir),
+      write_file: () => new WriteFileTool(options.taskWorkspace, allowedDir),
+      edit_file: () => new EditFileTool(options.taskWorkspace, allowedDir),
+      list_dir: () => new ListDirTool(options.taskWorkspace, allowedDir),
+      exec: () =>
+        new ExecTool({
+          timeoutMs: this.execTimeoutSeconds * 1000,
+          workingDir: options.taskWorkspace,
+          restrictToWorkspace: forceWorkspaceSandbox,
+        }),
+      web_search: () =>
+        new WebSearchTool(this.webSearchApiKey, this.webSearchMaxResults, this.webProxy),
+      web_fetch: () => new WebFetchTool(50_000, this.webProxy),
+    };
+
+    const memuClient = this.memuClient;
+    const memuScopeResolver = this.memuScopeResolver;
+    if (memuClient && memuScopeResolver) {
+      if (options.roleConfig) {
+        const forcedScope = options.roleConfig.memoryScope;
+        factories.memory_save =
+          () => new ScopedMemorySaveTool(memuClient, memuScopeResolver, forcedScope);
+        factories.memory_retrieve =
+          () => new ScopedMemoryRetrieveTool(memuClient, memuScopeResolver, forcedScope);
+      } else {
+        factories.memory_save = () => new MemorySaveTool(memuClient, memuScopeResolver);
+        factories.memory_retrieve =
+          () => new MemoryRetrieveTool(memuClient, memuScopeResolver);
+      }
+    }
+
+    const selectedTools = options.roleConfig
+      ? options.roleConfig.allowedTools
+      : Object.keys(factories);
+
+    for (const toolName of selectedTools) {
+      const createTool = factories[toolName];
+      if (createTool) {
+        const tool = createTool();
+        this.setToolContext(tool, options.originChannel, options.originChatId);
+        tools.register(tool);
+        continue;
+      }
+      const external = this.externalToolRegistry?.get(toolName);
+      if (external) {
+        // MCP tools are process-level and can be reused by subagents.
+        this.setToolContext(external, options.originChannel, options.originChatId);
+        tools.register(external);
+      }
+    }
+
+    return tools;
+  }
+
+  private onApprovalGranted(event: SubagentApprovalGrantedEvent): void {
+    const pending = this.pendingApprovals.get(event.approvalId);
+    if (!pending || pending.taskId !== event.taskId) {
+      return;
+    }
+    const removed = this.takePendingApproval(event.approvalId);
+    if (!removed) {
+      return;
+    }
+    clearTimeout(removed.timer);
+    removed.resolve();
+  }
+
+  private takePendingApproval(approvalId: string): PendingApproval | null {
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      return null;
+    }
+    this.pendingApprovals.delete(approvalId);
+    const approvalSet = this.taskToApprovals.get(pending.taskId);
+    if (approvalSet) {
+      approvalSet.delete(approvalId);
+      if (approvalSet.size === 0) {
+        this.taskToApprovals.delete(pending.taskId);
+      }
+    }
+    return pending;
+  }
+
+  private buildCommandPreview(toolCalls: ApprovalToolCall[]): string {
+    const firstExec = toolCalls.find((toolCall) => toolCall.name === "exec");
+    if (firstExec && typeof firstExec.arguments.command === "string") {
+      return firstExec.arguments.command.slice(0, 200);
+    }
+
+    if (toolCalls.length === 1) {
+      const only = toolCalls[0];
+      const args = JSON.stringify(only.arguments);
+      return `${only.name}(${args.slice(0, 180)})`;
+    }
+
+    const names = toolCalls.map((toolCall) => toolCall.name).join(", ");
+    return `${toolCalls.length} tool calls: ${names}`.slice(0, 240);
+  }
+
+  private async waitForApproval(options: {
+    taskId: string;
+    sessionKey: string;
+    originChannel: string;
+    originChatId: string;
+    workflowContext?: SpawnTaskOptions["workflowContext"];
+    toolCalls: ToolCallRequest[];
+    signal: AbortSignal;
+  }): Promise<void> {
+    const workflowContext = options.workflowContext;
+    const hitl = workflowContext?.hitl;
+    if (!workflowContext || !hitl?.enabled) {
+      return;
+    }
+
+    const highRiskSet = new Set(hitl.highRiskTools);
+    const approvalToolCalls: ApprovalToolCall[] = options.toolCalls.map((toolCall) => ({
+      id: toolCall.id,
+      name: toolCall.name,
+      arguments: toolCall.arguments,
+      highRisk: highRiskSet.has(toolCall.name),
+    }));
+    const approvalId = randomUUID().replace(/-/g, "").slice(0, 12);
+    const requestedAt = new Date();
+    const expiresAt = new Date(requestedAt.getTime() + hitl.approvalTimeoutMs);
+    const commandPreview = this.buildCommandPreview(approvalToolCalls);
+
+    let resolveApproval!: () => void;
+    let rejectApproval!: (error: Error) => void;
+    const waitApprovalPromise = new Promise<void>((resolve, reject) => {
+      resolveApproval = resolve;
+      rejectApproval = reject;
+    });
+
+    let timeoutReject!: (error: Error) => void;
+    const timeoutPromise = new Promise<void>((_resolve, reject) => {
+      timeoutReject = reject as (error: Error) => void;
+    });
+
+    const timeoutTimer = setTimeout(() => {
+      const pending = this.takePendingApproval(approvalId);
+      if (!pending) {
+        return;
+      }
+      const timeoutError = new Error(
+        `Approval timed out after ${hitl.approvalTimeoutMs}ms for task ${options.taskId}.`,
+      );
+      pending.reject(timeoutError);
+      timeoutReject(timeoutError);
+      void this.bus.emitSubagentApprovalExpired({
+        type: "SUBAGENT_APPROVAL_EXPIRED",
+        approvalId,
+        taskId: options.taskId,
+        expiredAt: new Date(),
+        reason: timeoutError.message,
+      });
+    }, hitl.approvalTimeoutMs);
+
+    const pendingApproval: PendingApproval = {
+      approvalId,
+      taskId: options.taskId,
+      sessionKey: options.sessionKey,
+      timer: timeoutTimer,
+      resolve: resolveApproval,
+      reject: rejectApproval,
+    };
+    this.pendingApprovals.set(approvalId, pendingApproval);
+    if (!this.taskToApprovals.has(options.taskId)) {
+      this.taskToApprovals.set(options.taskId, new Set());
+    }
+    this.taskToApprovals.get(options.taskId)?.add(approvalId);
+
+    try {
+      await this.bus.emitSubagentApprovalRequested({
+        type: "SUBAGENT_APPROVAL_REQUESTED",
+        approvalId,
+        taskId: options.taskId,
+        runId: workflowContext.runId,
+        nodeId: workflowContext.nodeId,
+        nodeName: workflowContext.nodeName,
+        approvalTarget: hitl.approvalTarget,
+        requestedAt,
+        expiresAt,
+        toolCalls: approvalToolCalls,
+        commandPreview,
+        originChannel: options.originChannel,
+        originChatId: options.originChatId,
+      });
+    } catch (error) {
+      const pending = this.takePendingApproval(approvalId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("Approval request failed to emit."));
+      }
+      throw error;
+    }
+
+    if (options.signal.aborted) {
+      const pending = this.takePendingApproval(approvalId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("Subagent aborted before approval."));
+      }
+      throw new Error("Subagent aborted");
+    }
+
+    await Promise.race([waitApprovalPromise, timeoutPromise]);
+  }
+
+  private async buildSubagentPrompt(
+    roleConfig: RoleConfig | null,
+    taskWorkspace: string,
+    skillNames: string[],
+  ): Promise<string> {
+    const timeCtx = new ContextBuilder(taskWorkspace).buildRuntimeContext();
+    const parts: string[] = [];
+    if (roleConfig) {
+      parts.push(`# Subagent
+
+${timeCtx}
+
+${roleConfig.systemPrompt}
+
+## Workspace
+${taskWorkspace}`);
+    } else {
+      parts.push(`# Subagent
 
 ${timeCtx}
 
@@ -144,43 +634,93 @@ You are a subagent spawned by the main agent to complete a specific task.
 Stay focused on the assigned task. Your final response will be reported back to the main agent.
 
 ## Workspace
-${this.workspace}`;
+${taskWorkspace}`);
+    }
+
+    if (skillNames.length > 0) {
+      const loaded = await new SkillsLoader(this.workspace).loadSkillsForContext(skillNames);
+      const listedSkills = skillNames.join(", ");
+      if (loaded) {
+        parts.push(`## Assigned Skills
+
+Focus on these skills for this task: ${listedSkills}
+
+${loaded}`);
+      } else {
+        parts.push(`## Assigned Skills
+
+Focus on these skills for this task: ${listedSkills}`);
+      }
+    }
+
+    return parts.join("\n\n");
   }
 
   private async runSubagent(options: {
     taskId: string;
+    role: string | null;
+    roleConfig: RoleConfig | null;
     label: string;
     task: string;
     originChannel: string;
     originChatId: string;
+    sessionKey: string;
+    skillNames: string[];
+    announceToMainAgent: boolean;
+    workflowContext?: SpawnTaskOptions["workflowContext"];
     signal: AbortSignal;
   }): Promise<void> {
+    const messageLogs: SubagentTaskMessage[] = [];
+    const toolCallLogs: SubagentTaskToolCall[] = [];
+    await this.acquireSlot();
+
     try {
-      const tools = new ToolRegistry();
-      const allowedDir = this.restrictToWorkspace ? this.workspace : undefined;
-      tools.register(new ReadFileTool(this.workspace, allowedDir));
-      tools.register(new WriteFileTool(this.workspace, allowedDir));
-      tools.register(new EditFileTool(this.workspace, allowedDir));
-      tools.register(new ListDirTool(this.workspace, allowedDir));
-      tools.register(
-        new ExecTool({
-          timeoutMs: this.execTimeoutSeconds * 1000,
-          workingDir: this.workspace,
-          restrictToWorkspace: this.restrictToWorkspace,
-        }),
+      const taskWorkspace =
+        options.roleConfig?.workspaceIsolation === true
+          ? path.join(this.workspace, "tasks", options.taskId)
+          : this.workspace;
+
+      if (options.roleConfig?.workspaceIsolation === true) {
+        await mkdir(taskWorkspace, { recursive: true });
+      }
+
+      const tools = this.buildToolRegistry({
+        roleConfig: options.roleConfig,
+        taskWorkspace,
+        originChannel: options.originChannel,
+        originChatId: options.originChatId,
+      });
+
+      const systemPrompt = await this.buildSubagentPrompt(
+        options.roleConfig,
+        taskWorkspace,
+        options.skillNames,
       );
-      tools.register(
-        new WebSearchTool(this.webSearchApiKey, this.webSearchMaxResults, this.webProxy),
-      );
-      tools.register(new WebFetchTool(50_000, this.webProxy));
 
       const messages: Array<Record<string, unknown>> = [
-        { role: "system", content: this.buildSubagentPrompt() },
+        {
+          role: "system",
+          content: systemPrompt,
+        },
         { role: "user", content: options.task },
       ];
+      messageLogs.push(
+        {
+          role: "system",
+          content: truncateLogContent(systemPrompt),
+          at: nowIso(),
+        },
+        {
+          role: "user",
+          content: truncateLogContent(options.task),
+          at: nowIso(),
+        },
+      );
 
       let finalResult: string | null = null;
-      for (let iteration = 0; iteration < 15; iteration += 1) {
+      const highRiskSet = new Set(options.workflowContext?.hitl?.highRiskTools ?? []);
+      const maxIterations = options.roleConfig?.maxIterations ?? 15;
+      for (let iteration = 0; iteration < maxIterations; iteration += 1) {
         if (options.signal.aborted) {
           throw new Error("Subagent aborted");
         }
@@ -196,6 +736,11 @@ ${this.workspace}`;
 
         if (response.toolCalls.length === 0) {
           finalResult = response.content ?? "Task completed with no output.";
+          messageLogs.push({
+            role: "assistant",
+            content: truncateLogContent(finalResult),
+            at: nowIso(),
+          });
           break;
         }
 
@@ -212,16 +757,56 @@ ${this.workspace}`;
           content: response.content ?? "",
           tool_calls: toolCallDicts,
         });
+        messageLogs.push({
+          role: "assistant",
+          content: truncateLogContent(response.content ?? ""),
+          at: nowIso(),
+        });
+
+        const hitl = options.workflowContext?.hitl;
+        if (hitl?.enabled) {
+          const hasHighRisk = response.toolCalls.some((toolCall) =>
+            highRiskSet.has(toolCall.name),
+          );
+          if (hasHighRisk) {
+            await this.waitForApproval({
+              taskId: options.taskId,
+              sessionKey: options.sessionKey,
+              originChannel: options.originChannel,
+              originChatId: options.originChatId,
+              workflowContext: options.workflowContext,
+              toolCalls: response.toolCalls,
+              signal: options.signal,
+            });
+          }
+        }
 
         for (const toolCall of response.toolCalls) {
           const result = await tools.execute(toolCall.name, toolCall.arguments, {
             signal: options.signal,
+          });
+          const resultText = truncateLogContent(result);
+          const loggedAt = nowIso();
+          toolCallLogs.push({
+            id: toolCall.id,
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+            result: resultText,
+            highRisk: highRiskSet.has(toolCall.name),
+            at: loggedAt,
           });
           messages.push({
             role: "tool",
             tool_call_id: toolCall.id,
             name: toolCall.name,
             content: result,
+          });
+          messageLogs.push({
+            role: "tool",
+            name: toolCall.name,
+            toolCallId: toolCall.id,
+            content: resultText,
+            at: loggedAt,
           });
         }
       }
@@ -231,37 +816,92 @@ ${this.workspace}`;
       }
 
       await this.announceResult({
+        taskId: options.taskId,
+        role: options.role,
         label: options.label,
         task: options.task,
         result: finalResult,
         status: "ok",
         originChannel: options.originChannel,
         originChatId: options.originChatId,
+        announceToMainAgent: options.announceToMainAgent,
+        messages: messageLogs,
+        toolCalls: toolCallLogs,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      await this.announceResult({
-        label: options.label,
-        task: options.task,
-        result: `Error: ${msg}`,
-        status: "error",
-        originChannel: options.originChannel,
-        originChatId: options.originChatId,
-      });
+      try {
+        const errorResult = `Error: ${msg}`;
+        messageLogs.push({
+          role: "assistant",
+          content: truncateLogContent(errorResult),
+          at: nowIso(),
+        });
+        await this.announceResult({
+          taskId: options.taskId,
+          role: options.role,
+          label: options.label,
+          task: options.task,
+          result: errorResult,
+          status: "error",
+          originChannel: options.originChannel,
+          originChatId: options.originChatId,
+          announceToMainAgent: options.announceToMainAgent,
+          messages: messageLogs,
+          toolCalls: toolCallLogs,
+        });
+      } catch (announceError) {
+        const announceMessage =
+          announceError instanceof Error ? announceError.message : String(announceError);
+        console.warn(
+          `[subagent] failed to announce task ${options.taskId}: ${announceMessage}`,
+        );
+      }
+    } finally {
+      this.releaseSlot();
     }
   }
 
   private async announceResult(options: {
+    taskId: string;
+    role: string | null;
     label: string;
     task: string;
     result: string;
     status: "ok" | "error";
     originChannel: string;
     originChatId: string;
+    announceToMainAgent: boolean;
+    messages?: SubagentTaskMessage[];
+    toolCalls?: SubagentTaskToolCall[];
   }): Promise<void> {
+    const event: SubagentTaskEvent = {
+      type:
+        options.status === "ok"
+          ? "SUBAGENT_TASK_COMPLETED"
+          : "SUBAGENT_TASK_FAILED",
+      taskId: options.taskId,
+      role: options.role,
+      label: options.label,
+      task: options.task,
+      status: options.status,
+      result: options.result,
+      messages: options.messages,
+      toolCalls: options.toolCalls,
+      originChannel: options.originChannel,
+      originChatId: options.originChatId,
+      timestamp: new Date(),
+    };
+    await this.bus.emitSubagentEvent(event);
+
+    if (!options.announceToMainAgent) {
+      return;
+    }
+
     const statusText =
       options.status === "ok" ? "completed successfully" : "failed";
-    const content = `[Subagent '${options.label}' ${statusText}]
+    const roleTag = options.role ? ` (role: ${options.role})` : "";
+    const content = `[Subagent '${options.label}'${roleTag} ${statusText}]
 
 Task: ${options.task}
 
@@ -279,4 +919,3 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
     await this.bus.publishInbound(msg);
   }
 }
-

@@ -12,6 +12,10 @@ export class SpawnTool extends Tool {
         type: "string",
         description: "The task for the subagent to complete",
       },
+      role: {
+        type: "string",
+        description: "Optional role for the subagent (e.g. 'researcher', 'scientist')",
+      },
       label: {
         type: "string",
         description: "Optional short label for the task",
@@ -36,12 +40,17 @@ export class SpawnTool extends Tool {
 
   async execute(params: Record<string, unknown>): Promise<string> {
     const task = String(params.task ?? "");
+    const role =
+      params.role === undefined || params.role === null
+        ? null
+        : String(params.role);
     const label =
       params.label === undefined || params.label === null
         ? null
         : String(params.label);
     return this.manager.spawn({
       task,
+      role,
       label,
       originChannel: this.originChannel,
       originChatId: this.originChatId,
@@ -49,4 +58,3 @@ export class SpawnTool extends Tool {
     });
   }
 }
-

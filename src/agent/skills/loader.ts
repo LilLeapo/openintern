@@ -9,6 +9,12 @@ export interface SkillInfo {
   source: "workspace" | "builtin";
 }
 
+export interface SkillCatalogEntry extends SkillInfo {
+  available: boolean;
+  description: string;
+  requires: string[];
+}
+
 interface SkillMetadata {
   description?: string;
   metadata?: string;
@@ -270,5 +276,22 @@ export class SkillsLoader {
     }
     lines.push("</skills>");
     return lines.join("\n");
+  }
+
+  async listSkillsCatalog(): Promise<SkillCatalogEntry[]> {
+    const skills = await this.listSkills(false);
+    const out: SkillCatalogEntry[] = [];
+    for (const skill of skills) {
+      const metadata = await this.getSkillMetadata(skill.name);
+      const parsed = parseSkillMeta(metadata?.metadata);
+      const requires = missingRequirements(parsed);
+      out.push({
+        ...skill,
+        available: requires.length === 0,
+        description: metadata?.description ?? skill.name,
+        requires,
+      });
+    }
+    return out;
   }
 }
