@@ -71,4 +71,53 @@ describe("MessageBus approval events", () => {
 
     expect(seen).toHaveLength(2);
   });
+
+  it("publishes agent trace events to subscribers", async () => {
+    const bus = new MessageBus();
+    const seen: string[] = [];
+
+    const off = bus.onAgentTraceEvent((event) => {
+      seen.push(`${event.eventType}:${event.agentId}:${event.status}`);
+    });
+
+    await bus.emitAgentTraceEvent({
+      type: "AGENT_TRACE",
+      runId: "run_1",
+      spanId: "span_1",
+      parentSpanId: null,
+      sourceType: "main_agent",
+      agentId: "main",
+      agentName: "main",
+      eventType: "run",
+      phase: "start",
+      status: "running",
+      content: "Run started.",
+      originChannel: "cli",
+      originChatId: "chat-1",
+      timestamp: new Date(),
+    });
+
+    expect(seen).toEqual(["run:main:running"]);
+
+    off();
+
+    await bus.emitAgentTraceEvent({
+      type: "AGENT_TRACE",
+      runId: "run_2",
+      spanId: "span_2",
+      parentSpanId: null,
+      sourceType: "subagent",
+      agentId: "task_1",
+      agentName: "research-1",
+      eventType: "result",
+      phase: "end",
+      status: "ok",
+      content: "Task completed.",
+      originChannel: "cli",
+      originChatId: "chat-1",
+      timestamp: new Date(),
+    });
+
+    expect(seen).toEqual(["run:main:running"]);
+  });
 });

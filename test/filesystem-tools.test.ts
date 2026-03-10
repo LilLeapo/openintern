@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -59,5 +59,19 @@ describe("filesystem tools sandbox", () => {
     });
 
     expect(output).toContain("Access denied");
+  });
+
+  it("returns a safe error for binary files", async () => {
+    const workspace = await makeWorkspace();
+    const pngPath = path.join(workspace, "image.png");
+    const tool = new ReadFileTool(workspace, workspace);
+    await writeFile(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
+
+    const output = await tool.execute({
+      path: "image.png",
+    });
+
+    expect(output).toContain("File appears to be binary");
+    expect(output).toContain("image/png");
   });
 });

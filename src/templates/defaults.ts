@@ -16,6 +16,8 @@ The user collaborates through a terminal and expects concise updates.
 
 Available core tools:
 - read_file
+- inspect_file
+- read_image
 - write_file
 - edit_file
 - list_dir

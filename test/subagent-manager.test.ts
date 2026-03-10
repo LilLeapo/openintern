@@ -175,6 +175,38 @@ class BatchApprovalProvider implements LLMProvider {
   }
 }
 
+class TraceSubagentProvider implements LLMProvider {
+  getDefaultModel(): string {
+    return "trace-subagent";
+  }
+
+  async chat(request: ChatRequest): Promise<LLMResponse> {
+    const hasWrite = request.messages.some(
+      (message) => message.role === "tool" && message.name === "write_file",
+    );
+    if (hasWrite) {
+      return {
+        content: "done",
+        toolCalls: [],
+      };
+    }
+
+    return {
+      content: "I will write a trace marker first.",
+      toolCalls: [
+        {
+          id: "tc_write_trace",
+          name: "write_file",
+          arguments: {
+            path: "trace.txt",
+            content: "trace",
+          },
+        },
+      ],
+    };
+  }
+}
+
 class HighRiskOnlyProvider implements LLMProvider {
   getDefaultModel(): string {
     return "high-risk-only";
@@ -744,5 +776,62 @@ describe("SubagentManager", () => {
 
     const inbound = await bus.consumeInbound(1000);
     expect(inbound?.content).toContain("{\"ok\":true}");
+  });
+
+  it("emits subagent trace events and mirrors them to progress when enabled", async () => {
+    const workspace = await makeWorkspace();
+    const bus = new MessageBus();
+    const config = makeConfig();
+    config.agents.trace.enabled = true;
+    config.agents.trace.level = "verbose";
+    const seenEvents: string[] = [];
+    bus.onAgentTraceEvent((event) => {
+      if (event.sourceType === "subagent") {
+        seenEvents.push(`${event.eventType}:${event.agentName}:${event.status}`);
+      }
+    });
+
+    const manager = new SubagentManager({
+      provider: new TraceSubagentProvider(),
+      workspace,
+      bus,
+      model: "trace-subagent",
+      temperature: 0.1,
+      maxTokens: 128,
+      reasoningEffort: null,
+      config,
+    });
+
+    await manager.spawnTask({
+      task: "emit trace",
+      label: "trace-task",
+      originChannel: "cli",
+      originChatId: "direct",
+      originMessageId: "msg-1",
+      sessionKey: "cli:direct",
+      announceToMainAgent: false,
+    });
+
+    await waitFor(() => seenEvents.some((entry) => entry.startsWith("result:trace-task:ok")), 2000);
+    expect(seenEvents).toContain("run:trace-task:running");
+    expect(seenEvents).toContain("iteration:trace-task:running");
+    expect(seenEvents).toContain("intent:trace-task:info");
+    expect(seenEvents).toContain("tool_call:trace-task:running");
+
+    const outboundMessages: string[] = [];
+    const outboundMetadata: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 6; i += 1) {
+      const outbound = await bus.consumeOutbound(1000);
+      if (outbound?.content) {
+        outboundMessages.push(outbound.content);
+        if (outbound.metadata && typeof outbound.metadata === "object") {
+          outboundMetadata.push(outbound.metadata as Record<string, unknown>);
+        }
+      }
+    }
+    const outputs = outboundMessages.join("\n");
+    expect(outputs).toContain("[trace-task#");
+    expect(outputs).toContain("[tool_call] write_file");
+    expect(outboundMetadata.some((metadata) => metadata.message_id === "msg-1")).toBe(true);
   });
 });

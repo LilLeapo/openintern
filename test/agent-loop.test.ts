@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentLoop } from "../src/agent/loop.js";
 import { MessageBus } from "../src/bus/message-bus.js";
+import { DEFAULT_CONFIG } from "../src/config/schema.js";
 import type { ChatRequest, LLMProvider, LLMResponse } from "../src/llm/provider.js";
 
 class ScriptedProvider implements LLMProvider {
@@ -66,6 +67,39 @@ class CapturingProvider implements LLMProvider {
     return {
       content: "MemU-aware answer",
       toolCalls: [],
+    };
+  }
+}
+
+class ToolResultCaptureProvider implements LLMProvider {
+  toolContent: string | null = null;
+
+  getDefaultModel(): string {
+    return "tool-result-capture";
+  }
+
+  async chat(request: ChatRequest): Promise<LLMResponse> {
+    const toolMessage = [...request.messages]
+      .reverse()
+      .find((message) => message.role === "tool" && typeof message.content === "string");
+    if (toolMessage && typeof toolMessage.content === "string") {
+      this.toolContent = toolMessage.content;
+      return {
+        content: "Done",
+        toolCalls: [],
+      };
+    }
+    return {
+      content: null,
+      toolCalls: [
+        {
+          id: "tc_read",
+          name: "read_file",
+          arguments: {
+            path: "large.txt",
+          },
+        },
+      ],
     };
   }
 }
@@ -358,6 +392,60 @@ describe("AgentLoop", () => {
     expect(progress.some((msg) => msg.includes("list_dir"))).toBe(true);
   });
 
+  it("emits structured main-agent trace events and mirrors them to progress when enabled", async () => {
+    const workspace = await makeWorkspace();
+    const provider = new ScriptedProvider([
+      {
+        content: "I will inspect the current directory first.",
+        toolCalls: [
+          {
+            id: "tc_1",
+            name: "list_dir",
+            arguments: { path: "." },
+          },
+        ],
+      },
+      {
+        content: "Done",
+        toolCalls: [],
+      },
+    ]);
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.agents.trace.enabled = true;
+    config.agents.trace.level = "verbose";
+    const bus = new MessageBus();
+    const seenEvents: string[] = [];
+    bus.onAgentTraceEvent((event) => {
+      seenEvents.push(`${event.eventType}:${event.agentId}:${event.status}`);
+    });
+
+    const progress: string[] = [];
+    const agent = new AgentLoop({
+      bus,
+      provider,
+      workspace,
+      appConfig: config,
+    });
+
+    await agent.processDirect({
+      content: "check files",
+      sessionKey: "cli:test",
+      channel: "cli",
+      chatId: "test",
+      onProgress: async (msg) => {
+        progress.push(msg);
+      },
+    });
+
+    expect(seenEvents).toContain("run:main:running");
+    expect(seenEvents).toContain("iteration:main:running");
+    expect(seenEvents).toContain("intent:main:info");
+    expect(seenEvents).toContain("tool_call:main:running");
+    expect(seenEvents.some((entry) => entry.startsWith("result:main:"))).toBe(true);
+    expect(progress.some((msg) => msg.includes("[main][intent] I will inspect the current directory first."))).toBe(true);
+    expect(progress.some((msg) => msg.includes("[main][tool_call] list_dir"))).toBe(true);
+  });
+
   it("handles /stop and aborts active session task", async () => {
     const workspace = await makeWorkspace();
     const bus = new MessageBus();
@@ -482,5 +570,29 @@ describe("AgentLoop", () => {
     const retrieveBody = JSON.parse(String(retrieveBodyRaw)) as Record<string, unknown>;
     expect(retrieveBody.user_id).toBe("cli:test");
     expect(retrieveBody.agent_id).toBe("openintern-test:chat");
+  });
+
+  it("truncates large tool results before sending them back to the model", async () => {
+    const workspace = await makeWorkspace();
+    const provider = new ToolResultCaptureProvider();
+    await writeFile(path.join(workspace, "large.txt"), "a".repeat(10_000), "utf8");
+
+    const agent = new AgentLoop({
+      bus: new MessageBus(),
+      provider,
+      workspace,
+    });
+
+    const output = await agent.processDirect({
+      content: "Read large.txt",
+      sessionKey: "cli:test",
+      channel: "cli",
+      chatId: "test",
+    });
+
+    expect(output).toBe("Done");
+    expect(provider.toolContent).not.toBeNull();
+    expect(provider.toolContent?.length).toBeLessThan(4_200);
+    expect(provider.toolContent).toContain("truncated for context");
   });
 });
