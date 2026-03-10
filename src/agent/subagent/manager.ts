@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import type {
+  AgentTraceEvent,
   ApprovalToolCall,
   InboundMessage,
   SubagentApprovalGrantedEvent,
@@ -10,6 +11,7 @@ import type {
   SubagentTaskEvent,
   SubagentTaskToolCall,
 } from "../../bus/events.js";
+import { formatAgentTraceProgress } from "../../bus/events.js";
 import { MessageBus } from "../../bus/message-bus.js";
 import { resolveRole, validateRoleName } from "../../config/role-resolver.js";
 import type { AppConfig, RoleConfig } from "../../config/schema.js";
@@ -21,6 +23,7 @@ import {
   ReadFileTool,
   WriteFileTool,
 } from "../../tools/builtins/filesystem.js";
+import { InspectFileTool, ReadImageTool } from "../../tools/builtins/media.js";
 import {
   MemoryRetrieveTool,
   MemorySaveTool,
@@ -33,7 +36,7 @@ import {
 import { WebFetchTool, WebSearchTool } from "../../tools/builtins/web.js";
 import type { Tool } from "../../tools/core/tool.js";
 import { ToolRegistry } from "../../tools/core/tool-registry.js";
-import { ContextBuilder } from "../context/context-builder.js";
+import { ContextBuilder, sanitizeToolResultForContext } from "../context/context-builder.js";
 import type { MemUClient } from "../memory/memu-client.js";
 import { SkillsLoader } from "../skills/loader.js";
 
@@ -49,6 +52,15 @@ interface PendingApproval {
   timer: NodeJS.Timeout;
   resolve: () => void;
   reject: (error: Error) => void;
+  spanId: string;
+  parentSpanId: string | null;
+  originChannel: string;
+  originChatId: string;
+  originMessageId?: string;
+  runId: string;
+  iteration?: number;
+  agentId: string;
+  agentName: string;
 }
 
 const MAX_LOG_CONTENT = 6_000;
@@ -91,6 +103,7 @@ export interface SpawnTaskOptions {
   originChannel: string;
   originChatId: string;
   sessionKey: string;
+  originMessageId?: string;
   skillNames?: string[];
   announceToMainAgent?: boolean;
   workflowContext?: {
@@ -170,6 +183,69 @@ export class SubagentManager {
     });
   }
 
+  private newTraceSpanId(): string {
+    return `span_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  }
+
+  private traceEnabled(level: "basic" | "verbose" = "basic"): boolean {
+    const trace = this.configRef.agents.trace;
+    if (!trace.enabled || !trace.includeSubagents) {
+      return false;
+    }
+    if (level === "verbose" && trace.level !== "verbose") {
+      return false;
+    }
+    return true;
+  }
+
+  private shouldMirrorTraceToProgress(): boolean {
+    const trace = this.configRef.agents.trace;
+    return trace.enabled && trace.includeSubagents && trace.mirrorToProgress;
+  }
+
+  private async emitSubagentTraceEvent(
+    event: Omit<AgentTraceEvent, "type" | "timestamp" | "sourceType">,
+  ): Promise<void> {
+    const fullEvent: AgentTraceEvent = {
+      type: "AGENT_TRACE",
+      timestamp: new Date(),
+      sourceType: "subagent",
+      ...event,
+    };
+    await this.bus.emitAgentTraceEvent(fullEvent);
+    if (!this.shouldMirrorTraceToProgress()) {
+      return;
+    }
+    await this.bus.publishOutbound({
+      channel: fullEvent.originChannel,
+      chatId: fullEvent.originChatId,
+      content: formatAgentTraceProgress(fullEvent),
+      metadata: {
+        _progress: true,
+        ...(typeof fullEvent.metadata?.message_id === "string"
+          ? {
+              message_id: fullEvent.metadata.message_id,
+            }
+          : {}),
+        _debug: true,
+        _agent_trace: true,
+        _agent_id: fullEvent.agentId,
+        _agent_name: fullEvent.agentName,
+        _trace_run_id: fullEvent.runId,
+        _trace_span_id: fullEvent.spanId,
+        _trace_parent_span_id: fullEvent.parentSpanId,
+        _trace_event_type: fullEvent.eventType,
+        _trace_phase: fullEvent.phase,
+        _trace_status: fullEvent.status,
+        ...(typeof fullEvent.iteration === "number"
+          ? {
+              _trace_iteration: fullEvent.iteration,
+            }
+          : {}),
+      },
+    });
+  }
+
   async spawn(options: {
     task: string;
     role?: string | null;
@@ -177,6 +253,7 @@ export class SubagentManager {
     originChannel: string;
     originChatId: string;
     sessionKey: string;
+    originMessageId?: string;
   }): Promise<string> {
     try {
       const started = await this.spawnTask(options);
@@ -247,6 +324,7 @@ export class SubagentManager {
       task: options.task,
       originChannel: options.originChannel,
       originChatId: options.originChatId,
+      originMessageId: options.originMessageId,
       sessionKey: options.sessionKey,
       skillNames,
       announceToMainAgent,
@@ -306,6 +384,30 @@ export class SubagentManager {
       cancelled += 1;
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));
+      if (this.traceEnabled()) {
+        void this.emitSubagentTraceEvent({
+          runId: pending.runId,
+          spanId: pending.spanId,
+          parentSpanId: pending.parentSpanId,
+          agentId: pending.agentId,
+          agentName: pending.agentName,
+          eventType: "approval",
+          phase: "end",
+          status: "cancelled",
+          iteration: pending.iteration,
+          content: `Approval cancelled: ${reason}`,
+          originChannel: pending.originChannel,
+          originChatId: pending.originChatId,
+          metadata: {
+            approvalId,
+            ...(pending.originMessageId
+              ? {
+                  message_id: pending.originMessageId,
+                }
+              : {}),
+          },
+        });
+      }
       void this.bus.emitSubagentApprovalCancelled({
         type: "SUBAGENT_APPROVAL_CANCELLED",
         approvalId: pending.approvalId,
@@ -402,6 +504,16 @@ export class SubagentManager {
 
     const factories: Record<string, () => Tool> = {
       read_file: () => new ReadFileTool(options.taskWorkspace, allowedDir),
+      inspect_file: () => new InspectFileTool(options.taskWorkspace, allowedDir),
+      read_image: () =>
+        new ReadImageTool(
+          this.provider,
+          this.model,
+          this.maxTokens,
+          this.reasoningEffort,
+          options.taskWorkspace,
+          allowedDir,
+        ),
       write_file: () => new WriteFileTool(options.taskWorkspace, allowedDir),
       edit_file: () => new EditFileTool(options.taskWorkspace, allowedDir),
       list_dir: () => new ListDirTool(options.taskWorkspace, allowedDir),
@@ -460,6 +572,31 @@ export class SubagentManager {
     if (!pending || pending.taskId !== event.taskId) {
       return;
     }
+    if (this.traceEnabled()) {
+      void this.emitSubagentTraceEvent({
+        runId: pending.runId,
+        spanId: pending.spanId,
+        parentSpanId: pending.parentSpanId,
+        agentId: pending.agentId,
+        agentName: pending.agentName,
+        eventType: "approval",
+        phase: "end",
+        status: "granted",
+        iteration: pending.iteration,
+        content: `Approval granted by ${event.approver}.`,
+        originChannel: pending.originChannel,
+        originChatId: pending.originChatId,
+        metadata: {
+          approvalId: event.approvalId,
+          approver: event.approver,
+          ...(pending.originMessageId
+            ? {
+                message_id: pending.originMessageId,
+              }
+            : {}),
+        },
+      });
+    }
     const removed = this.takePendingApproval(event.approvalId);
     if (!removed) {
       return;
@@ -502,12 +639,16 @@ export class SubagentManager {
 
   private async waitForApproval(options: {
     taskId: string;
+    label: string;
     sessionKey: string;
     originChannel: string;
     originChatId: string;
+    originMessageId?: string;
     workflowContext?: SpawnTaskOptions["workflowContext"];
     toolCalls: ToolCallRequest[];
     signal: AbortSignal;
+    iteration: number;
+    parentSpanId: string | null;
   }): Promise<void> {
     const workflowContext = options.workflowContext;
     const hitl = workflowContext?.hitl;
@@ -526,6 +667,9 @@ export class SubagentManager {
     const requestedAt = new Date();
     const expiresAt = new Date(requestedAt.getTime() + hitl.approvalTimeoutMs);
     const commandPreview = this.buildCommandPreview(approvalToolCalls);
+    const agentId = options.taskId;
+    const agentName = options.label || options.taskId;
+    const approvalSpanId = this.newTraceSpanId();
 
     let resolveApproval!: () => void;
     let rejectApproval!: (error: Error) => void;
@@ -548,6 +692,30 @@ export class SubagentManager {
         `Approval timed out after ${hitl.approvalTimeoutMs}ms for task ${options.taskId}.`,
       );
       pending.reject(timeoutError);
+      if (this.traceEnabled()) {
+        void this.emitSubagentTraceEvent({
+          runId: pending.runId,
+          spanId: pending.spanId,
+          parentSpanId: pending.parentSpanId,
+          agentId: pending.agentId,
+          agentName: pending.agentName,
+          eventType: "approval",
+          phase: "end",
+          status: "expired",
+          iteration: pending.iteration,
+          content: timeoutError.message,
+          originChannel: pending.originChannel,
+          originChatId: pending.originChatId,
+          metadata: {
+            approvalId,
+            ...(pending.originMessageId
+              ? {
+                  message_id: pending.originMessageId,
+                }
+              : {}),
+          },
+        });
+      }
       timeoutReject(timeoutError);
       void this.bus.emitSubagentApprovalExpired({
         type: "SUBAGENT_APPROVAL_EXPIRED",
@@ -565,6 +733,15 @@ export class SubagentManager {
       timer: timeoutTimer,
       resolve: resolveApproval,
       reject: rejectApproval,
+      spanId: approvalSpanId,
+      parentSpanId: options.parentSpanId,
+      originChannel: options.originChannel,
+      originChatId: options.originChatId,
+      originMessageId: options.originMessageId,
+      runId: options.taskId,
+      iteration: options.iteration,
+      agentId,
+      agentName,
     };
     this.pendingApprovals.set(approvalId, pendingApproval);
     if (!this.taskToApprovals.has(options.taskId)) {
@@ -573,6 +750,31 @@ export class SubagentManager {
     this.taskToApprovals.get(options.taskId)?.add(approvalId);
 
     try {
+      if (this.traceEnabled()) {
+        await this.emitSubagentTraceEvent({
+          runId: options.taskId,
+          spanId: approvalSpanId,
+          parentSpanId: options.parentSpanId,
+          agentId,
+          agentName,
+          eventType: "approval",
+          phase: "start",
+          status: "requested",
+          iteration: options.iteration,
+          content: `Approval requested for ${approvalToolCalls.length} tool call(s).`,
+          originChannel: options.originChannel,
+          originChatId: options.originChatId,
+          metadata: {
+            approvalId,
+            commandPreview,
+            ...(options.originMessageId
+              ? {
+                  message_id: options.originMessageId,
+                }
+              : {}),
+          },
+        });
+      }
       await this.bus.emitSubagentApprovalRequested({
         type: "SUBAGENT_APPROVAL_REQUESTED",
         approvalId,
@@ -664,6 +866,7 @@ Focus on these skills for this task: ${listedSkills}`);
     task: string;
     originChannel: string;
     originChatId: string;
+    originMessageId?: string;
     sessionKey: string;
     skillNames: string[];
     announceToMainAgent: boolean;
@@ -672,6 +875,14 @@ Focus on these skills for this task: ${listedSkills}`);
   }): Promise<void> {
     const messageLogs: SubagentTaskMessage[] = [];
     const toolCallLogs: SubagentTaskToolCall[] = [];
+    const runId = options.taskId;
+    const runSpanId = this.newTraceSpanId();
+    const agentId = options.taskId;
+    const agentName = options.label || options.taskId;
+    const traceMessageMeta =
+      typeof options.originMessageId === "string" && options.originMessageId.trim().length > 0
+        ? { message_id: options.originMessageId }
+        : {};
     await this.acquireSlot();
 
     try {
@@ -720,9 +931,47 @@ Focus on these skills for this task: ${listedSkills}`);
       let finalResult: string | null = null;
       const highRiskSet = new Set(options.workflowContext?.hitl?.highRiskTools ?? []);
       const maxIterations = options.roleConfig?.maxIterations ?? 15;
+      if (this.traceEnabled()) {
+        await this.emitSubagentTraceEvent({
+          runId,
+          spanId: runSpanId,
+          parentSpanId: null,
+          agentId,
+          agentName,
+          eventType: "run",
+          phase: "start",
+          status: "running",
+          content: "Subagent run started.",
+          originChannel: options.originChannel,
+          originChatId: options.originChatId,
+          metadata: {
+            ...traceMessageMeta,
+            role: options.role,
+          },
+        });
+      }
       for (let iteration = 0; iteration < maxIterations; iteration += 1) {
         if (options.signal.aborted) {
           throw new Error("Subagent aborted");
+        }
+        const iterationNumber = iteration + 1;
+        const iterationSpanId = this.newTraceSpanId();
+        if (this.traceEnabled()) {
+          await this.emitSubagentTraceEvent({
+            runId,
+            spanId: iterationSpanId,
+            parentSpanId: runSpanId,
+            agentId,
+            agentName,
+            eventType: "iteration",
+            phase: "start",
+            status: "running",
+            iteration: iterationNumber,
+            content: `Iteration ${iterationNumber} started.`,
+            originChannel: options.originChannel,
+            originChatId: options.originChatId,
+            metadata: traceMessageMeta,
+          });
         }
         const response = await this.provider.chat({
           messages,
@@ -736,6 +985,23 @@ Focus on these skills for this task: ${listedSkills}`);
 
         if (response.toolCalls.length === 0) {
           finalResult = response.content ?? "Task completed with no output.";
+          if (this.traceEnabled()) {
+            await this.emitSubagentTraceEvent({
+              runId,
+              spanId: this.newTraceSpanId(),
+              parentSpanId: iterationSpanId,
+              agentId,
+              agentName,
+              eventType: "result",
+              phase: "end",
+              status: "ok",
+              iteration: iterationNumber,
+              content: truncateLogContent(finalResult),
+              originChannel: options.originChannel,
+              originChatId: options.originChatId,
+              metadata: traceMessageMeta,
+            });
+          }
           messageLogs.push({
             role: "assistant",
             content: truncateLogContent(finalResult),
@@ -757,6 +1023,23 @@ Focus on these skills for this task: ${listedSkills}`);
           content: response.content ?? "",
           tool_calls: toolCallDicts,
         });
+        if (response.content && this.traceEnabled("verbose")) {
+          await this.emitSubagentTraceEvent({
+            runId,
+            spanId: this.newTraceSpanId(),
+            parentSpanId: iterationSpanId,
+            agentId,
+            agentName,
+            eventType: "intent",
+            phase: "update",
+            status: "info",
+            iteration: iterationNumber,
+            content: truncateLogContent(response.content),
+            originChannel: options.originChannel,
+            originChatId: options.originChatId,
+            metadata: traceMessageMeta,
+          });
+        }
         messageLogs.push({
           role: "assistant",
           content: truncateLogContent(response.content ?? ""),
@@ -771,22 +1054,64 @@ Focus on these skills for this task: ${listedSkills}`);
           if (hasHighRisk) {
             await this.waitForApproval({
               taskId: options.taskId,
+              label: options.label,
               sessionKey: options.sessionKey,
               originChannel: options.originChannel,
               originChatId: options.originChatId,
               workflowContext: options.workflowContext,
+              originMessageId: options.originMessageId,
               toolCalls: response.toolCalls,
               signal: options.signal,
+              iteration: iterationNumber,
+              parentSpanId: iterationSpanId,
             });
           }
         }
 
         for (const toolCall of response.toolCalls) {
+          const toolSpanId = this.newTraceSpanId();
+          if (this.traceEnabled()) {
+            await this.emitSubagentTraceEvent({
+              runId,
+              spanId: toolSpanId,
+              parentSpanId: iterationSpanId,
+              agentId,
+              agentName,
+              eventType: "tool_call",
+              phase: "start",
+              status: "running",
+              iteration: iterationNumber,
+              content: `${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 180)})`,
+              originChannel: options.originChannel,
+              originChatId: options.originChatId,
+              metadata: {
+                ...traceMessageMeta,
+                toolName: toolCall.name,
+              },
+            });
+          }
           const result = await tools.execute(toolCall.name, toolCall.arguments, {
             signal: options.signal,
           });
           const resultText = truncateLogContent(result);
           const loggedAt = nowIso();
+          if (this.traceEnabled()) {
+            await this.emitSubagentTraceEvent({
+              runId,
+              spanId: this.newTraceSpanId(),
+              parentSpanId: toolSpanId,
+              agentId,
+              agentName,
+              eventType: "result",
+              phase: "end",
+              status: result.startsWith("Error:") ? "error" : "ok",
+              iteration: iterationNumber,
+              content: `${toolCall.name} -> ${truncateLogContent(result).slice(0, 220)}`,
+              originChannel: options.originChannel,
+              originChatId: options.originChatId,
+              metadata: traceMessageMeta,
+            });
+          }
           toolCallLogs.push({
             id: toolCall.id,
             name: toolCall.name,
@@ -799,7 +1124,7 @@ Focus on these skills for this task: ${listedSkills}`);
             role: "tool",
             tool_call_id: toolCall.id,
             name: toolCall.name,
-            content: result,
+            content: sanitizeToolResultForContext(toolCall.name, result),
           });
           messageLogs.push({
             role: "tool",
@@ -813,6 +1138,23 @@ Focus on these skills for this task: ${listedSkills}`);
 
       if (!finalResult) {
         finalResult = "Task completed but no final response was generated.";
+      }
+
+      if (this.traceEnabled()) {
+        await this.emitSubagentTraceEvent({
+          runId,
+          spanId: this.newTraceSpanId(),
+          parentSpanId: runSpanId,
+          agentId,
+          agentName,
+          eventType: "run",
+          phase: "end",
+          status: "ok",
+          content: truncateLogContent(finalResult).slice(0, 220),
+          originChannel: options.originChannel,
+          originChatId: options.originChatId,
+          metadata: traceMessageMeta,
+        });
       }
 
       await this.announceResult({
@@ -832,6 +1174,22 @@ Focus on these skills for this task: ${listedSkills}`);
       const msg = error instanceof Error ? error.message : String(error);
       try {
         const errorResult = `Error: ${msg}`;
+        if (this.traceEnabled()) {
+          await this.emitSubagentTraceEvent({
+            runId,
+            spanId: this.newTraceSpanId(),
+            parentSpanId: runSpanId,
+            agentId,
+            agentName,
+            eventType: "run",
+            phase: "end",
+            status: "error",
+            content: truncateLogContent(errorResult).slice(0, 220),
+            originChannel: options.originChannel,
+            originChatId: options.originChatId,
+            metadata: traceMessageMeta,
+          });
+        }
         messageLogs.push({
           role: "assistant",
           content: truncateLogContent(errorResult),

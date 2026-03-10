@@ -27,15 +27,17 @@ export class SpawnTool extends Tool {
   private originChannel = "cli";
   private originChatId = "direct";
   private sessionKey = "cli:direct";
+  private originMessageId?: string;
 
   constructor(private readonly manager: SubagentManager) {
     super();
   }
 
-  setContext(channel: string, chatId: string): void {
+  setContext(channel: string, chatId: string, messageId?: string): void {
     this.originChannel = channel;
     this.originChatId = chatId;
     this.sessionKey = `${channel}:${chatId}`;
+    this.originMessageId = messageId;
   }
 
   async execute(params: Record<string, unknown>): Promise<string> {
@@ -55,6 +57,7 @@ export class SpawnTool extends Tool {
       originChannel: this.originChannel,
       originChatId: this.originChatId,
       sessionKey: this.sessionKey,
+      originMessageId: this.originMessageId,
     });
   }
 }

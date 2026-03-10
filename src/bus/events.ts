@@ -18,6 +18,44 @@ export interface OutboundMessage {
   metadata?: Record<string, unknown>;
 }
 
+export type AgentTraceSourceType = "main_agent" | "subagent" | "workflow" | "system";
+export type AgentTraceEventType =
+  | "run"
+  | "iteration"
+  | "intent"
+  | "tool_call"
+  | "approval"
+  | "result";
+export type AgentTracePhase = "start" | "update" | "end";
+export type AgentTraceStatus =
+  | "running"
+  | "info"
+  | "ok"
+  | "error"
+  | "requested"
+  | "granted"
+  | "expired"
+  | "cancelled";
+
+export interface AgentTraceEvent {
+  type: "AGENT_TRACE";
+  runId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  sourceType: AgentTraceSourceType;
+  agentId: string;
+  agentName: string;
+  eventType: AgentTraceEventType;
+  phase: AgentTracePhase;
+  status: AgentTraceStatus;
+  iteration?: number;
+  content: string;
+  originChannel: string;
+  originChatId: string;
+  timestamp: Date;
+  metadata?: Record<string, unknown>;
+}
+
 export interface SubagentTaskEvent {
   type: "SUBAGENT_TASK_COMPLETED" | "SUBAGENT_TASK_FAILED";
   taskId: string;
@@ -123,6 +161,14 @@ export interface WorkflowNodeStatusChangedEvent {
   currentTaskId: string | null;
   lastError: string | null;
   timestamp: Date;
+}
+
+export function formatAgentTraceProgress(event: AgentTraceEvent): string {
+  const agentLabel =
+    event.agentName && event.agentName !== event.agentId
+      ? `${event.agentName}#${event.agentId}`
+      : event.agentId;
+  return `[${agentLabel}][${event.eventType}] ${event.content}`;
 }
 
 export function getSessionKey(msg: InboundMessage): string {

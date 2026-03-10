@@ -7,8 +7,12 @@ import { MemUClient } from "./memory/memu-client.js";
 import { MemoryStore } from "./memory/store.js";
 import { SubagentManager } from "./subagent/manager.js";
 import { Session, SessionStore, type SessionMessage } from "./session/session-store.js";
-import type { InboundMessage, OutboundMessage } from "../bus/events.js";
-import { getSessionKey } from "../bus/events.js";
+import type {
+  AgentTraceEvent,
+  InboundMessage,
+  OutboundMessage,
+} from "../bus/events.js";
+import { formatAgentTraceProgress, getSessionKey } from "../bus/events.js";
 import { MessageBus } from "../bus/message-bus.js";
 import type { CronService } from "../cron/service.js";
 import type { LLMProvider, ToolCallRequest } from "../llm/provider.js";
@@ -16,6 +20,7 @@ import { CronTool } from "../tools/builtins/cron.js";
 import { EditFileTool, ListDirTool, ReadFileTool, WriteFileTool } from "../tools/builtins/filesystem.js";
 import { MessageTool } from "../tools/builtins/message.js";
 import { ExecTool } from "../tools/builtins/exec.js";
+import { InspectFileTool, ReadImageTool } from "../tools/builtins/media.js";
 import { SpawnTool } from "../tools/builtins/spawn.js";
 import {
   DraftWorkflowTool,
@@ -47,6 +52,18 @@ interface RunResult {
 interface ActiveTask {
   promise: Promise<void>;
   abortController: AbortController;
+}
+
+interface ProgressMeta {
+  toolHint?: boolean;
+  traceEvent?: AgentTraceEvent;
+}
+
+interface MainTraceContext {
+  runId: string;
+  runSpanId: string;
+  originChannel: string;
+  originChatId: string;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -121,6 +138,7 @@ export class AgentLoop {
   readonly runtimeStore: RuntimeSqliteStore;
   readonly gatewayHost: string;
   readonly gatewayPort: number;
+  readonly traceConfig: AppConfig["agents"]["trace"];
 
   private running = false;
   private readonly processingLock = new Mutex();
@@ -205,6 +223,7 @@ export class AgentLoop {
     };
 
     const appConfigRef = options.appConfig ?? structuredClone(DEFAULT_CONFIG);
+    this.traceConfig = appConfigRef.agents.trace;
     this.subagents = new SubagentManager({
       provider: this.provider,
       workspace: this.workspace,
@@ -391,6 +410,17 @@ export class AgentLoop {
   private registerDefaultTools(): void {
     const allowedDir = this.restrictToWorkspace ? this.workspace : undefined;
     this.tools.register(new ReadFileTool(this.workspace, allowedDir));
+    this.tools.register(new InspectFileTool(this.workspace, allowedDir));
+    this.tools.register(
+      new ReadImageTool(
+        this.provider,
+        this.model,
+        this.maxTokens,
+        this.reasoningEffort,
+        this.workspace,
+        allowedDir,
+      ),
+    );
     this.tools.register(new WriteFileTool(this.workspace, allowedDir));
     this.tools.register(new EditFileTool(this.workspace, allowedDir));
     this.tools.register(new ListDirTool(this.workspace, allowedDir));
@@ -556,7 +586,7 @@ export class AgentLoop {
     sessionKey?: string;
     channel?: string;
     chatId?: string;
-    onProgress?: (content: string, meta?: { toolHint?: boolean }) => Promise<void>;
+    onProgress?: (content: string, meta?: ProgressMeta) => Promise<void>;
     signal?: AbortSignal;
   }): Promise<string> {
     const msg: InboundMessage = {
@@ -582,12 +612,12 @@ export class AgentLoop {
       if (!tool) {
         continue;
       }
-      if (toolName === "message" && tool instanceof MessageTool) {
+      if (tool instanceof MessageTool) {
         tool.setContext(channel, chatId, messageId);
         continue;
       }
-      if (toolName !== "message" && "setContext" in tool && typeof tool.setContext === "function") {
-        tool.setContext(channel, chatId);
+      if ("setContext" in tool && typeof tool.setContext === "function") {
+        tool.setContext(channel, chatId, messageId);
       }
     }
   }
@@ -610,6 +640,71 @@ export class AgentLoop {
       return value.length > 40 ? `${tc.name}("${value.slice(0, 40)}...")` : `${tc.name}("${value}")`;
     });
     return parts.join(", ");
+  }
+
+  private newTraceSpanId(): string {
+    return `span_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  }
+
+  private traceEnabled(level: "basic" | "verbose" = "basic"): boolean {
+    if (!this.traceConfig.enabled) {
+      return false;
+    }
+    if (level === "verbose" && this.traceConfig.level !== "verbose") {
+      return false;
+    }
+    return true;
+  }
+
+  private shouldMirrorTraceToProgress(): boolean {
+    return this.traceConfig.enabled && this.traceConfig.mirrorToProgress;
+  }
+
+  private async emitMainTraceEvent(
+    event: Omit<AgentTraceEvent, "type" | "timestamp" | "sourceType" | "agentId" | "agentName">,
+    onProgress?: (content: string, meta?: ProgressMeta) => Promise<void>,
+  ): Promise<void> {
+    const fullEvent: AgentTraceEvent = {
+      type: "AGENT_TRACE",
+      timestamp: new Date(),
+      sourceType: "main_agent",
+      agentId: "main",
+      agentName: "main",
+      ...event,
+    };
+    await this.bus.emitAgentTraceEvent(fullEvent);
+    if (!this.shouldMirrorTraceToProgress()) {
+      return;
+    }
+    if (onProgress) {
+      await onProgress(formatAgentTraceProgress(fullEvent), {
+        traceEvent: fullEvent,
+      });
+      return;
+    }
+    await this.bus.publishOutbound({
+      channel: fullEvent.originChannel,
+      chatId: fullEvent.originChatId,
+      content: formatAgentTraceProgress(fullEvent),
+      metadata: {
+        _progress: true,
+        _debug: true,
+        _agent_trace: true,
+        _agent_id: fullEvent.agentId,
+        _agent_name: fullEvent.agentName,
+        _trace_run_id: fullEvent.runId,
+        _trace_span_id: fullEvent.spanId,
+        _trace_parent_span_id: fullEvent.parentSpanId,
+        _trace_event_type: fullEvent.eventType,
+        _trace_phase: fullEvent.phase,
+        _trace_status: fullEvent.status,
+        ...(typeof fullEvent.iteration === "number"
+          ? {
+              _trace_iteration: fullEvent.iteration,
+            }
+          : {}),
+      },
+    });
   }
 
   private static workflowProgressFromToolResult(
@@ -673,7 +768,8 @@ export class AgentLoop {
   private async runAgentLoop(
     initialMessages: Array<Record<string, unknown>>,
     signal?: AbortSignal,
-    onProgress?: (content: string, meta?: { toolHint?: boolean }) => Promise<void>,
+    onProgress?: (content: string, meta?: ProgressMeta) => Promise<void>,
+    traceContext?: MainTraceContext,
   ): Promise<RunResult> {
     let messages = [...initialMessages];
     const toolsUsed: string[] = [];
@@ -682,12 +778,47 @@ export class AgentLoop {
     const workflowStatusPollCounts = new Map<string, number>();
     let latestWorkflowProgress: string | null = null;
 
+    if (traceContext && this.traceEnabled()) {
+      await this.emitMainTraceEvent(
+        {
+          runId: traceContext.runId,
+          spanId: traceContext.runSpanId,
+          parentSpanId: null,
+          eventType: "run",
+          phase: "start",
+          status: "running",
+          content: "Run started.",
+          originChannel: traceContext.originChannel,
+          originChatId: traceContext.originChatId,
+        },
+        onProgress,
+      );
+    }
+
     loop: while (iteration < this.maxIterations) {
       if (signal?.aborted) {
         throw new Error("Request aborted");
       }
 
       iteration += 1;
+      const iterationSpanId = this.newTraceSpanId();
+      if (traceContext && this.traceEnabled()) {
+        await this.emitMainTraceEvent(
+          {
+            runId: traceContext.runId,
+            spanId: iterationSpanId,
+            parentSpanId: traceContext.runSpanId,
+            eventType: "iteration",
+            phase: "start",
+            status: "running",
+            iteration,
+            content: `Iteration ${iteration} started.`,
+            originChannel: traceContext.originChannel,
+            originChatId: traceContext.originChatId,
+          },
+          onProgress,
+        );
+      }
       const response = await this.provider.chat({
         messages,
         tools: this.tools.getDefinitions(),
@@ -699,7 +830,25 @@ export class AgentLoop {
       });
 
       if (response.toolCalls.length > 0) {
-        if (onProgress) {
+        const clean = AgentLoop.stripThink(response.content);
+        if (traceContext && clean && this.traceEnabled("verbose")) {
+          await this.emitMainTraceEvent(
+            {
+              runId: traceContext.runId,
+              spanId: this.newTraceSpanId(),
+              parentSpanId: iterationSpanId,
+              eventType: "intent",
+              phase: "update",
+              status: "info",
+              iteration,
+              content: clean,
+              originChannel: traceContext.originChannel,
+              originChatId: traceContext.originChatId,
+            },
+            onProgress,
+          );
+        }
+        if (onProgress && !this.shouldMirrorTraceToProgress()) {
           await onProgress(AgentLoop.toolHint(response.toolCalls), { toolHint: true });
         }
 
@@ -724,6 +873,28 @@ export class AgentLoop {
             throw new Error("Request aborted");
           }
 
+          const toolSpanId = this.newTraceSpanId();
+          if (traceContext && this.traceEnabled()) {
+            await this.emitMainTraceEvent(
+              {
+                runId: traceContext.runId,
+                spanId: toolSpanId,
+                parentSpanId: iterationSpanId,
+                eventType: "tool_call",
+                phase: "start",
+                status: "running",
+                iteration,
+                content: AgentLoop.toolHint([toolCall]),
+                originChannel: traceContext.originChannel,
+                originChatId: traceContext.originChatId,
+                metadata: {
+                  toolName: toolCall.name,
+                },
+              },
+              onProgress,
+            );
+          }
+
           if (toolCall.name === "query_workflow_status") {
             const instanceIdRaw = toolCall.arguments?.instance_id;
             const instanceId = typeof instanceIdRaw === "string" ? instanceIdRaw.trim() : "";
@@ -736,9 +907,26 @@ export class AgentLoop {
                 latestWorkflowProgress ??
                 `I paused repeated workflow status polling for instance '${instanceId || "unknown"}' after ${WORKFLOW_STATUS_POLL_LIMIT} checks.`;
               if (onProgress) {
-                await onProgress(
-                  `Polling paused for workflow ${instanceId || "unknown"} after repeated checks. Send another request if you want me to continue polling.`,
-                );
+                const pausedMessage = `Polling paused for workflow ${instanceId || "unknown"} after repeated checks. Send another request if you want me to continue polling.`;
+                if (traceContext && this.shouldMirrorTraceToProgress()) {
+                  await this.emitMainTraceEvent(
+                    {
+                      runId: traceContext.runId,
+                      spanId: this.newTraceSpanId(),
+                      parentSpanId: iterationSpanId,
+                      eventType: "result",
+                      phase: "update",
+                      status: "info",
+                      iteration,
+                      content: pausedMessage,
+                      originChannel: traceContext.originChannel,
+                      originChatId: traceContext.originChatId,
+                    },
+                    onProgress,
+                  );
+                } else {
+                  await onProgress(pausedMessage);
+                }
               }
               break loop;
             }
@@ -746,11 +934,46 @@ export class AgentLoop {
 
           toolsUsed.push(toolCall.name);
           const result = await this.tools.execute(toolCall.name, toolCall.arguments, { signal });
+          if (traceContext && this.traceEnabled()) {
+            await this.emitMainTraceEvent(
+              {
+                runId: traceContext.runId,
+                spanId: this.newTraceSpanId(),
+                parentSpanId: toolSpanId,
+                eventType: "result",
+                phase: "end",
+                status: result.startsWith("Error:") ? "error" : "ok",
+                iteration,
+                content: `${toolCall.name} -> ${shortTraceText(result, 180) || "completed"}`,
+                originChannel: traceContext.originChannel,
+                originChatId: traceContext.originChatId,
+              },
+              onProgress,
+            );
+          }
           const workflowProgress = AgentLoop.workflowProgressFromToolResult(toolCall.name, result);
           if (workflowProgress) {
             latestWorkflowProgress = workflowProgress.message;
             if (onProgress) {
-              await onProgress(workflowProgress.message);
+              if (traceContext && this.shouldMirrorTraceToProgress()) {
+                await this.emitMainTraceEvent(
+                  {
+                    runId: traceContext.runId,
+                    spanId: this.newTraceSpanId(),
+                    parentSpanId: iterationSpanId,
+                    eventType: "result",
+                    phase: "update",
+                    status: workflowProgress.status === "failed" ? "error" : "info",
+                    iteration,
+                    content: workflowProgress.message,
+                    originChannel: traceContext.originChannel,
+                    originChatId: traceContext.originChatId,
+                  },
+                  onProgress,
+                );
+              } else {
+                await onProgress(workflowProgress.message);
+              }
             }
           }
           messages = this.context.addToolResult(messages, toolCall.id, toolCall.name, result);
@@ -769,6 +992,23 @@ export class AgentLoop {
           response.thinkingBlocks,
         );
         finalContent = clean;
+        if (traceContext && this.traceEnabled()) {
+          await this.emitMainTraceEvent(
+            {
+              runId: traceContext.runId,
+              spanId: this.newTraceSpanId(),
+              parentSpanId: iterationSpanId,
+              eventType: "result",
+              phase: "end",
+              status: response.finishReason === "error" ? "error" : "ok",
+              iteration,
+              content: clean ?? "Run completed with no textual result.",
+              originChannel: traceContext.originChannel,
+              originChatId: traceContext.originChatId,
+            },
+            onProgress,
+          );
+        }
         break;
       }
     }
@@ -779,6 +1019,23 @@ export class AgentLoop {
         : `I reached the maximum number of tool call iterations (${this.maxIterations}) without completing the task. You can try breaking the task into smaller steps.`;
     }
 
+    if (traceContext && this.traceEnabled()) {
+      await this.emitMainTraceEvent(
+        {
+          runId: traceContext.runId,
+          spanId: this.newTraceSpanId(),
+          parentSpanId: traceContext.runSpanId,
+          eventType: "run",
+          phase: "end",
+          status: finalContent?.startsWith("Sorry") ? "error" : "ok",
+          content: shortTraceText(finalContent, 220) || "Run completed.",
+          originChannel: traceContext.originChannel,
+          originChatId: traceContext.originChatId,
+        },
+        onProgress,
+      );
+    }
+
     return { finalContent, toolsUsed, messages };
   }
 
@@ -786,7 +1043,7 @@ export class AgentLoop {
     message: InboundMessage,
     sessionKey?: string,
     signal?: AbortSignal,
-    onProgress?: (content: string, meta?: { toolHint?: boolean }) => Promise<void>,
+    onProgress?: (content: string, meta?: ProgressMeta) => Promise<void>,
   ): Promise<OutboundMessage | null> {
     const isSystem = message.channel === "system";
     if (isSystem) {
@@ -804,7 +1061,15 @@ export class AgentLoop {
         channel,
         chatId,
       });
-      const result = await this.runAgentLoop(initialMessages, signal);
+      const systemTraceContext = this.traceEnabled()
+        ? {
+            runId: randomUUID().replace(/-/g, "").slice(0, 12),
+            runSpanId: this.newTraceSpanId(),
+            originChannel: channel,
+            originChatId: chatId,
+          }
+        : undefined;
+      const result = await this.runAgentLoop(initialMessages, signal, undefined, systemTraceContext);
       this.saveTurn(session, result.messages, 1 + history.length);
       await this.sessions.save(session);
       return {
@@ -900,10 +1165,18 @@ export class AgentLoop {
       channel: message.channel,
       chatId: message.chatId,
     });
+    const traceContext = this.traceEnabled()
+      ? {
+          runId: randomUUID().replace(/-/g, "").slice(0, 12),
+          runSpanId: this.newTraceSpanId(),
+          originChannel: message.channel,
+          originChatId: message.chatId,
+        }
+      : undefined;
 
     const progressHandler =
       onProgress ??
-      (async (content: string, meta?: { toolHint?: boolean }) => {
+      (async (content: string, meta?: ProgressMeta) => {
         const isToolHint = meta?.toolHint ?? false;
         if (this.channelsConfig) {
           if (isToolHint && !this.channelsConfig.sendToolHints) {
@@ -921,11 +1194,30 @@ export class AgentLoop {
             ...(message.metadata ?? {}),
             _progress: true,
             _tool_hint: isToolHint,
+            ...(meta?.traceEvent
+              ? {
+                  _debug: true,
+                  _agent_trace: true,
+                  _agent_id: meta.traceEvent.agentId,
+                  _agent_name: meta.traceEvent.agentName,
+                  _trace_run_id: meta.traceEvent.runId,
+                  _trace_span_id: meta.traceEvent.spanId,
+                  _trace_parent_span_id: meta.traceEvent.parentSpanId,
+                  _trace_event_type: meta.traceEvent.eventType,
+                  _trace_phase: meta.traceEvent.phase,
+                  _trace_status: meta.traceEvent.status,
+                  ...(typeof meta.traceEvent.iteration === "number"
+                    ? {
+                        _trace_iteration: meta.traceEvent.iteration,
+                      }
+                    : {}),
+                }
+              : {}),
           },
         });
       });
 
-    const result = await this.runAgentLoop(initialMessages, signal, progressHandler);
+    const result = await this.runAgentLoop(initialMessages, signal, progressHandler, traceContext);
     const finalContent =
       result.finalContent ?? "I've completed processing but have no response to give.";
 

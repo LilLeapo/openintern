@@ -21,6 +21,13 @@ export interface SubagentConcurrencyConfig {
   maxConcurrent: number;
 }
 
+export interface AgentTraceConfig {
+  enabled: boolean;
+  level: "basic" | "verbose";
+  includeSubagents: boolean;
+  mirrorToProgress: boolean;
+}
+
 export interface ProviderConfig {
   apiKey: string;
   apiBase: string;
@@ -125,6 +132,7 @@ export interface AppConfig {
   agents: {
     defaults: AgentDefaultsConfig;
     subagentConcurrency: SubagentConcurrencyConfig;
+    trace: AgentTraceConfig;
   };
   roles: Record<string, RoleConfig>;
   providers: ProvidersConfig;
@@ -149,6 +157,12 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     subagentConcurrency: {
       maxConcurrent: 3,
+    },
+    trace: {
+      enabled: false,
+      level: "basic",
+      includeSubagents: true,
+      mirrorToProgress: true,
     },
   },
   roles: {

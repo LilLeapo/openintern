@@ -1,5 +1,6 @@
 import { AsyncQueue } from "./async-queue.js";
 import type {
+  AgentTraceEvent,
   InboundMessage,
   OutboundMessage,
   SubagentApprovalCancelledEvent,
@@ -14,6 +15,9 @@ import type {
 export class MessageBus {
   private readonly inboundQueue = new AsyncQueue<InboundMessage>();
   private readonly outboundQueue = new AsyncQueue<OutboundMessage>();
+  private readonly agentTraceHandlers = new Set<
+    (event: AgentTraceEvent) => void | Promise<void>
+  >();
   private readonly inboundPublishedHandlers = new Set<
     (message: InboundMessage) => void | Promise<void>
   >();
@@ -85,6 +89,18 @@ export class MessageBus {
     return () => {
       this.outboundPublishedHandlers.delete(handler);
     };
+  }
+
+  onAgentTraceEvent(handler: (event: AgentTraceEvent) => void | Promise<void>): () => void {
+    this.agentTraceHandlers.add(handler);
+    return () => {
+      this.agentTraceHandlers.delete(handler);
+    };
+  }
+
+  async emitAgentTraceEvent(event: AgentTraceEvent): Promise<void> {
+    const handlers = Array.from(this.agentTraceHandlers);
+    await Promise.all(handlers.map(async (handler) => handler(event)));
   }
 
   onSubagentEvent(handler: (event: SubagentTaskEvent) => void | Promise<void>): () => void {

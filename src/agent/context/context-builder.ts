@@ -5,6 +5,35 @@ import { MemoryStore } from "../memory/store.js";
 import { SkillsLoader } from "../skills/loader.js";
 
 type HistoryMessage = Record<string, unknown>;
+const TOOL_RESULT_CONTEXT_MAX_CHARS = 4_000;
+
+export function sanitizeToolResultForContext(toolName: string, result: string): string {
+  const clean = result.replace(/\u0000/g, "");
+  if (clean.length <= TOOL_RESULT_CONTEXT_MAX_CHARS) {
+    return clean;
+  }
+  return `${clean.slice(0, TOOL_RESULT_CONTEXT_MAX_CHARS)}\n... (${toolName} result truncated for context)`;
+}
+
+export function formatDateTimeForTimeZone(date: Date, timeZone: string): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const map = new Map(parts.map((part) => [part.type, part.value]));
+  const year = map.get("year") ?? "0000";
+  const month = map.get("month") ?? "01";
+  const day = map.get("day") ?? "01";
+  const hour = map.get("hour") ?? "00";
+  const minute = map.get("minute") ?? "00";
+  return `${year}-${month}-${day} ${hour}:${minute}`;
+}
 
 export class ContextBuilder {
   static readonly BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"];
@@ -52,8 +81,8 @@ ${skillsSummary}`,
 
   buildRuntimeContext(channel?: string, chatId?: string): string {
     const now = new Date();
-    const local = now.toISOString().replace("T", " ").slice(0, 16);
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const local = formatDateTimeForTimeZone(now, tz);
 
     const lines = [`Current Time: ${local} (${tz})`];
     if (channel && chatId) {
@@ -95,7 +124,7 @@ ${skillsSummary}`,
       role: "tool",
       tool_call_id: toolCallId,
       name: toolName,
-      content: result,
+      content: sanitizeToolResultForContext(toolName, result),
     });
     return messages;
   }

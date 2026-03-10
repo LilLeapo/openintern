@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { Tool, type ToolExecutionContext } from "../core/tool.js";
 
-function resolvePath(
+export function resolvePath(
   input: string,
   workspace?: string,
   allowedDir?: string,
@@ -18,6 +18,41 @@ function resolvePath(
     }
   }
   return resolved;
+}
+
+export function detectBinary(bytes: Buffer): boolean {
+  const sample = bytes.subarray(0, Math.min(bytes.length, 4096));
+  if (sample.includes(0)) {
+    return true;
+  }
+
+  let suspicious = 0;
+  for (const byte of sample) {
+    const isControl =
+      byte < 7 || (byte > 14 && byte < 32) || byte === 127;
+    if (isControl) {
+      suspicious += 1;
+    }
+  }
+  return sample.length > 0 && suspicious / sample.length > 0.1;
+}
+
+export function mimeFromExtension(ext: string): string | null {
+  switch (ext.toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    case ".pdf":
+      return "application/pdf";
+    default:
+      return null;
+  }
 }
 
 export class ReadFileTool extends Tool {
@@ -46,7 +81,13 @@ export class ReadFileTool extends Tool {
       if (!s.isFile()) {
         return `Error: Not a file: ${rawPath}`;
       }
-      return await readFile(filePath, "utf8");
+      const bytes = await readFile(filePath);
+      if (detectBinary(bytes)) {
+        const mime = mimeFromExtension(path.extname(filePath));
+        const mimePart = mime ? ` (${mime})` : "";
+        return `Error: File appears to be binary${mimePart}: ${rawPath}. Size=${bytes.length} bytes. Use an image/media-aware path instead of read_file.`;
+      }
+      return bytes.toString("utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("ENOENT")) {
