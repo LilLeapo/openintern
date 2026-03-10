@@ -3,6 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { CronJob, CronPayload, CronSchedule, CronStore } from "./types.js";
+import { createLogger } from "../utils/logger.js";
 
 function nowMs(): number {
   return Date.now();
@@ -289,6 +290,7 @@ function validateScheduleForAdd(schedule: CronSchedule): void {
 }
 
 export class CronService {
+  private readonly logger = createLogger("cron");
   private store: CronStore | null = null;
   private lastMtime = 0;
   private timer: NodeJS.Timeout | null = null;
@@ -388,6 +390,10 @@ export class CronService {
       return;
     }
     const delay = Math.max(0, nextWakeAt - nowMs());
+    this.logger.info("Cron timer armed", {
+      wake_at: new Date(nextWakeAt).toISOString(),
+      delay_ms: delay,
+    });
     this.timer = setTimeout(() => {
       void this.onTimer();
     }, delay);
@@ -418,15 +424,28 @@ export class CronService {
 
   private async executeJob(job: CronJob): Promise<void> {
     const startedAt = nowMs();
+    this.logger.info("Executing job", {
+      job_id: job.id,
+      job_name: job.name,
+      schedule_kind: job.schedule.kind,
+    });
     try {
       if (this.onJob) {
         await this.onJob(job);
       }
       job.state.lastStatus = "ok";
       job.state.lastError = null;
+      this.logger.info("Job finished", {
+        job_id: job.id,
+        status: "ok",
+      });
     } catch (error) {
       job.state.lastStatus = "error";
       job.state.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.error("Job failed", {
+        job_id: job.id,
+        error: job.state.lastError,
+      });
     }
     job.state.lastRunAtMs = startedAt;
     job.updatedAtMs = nowMs();
@@ -450,6 +469,10 @@ export class CronService {
     await this.loadStore();
     this.recomputeNextRuns();
     await this.saveStore();
+    this.logger.info("Cron service started", {
+      store_path: this.storePath,
+      jobs: this.store?.jobs.length ?? 0,
+    });
     this.armTimer();
   }
 
@@ -459,6 +482,7 @@ export class CronService {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    this.logger.info("Cron service stopped");
   }
 
   async listJobs(includeDisabled = false): Promise<CronJob[]> {
@@ -540,4 +564,3 @@ export class CronService {
     };
   }
 }
-

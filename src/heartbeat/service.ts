@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { LLMProvider } from "../llm/provider.js";
+import { createLogger } from "../utils/logger.js";
 
 const HEARTBEAT_TOOL = [
   {
@@ -39,6 +40,7 @@ export interface HeartbeatServiceOptions {
 }
 
 export class HeartbeatService {
+  private readonly logger = createLogger("heartbeat");
   private readonly workspace: string;
   private readonly provider: LLMProvider;
   private readonly model: string;
@@ -102,15 +104,23 @@ export class HeartbeatService {
 
   async start(): Promise<void> {
     if (!this.enabled || this.running) {
+      if (!this.enabled) {
+        this.logger.info("Heartbeat disabled");
+      }
       return;
     }
     this.running = true;
+    this.logger.info("Heartbeat started", {
+      interval_s: this.intervalS,
+      heartbeat_file: this.heartbeatFile,
+    });
     this.task = this.runLoop();
   }
 
   stop(): void {
     this.running = false;
     this.task = null;
+    this.logger.info("Heartbeat stopped");
   }
 
   private async runLoop(): Promise<void> {
@@ -126,11 +136,16 @@ export class HeartbeatService {
   private async tick(): Promise<void> {
     const content = await this.readHeartbeatFile();
     if (!content) {
+      this.logger.info("Heartbeat tick skipped", { reason: "empty_or_missing_file" });
       return;
     }
 
     try {
       const decision = await this.decide(content);
+      this.logger.info("Heartbeat decision", {
+        action: decision.action,
+        has_tasks: decision.tasks ? "yes" : "no",
+      });
       if (decision.action !== "run" || !this.onExecute) {
         return;
       }
@@ -138,7 +153,10 @@ export class HeartbeatService {
       if (output && this.onNotify) {
         await this.onNotify(output);
       }
-    } catch {
+    } catch (error) {
+      this.logger.error("Heartbeat tick failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       // Keep heartbeat resilient; errors should not crash process.
     }
   }
@@ -155,4 +173,3 @@ export class HeartbeatService {
     return this.onExecute(decision.tasks);
   }
 }
-

@@ -98,6 +98,33 @@ export interface SubagentApprovalCancelledEvent {
   reason: string;
 }
 
+export interface WorkflowRunStatusChangedEvent {
+  type: "WORKFLOW_RUN_STATUS_CHANGED";
+  runId: string;
+  workflowId: string;
+  status: "running" | "waiting_for_approval" | "completed" | "failed" | "cancelled";
+  previousStatus: "running" | "waiting_for_approval" | "completed" | "failed" | "cancelled" | null;
+  error: string | null;
+  originChannel: string;
+  originChatId: string;
+  timestamp: Date;
+}
+
+export interface WorkflowNodeStatusChangedEvent {
+  type: "WORKFLOW_NODE_STATUS_CHANGED";
+  runId: string;
+  workflowId: string;
+  nodeId: string;
+  nodeName: string | null;
+  status: "pending" | "running" | "waiting_for_approval" | "completed" | "failed";
+  previousStatus: "pending" | "running" | "waiting_for_approval" | "completed" | "failed" | null;
+  attempt: number;
+  maxAttempts: number;
+  currentTaskId: string | null;
+  lastError: string | null;
+  timestamp: Date;
+}
+
 export function getSessionKey(msg: InboundMessage): string {
   return msg.sessionKeyOverride ?? `${msg.channel}:${msg.chatId}`;
 }

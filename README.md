@@ -91,6 +91,14 @@ pnpm dev
 
 First run auto-creates config at `~/.openintern/config.json`.
 
+Gateway mode with realtime logs:
+
+```bash
+pnpm dev -- gateway
+```
+
+This starts the background agent runtime and continuously prints inbound/outbound events, subagent activity, approvals, cron, and heartbeat logs to the terminal.
+
 ## Frontend Workflow Studio (React + Tailwind)
 
 This repo includes a React + Tailwind runtime dashboard for workflow orchestration:
@@ -249,7 +257,7 @@ Minimal example:
   "memory": {
     "memu": {
       "enabled": false,
-      "apiKey": "YOUR_MEMU_API_KEY",
+      "apiKey": "YOUR_MEMU_API_KY",
       "baseUrl": "https://api.memu.so",
       "agentId": "openintern",
       "scopes": {

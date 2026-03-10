@@ -146,7 +146,14 @@ export class AgentLoop {
     string,
     {
       status: WorkflowRunSnapshot["status"];
-      nodes: Map<string, { status: string; attempt: number; currentTaskId: string | null }>;
+      nodes: Map<
+        string,
+        {
+          status: WorkflowRunSnapshot["nodes"][number]["status"];
+          attempt: number;
+          currentTaskId: string | null;
+        }
+      >;
     }
   >();
 
@@ -256,9 +263,29 @@ export class AgentLoop {
                   ? "pending"
                   : "ok",
           });
+          await this.bus.emitWorkflowRunStatusChanged({
+            type: "WORKFLOW_RUN_STATUS_CHANGED",
+            runId: snapshot.runId,
+            workflowId: snapshot.workflowId,
+            status: snapshot.status,
+            previousStatus: prev?.status ?? null,
+            error: snapshot.error,
+            originChannel: snapshot.originChannel,
+            originChatId: snapshot.originChatId,
+            timestamp: new Date(),
+          });
         }
 
-        const prevNodes = prev?.nodes ?? new Map<string, { status: string; attempt: number; currentTaskId: string | null }>();
+        const prevNodes =
+          prev?.nodes ??
+          new Map<
+            string,
+            {
+              status: WorkflowRunSnapshot["nodes"][number]["status"];
+              attempt: number;
+              currentTaskId: string | null;
+            }
+          >();
         for (const node of snapshot.nodes) {
           const old = prevNodes.get(node.id);
           if (!old || old.status !== node.status || old.attempt !== node.attempt || old.currentTaskId !== node.currentTaskId) {
@@ -285,6 +312,20 @@ export class AgentLoop {
               meta: {
                 nodeId: node.id,
               },
+            });
+            await this.bus.emitWorkflowNodeStatusChanged({
+              type: "WORKFLOW_NODE_STATUS_CHANGED",
+              runId: snapshot.runId,
+              workflowId: snapshot.workflowId,
+              nodeId: node.id,
+              nodeName: node.name ?? null,
+              status: node.status,
+              previousStatus: old?.status ?? null,
+              attempt: node.attempt,
+              maxAttempts: node.maxAttempts,
+              currentTaskId: node.currentTaskId,
+              lastError: node.lastError,
+              timestamp: new Date(),
             });
           }
         }
