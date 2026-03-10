@@ -1,5 +1,7 @@
 # OpenIntern Agent (TypeScript)
 
+[简体中文说明](./README.zh-CN.md)
+
 TypeScript replication project inspired by `reference/nanobot`, focused on a compact but extensible agent core.
 
 ## Current Capabilities
@@ -12,7 +14,7 @@ TypeScript replication project inspired by `reference/nanobot`, focused on a com
   - history log: `memory/HISTORY.md`
 - Skills discovery and summary injection into system context.
 - Built-in tools:
-  - `read_file`, `write_file`, `edit_file`, `list_dir`
+  - `read_file`, `inspect_file`, `read_image`, `write_file`, `edit_file`, `list_dir`
   - `exec`
   - `message`
   - `web_search`, `web_fetch`
@@ -29,6 +31,10 @@ TypeScript replication project inspired by `reference/nanobot`, focused on a com
   - OpenAI-compatible API
   - Anthropic-compatible API
   - provider factory with `auto` routing
+- Structured trace/debug stream:
+  - `run -> iteration -> intent -> tool_call -> approval -> result`
+  - optional progress mirroring with agent IDs / names
+  - main agent + subagent provenance in the same event model
 
 ## Project Structure
 
@@ -68,6 +74,7 @@ src/
       tool-registry.ts
     builtins/
       filesystem.ts
+      media.ts
       exec.ts
       message.ts
       web.ts
@@ -91,6 +98,8 @@ pnpm dev
 
 First run auto-creates config at `~/.openintern/config.json`.
 
+The runtime context now uses the local timezone correctly instead of UTC-formatted ISO strings.
+
 Gateway mode with realtime logs:
 
 ```bash
@@ -98,6 +107,13 @@ pnpm dev -- gateway
 ```
 
 This starts the background agent runtime and continuously prints inbound/outbound events, subagent activity, approvals, cron, and heartbeat logs to the terminal.
+
+When `agents.trace.mirrorToProgress = true`, CLI progress output can include structured debug lines such as:
+
+```text
+↳ [main][iteration] Iteration 1 started.
+↳ [research-1#10a3a4db][tool_call] read_image({"path":"docs/images/a.png"})
+```
 
 ## Frontend Workflow Studio (React + Tailwind)
 
@@ -214,6 +230,8 @@ Runtime HITL API (UI server):
 - `GET /api/runtime/workflows/:runId`
 - `POST /api/runtime/workflows/:runId/cancel`
 
+Agent trace/debug events are emitted on the internal bus and can be mirrored to outbound progress without changing the UI.
+
 Workflow repository convention:
 
 - published workflow: `workflows/<workflow_id>.json`
@@ -241,6 +259,12 @@ Minimal example:
     "defaults": {
       "provider": "auto",
       "model": "gpt-4o-mini"
+    },
+    "trace": {
+      "enabled": false,
+      "level": "basic",
+      "includeSubagents": true,
+      "mirrorToProgress": true
     }
   },
   "providers": {
@@ -344,6 +368,14 @@ Provider notes:
 - `channels.feishu.webhookPath` is kept for compatibility and is ignored in long connection mode.
 - `allowFrom` controls sender allowlist (`["*"]` to allow all users).
 
+Trace/debug notes:
+
+- `agents.trace.enabled = true` turns on structured runtime trace events.
+- `agents.trace.level = "basic"` shows lifecycle/tool/result events.
+- `agents.trace.level = "verbose"` additionally mirrors intent-style transition text before tool calls.
+- `agents.trace.includeSubagents = true` includes spawned subagent traces.
+- `agents.trace.mirrorToProgress = true` sends those trace events to normal progress output.
+
 ## MemU Tool Behavior
 
 When MemU is enabled, the agent gets three memory tools:
@@ -370,11 +402,31 @@ memory_retrieve(query="What should I recall now?", scope="all")
 
 If `memory.memu.memorizeMode = "tool"` (default), the system will not auto-memorize each turn; memory is saved only when the model calls `memory_save`.
 
+## File and Media Reading
+
+`read_file` is now intentionally text-only and rejects binary files. This prevents image/PDF bytes from being pushed back into the LLM context and causing oversized requests.
+
+Recommended flow:
+
+- `inspect_file(path)` to detect file type and choose the next tool.
+- `read_file(path)` for text-based files.
+- `read_image(path, prompt?)` for PNG/JPG/WebP/GIF image analysis through the configured multimodal provider.
+
+Example:
+
+```text
+inspect_file(path="docs/images/diagram.png")
+read_image(path="docs/images/diagram.png", prompt="Summarize the chart and extract visible labels.")
+```
+
+Tool results are also truncated before they are written back into model context, which reduces the chance of provider-side `input length` errors.
+
 ## Upgrade Notes
 
 - Existing `~/.openintern/workspace/TOOLS.md` files are not overwritten automatically.
 - After upgrading, restart the running agent process to load new tools.
 - If you use `memory_delete`, configure `memory.memu.endpoints.clear` (for example `/clear` on local MemU service).
+- If you want trace/debug progress in CLI or chat output, add an `agents.trace` block to `~/.openintern/config.json`.
 
 ## Tests
 
