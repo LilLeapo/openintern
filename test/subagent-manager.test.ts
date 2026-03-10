@@ -506,6 +506,14 @@ describe("SubagentManager", () => {
     const workspace = await makeWorkspace();
     const bus = new MessageBus();
     const provider = new CapturingToolsProvider();
+    const config = makeConfig();
+    config.roles.paper_only = {
+      systemPrompt: "Paper-only researcher.",
+      allowedTools: ["web_search", "web_fetch", "memory_save", "memory_retrieve"],
+      memoryScope: "papers",
+      maxIterations: 20,
+      workspaceIsolation: false,
+    };
     const manager = new SubagentManager({
       provider,
       workspace,
@@ -514,7 +522,7 @@ describe("SubagentManager", () => {
       temperature: 0.1,
       maxTokens: 128,
       reasoningEffort: null,
-      config: makeConfig(),
+      config,
       memuClient: new MemUClient({
         apiKey: "k",
         baseUrl: "https://api.memu.so",
@@ -527,7 +535,7 @@ describe("SubagentManager", () => {
 
     await manager.spawn({
       task: "Research papers on transformers",
-      role: "researcher",
+      role: "paper_only",
       originChannel: "cli",
       originChatId: "direct",
       sessionKey: "cli:direct",
@@ -752,7 +760,13 @@ describe("SubagentManager", () => {
     const externalTools = new ToolRegistry();
     externalTools.register(new FakeExternalMcpTool());
     const config = makeConfig();
-    config.roles.researcher.allowedTools = ["lark-mcp__wiki_query"];
+    config.roles.mcp_only = {
+      systemPrompt: "Use MCP only.",
+      allowedTools: ["lark-mcp__wiki_query"],
+      memoryScope: "papers",
+      maxIterations: 15,
+      workspaceIsolation: false,
+    };
 
     const manager = new SubagentManager({
       provider: new ExternalMcpProvider(),
@@ -768,7 +782,7 @@ describe("SubagentManager", () => {
 
     await manager.spawn({
       task: "query with mcp",
-      role: "researcher",
+      role: "mcp_only",
       originChannel: "cli",
       originChatId: "direct",
       sessionKey: "cli:direct",

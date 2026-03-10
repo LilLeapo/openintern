@@ -1,4 +1,5 @@
 import { SkillsLoader } from "../agent/skills/loader.js";
+import { listResolvedRoles } from "../config/role-resolver.js";
 import type { AppConfig } from "../config/schema.js";
 
 export interface RuntimeCatalogTool {
@@ -46,9 +47,9 @@ function inferRisk(toolId: string): "low" | "high" {
 }
 
 function roleCatalog(config: AppConfig): RuntimeCatalogRole[] {
-  return Object.entries(config.roles)
-    .map(([id, role]) => ({
-      id,
+  return listResolvedRoles(config)
+    .map(({ name, role }) => ({
+      id: name,
       systemPrompt: role.systemPrompt,
       allowedTools: Array.from(new Set(role.allowedTools)),
       memoryScope: role.memoryScope,
@@ -60,7 +61,7 @@ function roleCatalog(config: AppConfig): RuntimeCatalogRole[] {
 
 function toolCatalog(config: AppConfig, externalToolIds: string[]): RuntimeCatalogTool[] {
   const union = new Set<string>();
-  for (const role of Object.values(config.roles)) {
+  for (const { role } of listResolvedRoles(config)) {
     for (const toolId of role.allowedTools) {
       union.add(toolId);
     }
