@@ -10,8 +10,8 @@ OpenIntern 是一个受 `reference/nanobot` 启发的 TypeScript Agent 项目，
 - 会话持久化（JSONL）
 - 命令：`/help`、`/new`、`/stop`
 - Memory / History：
-  - 长期记忆：`memory/MEMORY.md`
-  - 历史日志：`memory/HISTORY.md`
+  - 会话隔离的长期记忆：`memory/sessions/<session_key>/MEMORY.md`
+  - 会话隔离的历史日志：`memory/sessions/<session_key>/HISTORY.md`
 - Skills 发现与注入
 - 内置工具：
   - `read_file`
@@ -203,6 +203,9 @@ Provider 说明：
 - `agents.defaults.provider = "openaiCompatible"`：强制走 OpenAI-compatible
 - `agents.defaults.provider = "anthropicCompatible"`：强制走 Anthropic-compatible
 - `memory.memu.enabled = true`：启用 MemU 检索和 memory tools
+- `memory.isolation.tenantId`：设置默认企业租户命名空间
+- `memory.isolation.scopeOwners.chat = "principal"`：聊天记忆默认跟随发送者身份隔离
+- `memory.isolation.scopeOwners.papers = "conversation"`：文档/知识记忆默认按会话隔离；如果要共享知识库，可显式传 `knowledge_base_id`
 
 ## Upgrade Notes
 

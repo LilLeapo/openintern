@@ -10,8 +10,8 @@ TypeScript replication project inspired by `reference/nanobot`, focused on a com
 - Async bus and session persistence (JSONL).
 - Commands: `/help`, `/new`, `/stop`.
 - Memory consolidation:
-  - long-term memory: `memory/MEMORY.md`
-  - history log: `memory/HISTORY.md`
+  - session-isolated long-term memory: `memory/sessions/<session_key>/MEMORY.md`
+  - session-isolated history log: `memory/sessions/<session_key>/HISTORY.md`
 - Skills discovery and summary injection into system context.
 - Built-in tools:
   - `read_file`, `inspect_file`, `read_image`, `write_file`, `edit_file`, `list_dir`
@@ -320,6 +320,9 @@ Provider notes:
 - Set `agents.defaults.provider = "anthropicCompatible"` to force Anthropic-compatible path.
 - In `auto` mode, Claude-like model names prefer `anthropicCompatible` when key exists.
 - Set `memory.memu.enabled = true` to enable MemU retrieval and memory tools.
+- `memory.isolation.tenantId` sets the default enterprise tenant namespace for memory keys.
+- `memory.isolation.scopeOwners.chat` defaults to `principal`, so chat memory follows the sender identity.
+- `memory.isolation.scopeOwners.papers` defaults to `conversation`, which is safer for document memory unless you explicitly bind a shared `knowledge_base_id`.
 - `memory.memu.memorizeMode = "tool"` (default) enables selective memory via tools only.
 - Set `memory.memu.memorizeMode = "auto"` to restore per-turn auto memorize behavior.
 - `memory.memu.scopes.chat` and `memory.memu.scopes.papers` control logical scope suffixes.
@@ -389,7 +392,13 @@ Scope mapping:
 - `chat` scope -> `agent_id = <memory.memu.agentId>:<memory.memu.scopes.chat>`
 - `papers` scope -> `agent_id = <memory.memu.agentId>:<memory.memu.scopes.papers>`
 
-This is logical isolation in the same MemU backend. Reads and writes are separated by scope suffix.
+OpenIntern now resolves memory identity separately from MemU scope:
+
+- `chat` memory writes default to `tenant:<tenant_id>:principal:<channel>:<sender_id>`
+- `papers` memory writes default to `tenant:<tenant_id>:conversation:<channel>:<chat_id>`
+- Set message metadata `knowledge_base_id` (or `kb_id`) and configure `memory.isolation.scopeOwners.papers = "knowledgeBase"` to route papers memory into a shared KB namespace.
+
+This keeps scope suffixes (`agent_id`) and ownership boundaries (`user_id`) separate in the same MemU backend.
 
 Example tool calls:
 
@@ -401,6 +410,8 @@ memory_retrieve(query="What should I recall now?", scope="all")
 ```
 
 If `memory.memu.memorizeMode = "tool"` (default), the system will not auto-memorize each turn; memory is saved only when the model calls `memory_save`.
+
+Local summarized memory is also isolated per session under `memory/sessions/<session_key>/`, instead of a single shared `memory/MEMORY.md`.
 
 ## File and Media Reading
 
