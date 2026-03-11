@@ -102,6 +102,8 @@ export interface SpawnTaskOptions {
   label?: string | null;
   originChannel: string;
   originChatId: string;
+  originSenderId?: string;
+  originMetadata?: Record<string, unknown>;
   sessionKey: string;
   originMessageId?: string;
   skillNames?: string[];
@@ -252,6 +254,8 @@ export class SubagentManager {
     label?: string | null;
     originChannel: string;
     originChatId: string;
+    originSenderId?: string;
+    originMetadata?: Record<string, unknown>;
     sessionKey: string;
     originMessageId?: string;
   }): Promise<string> {
@@ -482,12 +486,24 @@ export class SubagentManager {
     }
   }
 
-  private setToolContext(tool: Tool, channel: string, chatId: string): void {
+  private setToolContext(
+    tool: Tool,
+    channel: string,
+    chatId: string,
+    senderId = "user",
+    metadata?: Record<string, unknown>,
+  ): void {
     const contextAware = tool as Tool & {
-      setContext?: (originChannel: string, originChatId: string) => void;
+      setContext?: (
+        originChannel: string,
+        originChatId: string,
+        messageId?: string,
+        senderId?: string,
+        metadata?: Record<string, unknown>,
+      ) => void;
     };
     if (typeof contextAware.setContext === "function") {
-      contextAware.setContext(channel, chatId);
+      contextAware.setContext(channel, chatId, undefined, senderId, metadata);
     }
   }
 
@@ -496,6 +512,8 @@ export class SubagentManager {
     taskWorkspace: string;
     originChannel: string;
     originChatId: string;
+    originSenderId?: string;
+    originMetadata?: Record<string, unknown>;
   }): ToolRegistry {
     const tools = new ToolRegistry();
     const forceWorkspaceSandbox =
@@ -552,14 +570,26 @@ export class SubagentManager {
       const createTool = factories[toolName];
       if (createTool) {
         const tool = createTool();
-        this.setToolContext(tool, options.originChannel, options.originChatId);
+        this.setToolContext(
+          tool,
+          options.originChannel,
+          options.originChatId,
+          options.originSenderId ?? "user",
+          options.originMetadata,
+        );
         tools.register(tool);
         continue;
       }
       const external = this.externalToolRegistry?.get(toolName);
       if (external) {
         // MCP tools are process-level and can be reused by subagents.
-        this.setToolContext(external, options.originChannel, options.originChatId);
+        this.setToolContext(
+          external,
+          options.originChannel,
+          options.originChatId,
+          options.originSenderId ?? "user",
+          options.originMetadata,
+        );
         tools.register(external);
       }
     }
@@ -866,6 +896,8 @@ Focus on these skills for this task: ${listedSkills}`);
     task: string;
     originChannel: string;
     originChatId: string;
+    originSenderId?: string;
+    originMetadata?: Record<string, unknown>;
     originMessageId?: string;
     sessionKey: string;
     skillNames: string[];
@@ -900,6 +932,8 @@ Focus on these skills for this task: ${listedSkills}`);
         taskWorkspace,
         originChannel: options.originChannel,
         originChatId: options.originChatId,
+        originSenderId: options.originSenderId,
+        originMetadata: options.originMetadata,
       });
 
       const systemPrompt = await this.buildSubagentPrompt(

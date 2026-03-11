@@ -124,8 +124,19 @@ export interface MemUConfig {
   };
 }
 
+export type MemoryOwnerType = "principal" | "conversation" | "knowledgeBase";
+
+export interface MemoryIsolationConfig {
+  tenantId: string;
+  scopeOwners: {
+    chat: MemoryOwnerType;
+    papers: MemoryOwnerType;
+  };
+}
+
 export interface MemoryConfig {
   memu: MemUConfig;
+  isolation: MemoryIsolationConfig;
 }
 
 export interface AppConfig {
@@ -218,6 +229,13 @@ export const DEFAULT_CONFIG: AppConfig = {
     restrictToWorkspace: false,
   },
   memory: {
+    isolation: {
+      tenantId: "default",
+      scopeOwners: {
+        chat: "principal",
+        papers: "conversation",
+      },
+    },
     memu: {
       enabled: false,
       apiKey: "",

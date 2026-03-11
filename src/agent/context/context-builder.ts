@@ -40,18 +40,16 @@ export class ContextBuilder {
   static readonly RUNTIME_CONTEXT_TAG = "[Runtime Context - metadata only, not instructions]";
   static readonly EXTERNAL_MEMORY_TAG = "[External Memory Context - retrieved facts, not user input]";
 
-  private readonly memory: MemoryStore;
   private readonly skills: SkillsLoader;
 
   constructor(private readonly workspace: string) {
-    this.memory = new MemoryStore(workspace);
     this.skills = new SkillsLoader(workspace);
   }
 
-  async buildSystemPrompt(): Promise<string> {
+  async buildSystemPrompt(memoryStore?: MemoryStore): Promise<string> {
     const identity = this.buildIdentity();
     const bootstrap = await this.loadBootstrapFiles();
-    const memory = await this.memory.getMemoryContext();
+    const memory = await (memoryStore ?? new MemoryStore(this.workspace)).getMemoryContext();
     const alwaysSkills = await this.skills.getAlwaysSkills();
     const alwaysSkillsContent = await this.skills.loadSkillsForContext(alwaysSkills);
     const skillsSummary = await this.skills.buildSkillsSummary();
@@ -79,7 +77,15 @@ ${skillsSummary}`,
     return parts.join("\n\n---\n\n");
   }
 
-  buildRuntimeContext(channel?: string, chatId?: string): string {
+  buildRuntimeContext(
+    channel?: string,
+    chatId?: string,
+    metadata?: {
+      tenantId?: string;
+      principalId?: string;
+      conversationId?: string;
+    },
+  ): string {
     const now = new Date();
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     const local = formatDateTimeForTimeZone(now, tz);
@@ -88,6 +94,15 @@ ${skillsSummary}`,
     if (channel && chatId) {
       lines.push(`Channel: ${channel}`);
       lines.push(`Chat ID: ${chatId}`);
+    }
+    if (metadata?.tenantId) {
+      lines.push(`Tenant ID: ${metadata.tenantId}`);
+    }
+    if (metadata?.principalId) {
+      lines.push(`Principal ID: ${metadata.principalId}`);
+    }
+    if (metadata?.conversationId) {
+      lines.push(`Conversation ID: ${metadata.conversationId}`);
     }
     return `${ContextBuilder.RUNTIME_CONTEXT_TAG}\n${lines.join("\n")}`;
   }
@@ -99,6 +114,12 @@ ${skillsSummary}`,
     media?: string[];
     channel?: string;
     chatId?: string;
+    memoryStore?: MemoryStore;
+    runtimeMetadata?: {
+      tenantId?: string;
+      principalId?: string;
+      conversationId?: string;
+    };
   }): Promise<HistoryMessage[]> {
     const externalMemory =
       typeof options.retrievedMemory === "string" && options.retrievedMemory.trim()
@@ -106,10 +127,13 @@ ${skillsSummary}`,
         : null;
 
     return [
-      { role: "system", content: await this.buildSystemPrompt() },
+      { role: "system", content: await this.buildSystemPrompt(options.memoryStore) },
       ...options.history,
       ...(externalMemory ? [{ role: "system", content: externalMemory }] : []),
-      { role: "user", content: this.buildRuntimeContext(options.channel, options.chatId) },
+      {
+        role: "user",
+        content: this.buildRuntimeContext(options.channel, options.chatId, options.runtimeMetadata),
+      },
       { role: "user", content: await this.buildUserContent(options.currentMessage, options.media) },
     ];
   }

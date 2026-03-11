@@ -527,8 +527,8 @@ describe("SubagentManager", () => {
         apiKey: "k",
         baseUrl: "https://api.memu.so",
       }),
-      memuScopeResolver: ({ channel, chatId, scope }) => ({
-        userId: `${channel}:${chatId}`,
+      memuScopeResolver: ({ channel, senderId, scope }) => ({
+        userId: `${channel}:${senderId}`,
         agentId: `openintern:${scope}`,
       }),
     });

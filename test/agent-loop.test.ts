@@ -513,6 +513,13 @@ describe("AgentLoop", () => {
       provider,
       workspace,
       memoryConfig: {
+        isolation: {
+          tenantId: "default",
+          scopeOwners: {
+            chat: "principal",
+            papers: "conversation",
+          },
+        },
         memu: {
           enabled: true,
           apiKey: "memu-key",
@@ -568,7 +575,7 @@ describe("AgentLoop", () => {
     const retrieveBodyRaw = (retrieveCall?.[1] as RequestInit | undefined)?.body;
     expect(typeof retrieveBodyRaw).toBe("string");
     const retrieveBody = JSON.parse(String(retrieveBodyRaw)) as Record<string, unknown>;
-    expect(retrieveBody.user_id).toBe("cli:test");
+    expect(retrieveBody.user_id).toBe("tenant:default:principal:cli:user");
     expect(retrieveBody.agent_id).toBe("openintern-test:chat");
   });
 

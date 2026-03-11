@@ -6,8 +6,14 @@ export class MemoryStore {
   readonly memoryFile: string;
   readonly historyFile: string;
 
-  constructor(workspace: string) {
-    this.memoryDir = path.join(workspace, "memory");
+  constructor(workspace: string, namespace?: string) {
+    const memoryRoot = path.join(workspace, "memory");
+    this.memoryDir = namespace
+      ? path.join(
+          memoryRoot,
+          ...namespace.split("/").map((segment) => segment.replace(/[^a-zA-Z0-9._-]/g, "_")),
+        )
+      : memoryRoot;
     this.memoryFile = path.join(this.memoryDir, "MEMORY.md");
     this.historyFile = path.join(this.memoryDir, "HISTORY.md");
   }
@@ -39,4 +45,3 @@ export class MemoryStore {
     return longTerm ? `## Long-term Memory\n${longTerm}` : "";
   }
 }
-

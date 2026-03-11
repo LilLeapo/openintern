@@ -3,6 +3,11 @@ import path from "node:path";
 
 import { ContextBuilder } from "./context/context-builder.js";
 import { MemoryConsolidator } from "./memory/consolidator.js";
+import {
+  buildLocalMemoryNamespace,
+  buildMemuUserId,
+  resolveMemoryIdentity,
+} from "./memory/identity.js";
 import { MemUClient } from "./memory/memu-client.js";
 import { MemoryStore } from "./memory/store.js";
 import { SubagentManager } from "./subagent/manager.js";
@@ -143,8 +148,6 @@ export class AgentLoop {
   private running = false;
   private readonly processingLock = new Mutex();
   private readonly activeTasks = new Map<string, Set<ActiveTask>>();
-  private readonly memory: MemoryStore;
-  private readonly consolidator: MemoryConsolidator;
   private readonly consolidating = new Set<string>();
   private readonly consolidationLocks = new Map<string, Mutex>();
   private readonly execTimeoutSeconds: number;
@@ -160,6 +163,7 @@ export class AgentLoop {
   private readonly memuMemorizeMode: "auto" | "tool";
   private readonly memuAgentId: string;
   private readonly memuScopes: { chat: string; papers: string };
+  private readonly memoryConfig: MemoryConfig;
   private readonly workflowTraceCursor = new Map<
     string,
     {
@@ -195,10 +199,9 @@ export class AgentLoop {
     this.channelsConfig = options.channelsConfig;
 
     this.context = new ContextBuilder(this.workspace);
-    this.memory = new MemoryStore(this.workspace);
-    this.consolidator = new MemoryConsolidator(this.memory);
     this.sessions = options.sessionStore ?? new SessionStore(this.workspace);
     this.tools = new ToolRegistry();
+    this.memoryConfig = options.memoryConfig ?? structuredClone(DEFAULT_CONFIG.memory);
     const memuConfig = options.memoryConfig?.memu;
     const memuApiStyle = memuConfig?.apiStyle ?? "cloudV3";
     const requiresMemuApiKey = memuApiStyle === "cloudV3";
@@ -239,7 +242,8 @@ export class AgentLoop {
       restrictToWorkspace: this.restrictToWorkspace,
       config: appConfigRef,
       memuClient: this.memuClient,
-      memuScopeResolver: ({ channel, chatId, scope }) => this.memuScope(channel, chatId, scope),
+      memuScopeResolver: ({ channel, chatId, senderId, metadata, scope }) =>
+        this.memuScope(channel, chatId, senderId, metadata, scope),
       maxConcurrent: appConfigRef.agents.subagentConcurrency.maxConcurrent,
       externalToolRegistry: this.tools,
     });
@@ -472,9 +476,17 @@ export class AgentLoop {
       const resolveScope = (params: {
         channel: string;
         chatId: string;
+        senderId: string;
+        metadata?: Record<string, unknown>;
         scope: "chat" | "papers";
       }): { userId: string; agentId: string } =>
-        this.memuScope(params.channel, params.chatId, params.scope);
+        this.memuScope(
+          params.channel,
+          params.chatId,
+          params.senderId,
+          params.metadata,
+          params.scope,
+        );
       if (this.memuRetrieveEnabled) {
         this.tools.register(new MemoryRetrieveTool(this.memuClient, resolveScope));
       }
@@ -586,15 +598,17 @@ export class AgentLoop {
     sessionKey?: string;
     channel?: string;
     chatId?: string;
+    senderId?: string;
+    metadata?: Record<string, unknown>;
     onProgress?: (content: string, meta?: ProgressMeta) => Promise<void>;
     signal?: AbortSignal;
   }): Promise<string> {
     const msg: InboundMessage = {
       channel: options.channel ?? "cli",
-      senderId: "user",
+      senderId: options.senderId ?? "user",
       chatId: options.chatId ?? "direct",
       content: options.content,
-      metadata: {},
+      metadata: options.metadata ?? {},
     };
 
     const response = await this.processMessage(
@@ -606,18 +620,25 @@ export class AgentLoop {
     return response?.content ?? "";
   }
 
-  private setToolContext(channel: string, chatId: string, messageId?: string): void {
+  private setToolContext(message: InboundMessage): void {
+    const messageId = this.metadataString(message.metadata, "message_id");
     for (const toolName of this.tools.names) {
       const tool = this.tools.get(toolName);
       if (!tool) {
         continue;
       }
       if (tool instanceof MessageTool) {
-        tool.setContext(channel, chatId, messageId);
+        tool.setContext(message.channel, message.chatId, messageId);
         continue;
       }
       if ("setContext" in tool && typeof tool.setContext === "function") {
-        tool.setContext(channel, chatId, messageId);
+        tool.setContext(
+          message.channel,
+          message.chatId,
+          messageId,
+          message.senderId,
+          message.metadata,
+        );
       }
     }
   }
@@ -1052,12 +1073,19 @@ export class AgentLoop {
         : ["cli", message.chatId];
       const key = `${channel}:${chatId}`;
       const session = await this.sessions.getOrCreate(key);
-      this.setToolContext(channel, chatId, this.metadataString(message.metadata, "message_id"));
+      const localMemory = this.localMemoryStore(key);
+      const systemMessage: InboundMessage = {
+        ...message,
+        channel,
+        chatId,
+      };
+      this.setToolContext(systemMessage);
 
       const history = session.getHistory(this.memoryWindow);
       const initialMessages = await this.context.buildMessages({
         history,
         currentMessage: message.content,
+        memoryStore: localMemory,
         channel,
         chatId,
       });
@@ -1094,7 +1122,7 @@ export class AgentLoop {
           }
           const temp = new Session(session.key);
           temp.messages = [...snapshot];
-          const ok = await this.consolidator.consolidate({
+          const ok = await this.localConsolidator(session.key).consolidate({
             session: temp,
             provider: this.provider,
             model: this.model,
@@ -1137,7 +1165,7 @@ export class AgentLoop {
       const lock = this.getConsolidationLock(session.key);
       void lock
         .runExclusive(async () => {
-          await this.consolidator.consolidate({
+          await this.localConsolidator(session.key).consolidate({
             session,
             provider: this.provider,
             model: this.model,
@@ -1149,19 +1177,27 @@ export class AgentLoop {
         });
     }
 
-    this.setToolContext(message.channel, message.chatId, this.metadataString(message.metadata, "message_id"));
+    this.setToolContext(message);
     const messageTool = this.tools.get("message");
     if (messageTool && messageTool instanceof MessageTool) {
       messageTool.startTurn();
     }
 
     const history = session.getHistory(this.memoryWindow);
+    const localMemory = this.localMemoryStore(session.key);
+    const identity = this.memoryIdentity(message, "chat");
     const retrievedMemory = await this.retrieveMemuContext(message);
     const initialMessages = await this.context.buildMessages({
       history,
       currentMessage: message.content,
       retrievedMemory: retrievedMemory ?? undefined,
       media: message.media,
+      memoryStore: localMemory,
+      runtimeMetadata: {
+        tenantId: identity.tenantId,
+        principalId: identity.principalId,
+        conversationId: identity.conversationId,
+      },
       channel: message.channel,
       chatId: message.chatId,
     });
@@ -1296,15 +1332,51 @@ export class AgentLoop {
     return lock;
   }
 
+  private localMemoryStore(sessionKey: string): MemoryStore {
+    return new MemoryStore(this.workspace, buildLocalMemoryNamespace(sessionKey));
+  }
+
+  private localConsolidator(sessionKey: string): MemoryConsolidator {
+    return new MemoryConsolidator(this.localMemoryStore(sessionKey));
+  }
+
+  private memoryIdentity(
+    message: Pick<InboundMessage, "channel" | "chatId" | "senderId" | "metadata">,
+    scope: "chat" | "papers",
+  ) {
+    return resolveMemoryIdentity(
+      {
+        channel: message.channel,
+        chatId: message.chatId,
+        senderId: message.senderId,
+        metadata: message.metadata,
+        scope,
+      },
+      this.memoryConfig,
+    );
+  }
+
   private memuScope(
     channel: string,
     chatId: string,
+    senderId: string,
+    metadata: Record<string, unknown> | undefined,
     scope: "chat" | "papers" = "chat",
   ): { userId: string; agentId: string } {
+    const identity = resolveMemoryIdentity(
+      {
+        channel,
+        chatId,
+        senderId,
+        metadata,
+        scope,
+      },
+      this.memoryConfig,
+    );
     const scopeSuffix = this.memuScopes[scope].trim();
     const agentId = scopeSuffix ? `${this.memuAgentId}:${scopeSuffix}` : this.memuAgentId;
     return {
-      userId: `${channel}:${chatId}`,
+      userId: buildMemuUserId(identity),
       agentId,
     };
   }
@@ -1320,7 +1392,13 @@ export class AgentLoop {
     try {
       const result = await this.memuClient.retrieve({
         query,
-        ...this.memuScope(message.channel, message.chatId, "chat"),
+        ...this.memuScope(
+          message.channel,
+          message.chatId,
+          message.senderId,
+          message.metadata,
+          "chat",
+        ),
       });
       return MemUClient.formatRetrieveContext(result);
     } catch (error) {
@@ -1354,7 +1432,13 @@ export class AgentLoop {
     void this.memuClient
       .memorizeConversation({
         conversation,
-        ...this.memuScope(message.channel, message.chatId, "chat"),
+        ...this.memuScope(
+          message.channel,
+          message.chatId,
+          message.senderId,
+          message.metadata,
+          "chat",
+        ),
       })
       .catch((error) => {
         this.logMemuWarning("memorize", error);

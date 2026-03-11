@@ -7,6 +7,8 @@ type MemoryRetrieveScope = MemoryScope | "all";
 export interface MemoryScopeResolverInput {
   channel: string;
   chatId: string;
+  senderId: string;
+  metadata?: Record<string, unknown>;
   scope: MemoryScope;
 }
 
@@ -48,6 +50,8 @@ function asPositiveInt(value: unknown): number | undefined {
 abstract class MemoryToolBase extends Tool {
   private channel = "cli";
   private chatId = "direct";
+  private senderId = "user";
+  private metadata: Record<string, unknown> | undefined;
 
   constructor(
     protected readonly memu: MemUClient,
@@ -56,15 +60,25 @@ abstract class MemoryToolBase extends Tool {
     super();
   }
 
-  setContext(channel: string, chatId: string): void {
+  setContext(
+    channel: string,
+    chatId: string,
+    _messageId?: string,
+    senderId = "user",
+    metadata?: Record<string, unknown>,
+  ): void {
     this.channel = channel;
     this.chatId = chatId;
+    this.senderId = senderId;
+    this.metadata = metadata;
   }
 
   protected scope(scope: MemoryScope): { userId: string; agentId: string } {
     return this.resolveScope({
       channel: this.channel,
       chatId: this.chatId,
+      senderId: this.senderId,
+      metadata: this.metadata,
       scope,
     });
   }
@@ -222,4 +236,3 @@ export class MemoryDeleteTool extends MemoryToolBase {
     return `Cleared memory in ${scope} scope.`;
   }
 }
-

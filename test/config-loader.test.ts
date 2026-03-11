@@ -50,6 +50,9 @@ describe("config loader", () => {
     expect(config.memory.memu.apiStyle).toBe("cloudV3");
     expect(config.memory.memu.memorizeMode).toBe("tool");
     expect(config.memory.memu.endpoints).toEqual({});
+    expect(config.memory.isolation.tenantId).toBe("default");
+    expect(config.memory.isolation.scopeOwners.chat).toBe("principal");
+    expect(config.memory.isolation.scopeOwners.papers).toBe("conversation");
     expect(config.agents.subagentConcurrency.maxConcurrent).toBe(3);
     expect(config.roles.researcher.memoryScope).toBe("papers");
     expect(config.roles.scientist.workspaceIsolation).toBe(true);

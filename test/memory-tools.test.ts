@@ -1,15 +1,50 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { buildMemuUserId, resolveMemoryIdentity } from "../src/agent/memory/identity.js";
 import { MemUClient } from "../src/agent/memory/memu-client.js";
 import { MemoryDeleteTool, MemoryRetrieveTool, MemorySaveTool } from "../src/tools/builtins/memory.js";
 import { ScopedMemoryRetrieveTool, ScopedMemorySaveTool } from "../src/tools/builtins/scoped-memory.js";
 
-function resolver(input: { channel: string; chatId: string; scope: "chat" | "papers" }): {
+function resolver(input: {
+  channel: string;
+  chatId: string;
+  senderId: string;
+  metadata?: Record<string, unknown>;
+  scope: "chat" | "papers";
+}): {
   userId: string;
   agentId: string;
 } {
+  const identity = resolveMemoryIdentity(
+    input,
+    {
+      isolation: {
+        tenantId: "default",
+        scopeOwners: {
+          chat: "principal",
+          papers: "conversation",
+        },
+      },
+      memu: {
+        enabled: true,
+        apiKey: "",
+        baseUrl: "",
+        agentId: "openintern",
+        scopes: {
+          chat: "chat",
+          papers: "papers",
+        },
+        timeoutMs: 1_000,
+        retrieve: true,
+        memorize: true,
+        memorizeMode: "tool",
+        apiStyle: "cloudV3",
+        endpoints: {},
+      },
+    },
+  );
   return {
-    userId: `${input.channel}:${input.chatId}`,
+    userId: buildMemuUserId(identity),
     agentId: `openintern:${input.scope}`,
   };
 }
@@ -19,7 +54,7 @@ describe("memory tools", () => {
     vi.restoreAllMocks();
   });
 
-  it("memory_save stores content in selected scope", async () => {
+  it("memory_save stores chat memory under the sender principal", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
@@ -32,19 +67,19 @@ describe("memory tools", () => {
       baseUrl: "https://api.memu.so",
     });
     const tool = new MemorySaveTool(client, resolver);
-    tool.setContext("cli", "direct");
+    tool.setContext("cli", "direct", undefined, "alice");
 
     const output = await tool.execute({
       content: "User prefers concise responses.",
-      scope: "papers",
+      scope: "chat",
     });
 
-    expect(output).toContain("Saved memory to papers scope");
+    expect(output).toContain("Saved memory to chat scope");
     const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit | undefined];
     expect(call[0]).toBe("https://api.memu.so/api/v3/memory/memorize");
     const body = JSON.parse(String(call[1]?.body)) as Record<string, unknown>;
-    expect(body.user_id).toBe("cli:direct");
-    expect(body.agent_id).toBe("openintern:papers");
+    expect(body.user_id).toBe("tenant:default:principal:cli:alice");
+    expect(body.agent_id).toBe("openintern:chat");
   });
 
   it("memory_retrieve can merge chat and papers scopes", async () => {
