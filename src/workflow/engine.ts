@@ -873,6 +873,123 @@ ${outputKeyHint}`;
       outputs: structuredClone(run.outputs),
       ...(run.error ? { error: run.error } : {}),
     });
+    void this.publishTerminalUpdate(run);
+  }
+
+  private async publishTerminalUpdate(run: RunRuntimeState): Promise<void> {
+    if (run.originChannel === "workflow") {
+      return;
+    }
+
+    const content = this.buildTerminalMessage(run);
+    if (!content) {
+      return;
+    }
+
+    try {
+      await this.bus.publishOutbound({
+        channel: run.originChannel,
+        chatId: run.originChatId,
+        content,
+        metadata: {
+          _workflow_terminal: true,
+          _workflow_id: run.definition.id,
+          _workflow_run_id: run.runId,
+          _workflow_status: run.status,
+        },
+      });
+    } catch {
+      // Best effort user notification.
+    }
+  }
+
+  private buildTerminalMessage(run: RunRuntimeState): string | null {
+    if (run.status === "completed") {
+      return this.extractCompletedMessage(run) ?? `Workflow '${run.definition.id}' completed.`;
+    }
+    if (run.status === "failed") {
+      return run.error
+        ? `Workflow '${run.definition.id}' failed: ${run.error}`
+        : `Workflow '${run.definition.id}' failed.`;
+    }
+    if (run.status === "cancelled") {
+      return run.error
+        ? `Workflow '${run.definition.id}' was cancelled: ${run.error}`
+        : `Workflow '${run.definition.id}' was cancelled.`;
+    }
+    return null;
+  }
+
+  private extractCompletedMessage(run: RunRuntimeState): string | null {
+    const sinkNodeIds = run.topoOrder.filter((nodeId) =>
+      run.definition.nodes.every((node) => !node.dependsOn.includes(nodeId)),
+    );
+    const candidateNodeIds = [...sinkNodeIds].reverse();
+
+    for (const nodeId of candidateNodeIds) {
+      const output = run.outputs[nodeId];
+      const formatted = this.formatOutputForUser(output);
+      if (formatted) {
+        return formatted;
+      }
+    }
+
+    for (const nodeId of [...run.topoOrder].reverse()) {
+      const output = run.outputs[nodeId];
+      const formatted = this.formatOutputForUser(output);
+      if (formatted) {
+        return formatted;
+      }
+    }
+
+    return null;
+  }
+
+  private formatOutputForUser(output: Record<string, unknown> | undefined): string | null {
+    if (!output) {
+      return null;
+    }
+
+    for (const key of ["answer", "result", "summary", "output"]) {
+      const value = output[key];
+      const formatted = this.formatOutputValue(value);
+      if (formatted) {
+        return formatted;
+      }
+    }
+
+    const entries = Object.entries(output);
+    if (entries.length === 1) {
+      const formatted = this.formatOutputValue(entries[0]?.[1]);
+      if (formatted) {
+        return formatted;
+      }
+    }
+
+    if (entries.length === 0) {
+      return null;
+    }
+
+    try {
+      return JSON.stringify(output, null, 2);
+    } catch {
+      return null;
+    }
+  }
+
+  private formatOutputValue(value: unknown): string | null {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    }
+    if (value === null || typeof value === "undefined") {
+      return null;
+    }
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return null;
+    }
   }
 
   private emitSnapshot(runId: string): void {

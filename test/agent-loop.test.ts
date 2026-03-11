@@ -349,7 +349,8 @@ describe("AgentLoop", () => {
       channel: "cli",
       chatId: "test",
     });
-    expect(response).toContain("paused repeated workflow status polling");
+    expect(response).toContain("paused workflow status polling");
+    expect(response).toContain("send the final result here when it completes");
   });
 
   it("does not forward speculative assistant text while tool calls are pending", async () => {

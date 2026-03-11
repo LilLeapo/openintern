@@ -925,8 +925,8 @@ export class AgentLoop {
 
             if (nextCount > WORKFLOW_STATUS_POLL_LIMIT) {
               finalContent =
-                latestWorkflowProgress ??
-                `I paused repeated workflow status polling for instance '${instanceId || "unknown"}' after ${WORKFLOW_STATUS_POLL_LIMIT} checks.`;
+                `I paused workflow status polling for instance '${instanceId || "unknown"}' ` +
+                `after ${WORKFLOW_STATUS_POLL_LIMIT} checks. I'll send the final result here when it completes.`;
               if (onProgress) {
                 const pausedMessage = `Polling paused for workflow ${instanceId || "unknown"} after repeated checks. Send another request if you want me to continue polling.`;
                 if (traceContext && this.shouldMirrorTraceToProgress()) {

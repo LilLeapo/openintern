@@ -150,8 +150,81 @@ describe("WorkflowEngine", () => {
     expect(result.outputs.node_clean).toEqual({ output_path: "/tmp/clean.csv" });
     expect(result.outputs.node_report).toEqual({ summary: "done" });
 
+    const outbound = await bus.consumeOutbound(100);
+    expect(outbound?.channel).toBe("cli");
+    expect(outbound?.chatId).toBe("direct");
+    expect(outbound?.content).toBe("done");
+    expect(outbound?.metadata?._workflow_terminal).toBe(true);
     const inbound = await bus.consumeInbound(100);
     expect(inbound).toBeNull();
+    engine.close();
+  });
+
+  it("prefers terminal node answer when notifying origin session", async () => {
+    const bus = new MessageBus();
+    const subagents = new FakeSubagentManager();
+    const engine = new WorkflowEngine({
+      bus,
+      subagents,
+      workspace: process.cwd(),
+      config: structuredClone(DEFAULT_CONFIG),
+    });
+
+    const handle = await engine.start(
+      {
+        id: "wf_answer",
+        trigger: { type: "manual" },
+        nodes: [
+          {
+            id: "node_research",
+            role: "scientist",
+            taskPrompt: "Research",
+            dependsOn: [],
+            outputKeys: ["summary"],
+          },
+          {
+            id: "node_answer",
+            role: "scientist",
+            taskPrompt: "Answer {{node_research.summary}}",
+            dependsOn: ["node_research"],
+            outputKeys: ["answer"],
+          },
+        ],
+      },
+      {
+        triggerInput: {},
+        originChannel: "feishu",
+        originChatId: "ou_123",
+      },
+    );
+
+    await waitFor(() => subagents.calls.length === 1);
+    await bus.emitSubagentEvent(
+      makeEvent({
+        type: "SUBAGENT_TASK_COMPLETED",
+        taskId: "task_1",
+        status: "ok",
+        result: '{"summary":"intermediate"}',
+        originChatId: `${handle.runId}:node_research`,
+      }),
+    );
+
+    await waitFor(() => subagents.calls.length === 2);
+    await bus.emitSubagentEvent(
+      makeEvent({
+        type: "SUBAGENT_TASK_COMPLETED",
+        taskId: "task_2",
+        status: "ok",
+        result: '{"answer":"final answer"}',
+        originChatId: `${handle.runId}:node_answer`,
+      }),
+    );
+
+    await handle.done;
+    const outbound = await bus.consumeOutbound(100);
+    expect(outbound?.channel).toBe("feishu");
+    expect(outbound?.chatId).toBe("ou_123");
+    expect(outbound?.content).toBe("final answer");
     engine.close();
   });
 
