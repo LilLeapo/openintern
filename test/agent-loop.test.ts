@@ -233,6 +233,27 @@ describe("AgentLoop", () => {
     expect(reset).toContain("Memory archival failed");
   });
 
+  it("returns Chinese help text for /help", async () => {
+    const workspace = await makeWorkspace();
+    const agent = new AgentLoop({
+      bus: new MessageBus(),
+      provider: new ScriptedProvider([]),
+      workspace,
+    });
+
+    const help = await agent.processDirect({
+      content: "/help",
+      sessionKey: "feishu:test",
+      channel: "feishu",
+      chatId: "test",
+    });
+
+    expect(help).toContain("可用命令");
+    expect(help).toContain("/new - 开始新会话");
+    expect(help).toContain("/stop - 停止当前正在执行的任务");
+    expect(help).toContain("在飞书等聊天渠道里，直接发送这些命令也生效");
+  });
+
   it("returns max-iteration fallback when tool loop never ends", async () => {
     const workspace = await makeWorkspace();
     const provider = new ScriptedProvider([

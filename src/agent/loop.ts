@@ -786,6 +786,26 @@ export class AgentLoop {
     }
   }
 
+  private static helpMessage(): string {
+    return [
+      "可用命令：",
+      "/help - 查看帮助",
+      "/new - 开始新会话，并清空当前上下文",
+      "/stop - 停止当前正在执行的任务",
+      "",
+      "你也可以直接用自然语言提需求，例如：",
+      "- 帮我总结这个问题",
+      "- 执行某个 workflow，并告诉我结果",
+      "- 打开网站并帮我操作页面",
+      "- 帮我读取/修改工作区里的文件",
+      "",
+      "补充说明：",
+      "- 如果已启用 workflow，我可以触发并跟踪执行状态",
+      "- 如果已连接 MCP，我可以调用对应外部工具",
+      "- 在飞书等聊天渠道里，直接发送这些命令也生效",
+    ].join("\n");
+  }
+
   private async runAgentLoop(
     initialMessages: Array<Record<string, unknown>>,
     signal?: AbortSignal,
@@ -1155,7 +1175,7 @@ export class AgentLoop {
       return {
         channel: message.channel,
         chatId: message.chatId,
-        content: "Commands:\n/new - Start a new conversation\n/stop - Stop the current task\n/help - Show commands",
+        content: AgentLoop.helpMessage(),
       };
     }
 
