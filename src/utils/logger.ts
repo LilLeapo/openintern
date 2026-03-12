@@ -1,6 +1,10 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { stdout, stderr } from "node:process";
 
 type LogLevel = "INFO" | "WARN" | "ERROR";
+const LOG_DIR = path.join(os.homedir(), ".openintern", "logs");
 
 function timestamp(): string {
   return new Date().toISOString();
@@ -8,6 +12,12 @@ function timestamp(): string {
 
 function writeLine(level: LogLevel, scope: string, message: string): void {
   const line = `[${timestamp()}] [${level}] [${scope}] ${message}\n`;
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    appendFileSync(path.join(LOG_DIR, `${scope}.log`), line, "utf8");
+  } catch {
+    // Best effort file logging.
+  }
   if (level === "ERROR") {
     stderr.write(line);
     return;

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { basename, extname } from "node:path";
+import { readFile } from "node:fs/promises";
 
 import * as Lark from "@larksuiteoapi/node-sdk";
 
@@ -120,7 +122,9 @@ export class FeishuChannel {
   }
 
   async send(message: OutboundMessage): Promise<void> {
-    if (!this.config.enabled || !message.content.trim()) {
+    const hasText = message.content.trim().length > 0;
+    const media = Array.isArray(message.media) ? message.media.filter(Boolean) : [];
+    if (!this.config.enabled || (!hasText && media.length === 0)) {
       return;
     }
     if (!this.config.appId || !this.config.appSecret) {
@@ -148,6 +152,34 @@ export class FeishuChannel {
         throw new Error(`Feishu send failed (code=${code}, status=${response.status}): ${msg}`);
       }
     });
+    for (const filePath of media) {
+      sendOps.push(async (token: string) => {
+        const fileKey = await this.uploadFile(token, filePath);
+        if (!fileKey) {
+          throw new Error(`Feishu file upload failed for '${filePath}'`);
+        }
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            receive_id: message.chatId,
+            msg_type: "file",
+            content: JSON.stringify({ file_key: fileKey }),
+            uuid: randomUUID(),
+          }),
+        });
+        const raw = (await response.json()) as unknown;
+        const body = this.asObject(raw);
+        const code = typeof body.code === "number" ? body.code : -1;
+        if (!response.ok || code !== 0) {
+          const msg = typeof body.msg === "string" ? body.msg : response.statusText;
+          throw new Error(`Feishu send failed (code=${code}, status=${response.status}): ${msg}`);
+        }
+      });
+    }
 
     await this.withAuthRetry(async (token) => {
       for (const sendOp of sendOps) {
@@ -163,6 +195,9 @@ export class FeishuChannel {
     uuid: string;
   }> {
     const content = message.content.trim();
+    if (!content) {
+      return [];
+    }
     const format = this.detectMessageFormat(content);
 
     if (format === "text") {
@@ -398,6 +433,57 @@ export class FeishuChannel {
     }
 
     return elements.length > 0 ? elements : [{ tag: "markdown", content }];
+  }
+
+  private async uploadFile(token: string, filePath: string): Promise<string | null> {
+    const data = await readFile(filePath);
+    const fileName = basename(filePath);
+    const form = new FormData();
+    form.set("file_type", this.fileTypeForPath(filePath));
+    form.set("file_name", fileName);
+    form.set("file", new Blob([data]), fileName);
+
+    const response = await fetch("https://open.feishu.cn/open-apis/im/v1/files", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: form,
+    });
+    const raw = (await response.json()) as unknown;
+    const body = this.asObject(raw);
+    const code = typeof body.code === "number" ? body.code : -1;
+    if (!response.ok || code !== 0) {
+      const msg = typeof body.msg === "string" ? body.msg : response.statusText;
+      throw new Error(`Feishu file upload failed (code=${code}, status=${response.status}): ${msg}`);
+    }
+    const dataObj = this.asObject(body.data);
+    return typeof dataObj.file_key === "string" && dataObj.file_key.trim()
+      ? dataObj.file_key.trim()
+      : null;
+  }
+
+  private fileTypeForPath(filePath: string): "opus" | "mp4" | "pdf" | "doc" | "xls" | "ppt" | "stream" {
+    const ext = extname(filePath).toLowerCase();
+    switch (ext) {
+      case ".opus":
+        return "opus";
+      case ".mp4":
+        return "mp4";
+      case ".pdf":
+        return "pdf";
+      case ".doc":
+      case ".docx":
+        return "doc";
+      case ".xls":
+      case ".xlsx":
+        return "xls";
+      case ".ppt":
+      case ".pptx":
+        return "ppt";
+      default:
+        return "stream";
+    }
   }
 
   private async handleMessageEvent(payload: FeishuMessageEvent): Promise<void> {

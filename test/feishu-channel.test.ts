@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import type { OutboundMessage } from "../src/bus/events.js";
 import { MessageBus } from "../src/bus/message-bus.js";
@@ -63,6 +66,8 @@ function makeConfig(overrides?: Partial<FeishuChannelConfig>): FeishuChannelConf
 }
 
 describe("FeishuChannel", () => {
+  const tempDirs: string[] = [];
+
   afterEach(() => {
     vi.restoreAllMocks();
     sdkState.wsStart.mockClear();
@@ -70,6 +75,10 @@ describe("FeishuChannel", () => {
     sdkState.registeredHandlers = {};
     sdkState.lastWsParams = undefined;
     sdkState.lastDispatcherParams = undefined;
+  });
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
   it("starts long connection with official SDK and closes cleanly", async () => {
@@ -350,5 +359,76 @@ describe("FeishuChannel", () => {
     expect(cards.every((card) => card.msg_type === "interactive")).toBe(true);
     const parsedCards = cards.map((card) => JSON.parse(card.content) as { elements: Array<Record<string, unknown>> });
     expect(parsedCards.every((card) => card.elements.filter((item) => item.tag === "table").length <= 1)).toBe(true);
+  });
+
+  it("uploads media attachments and sends them as files", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "feishu-media-test-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "report.json");
+    await writeFile(filePath, '{"ok":true}\n', "utf8");
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/tenant_access_token/internal")) {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 0,
+            tenant_access_token: "tenant-token-1",
+            expire: 7200,
+          }),
+        };
+      }
+      if (url.includes("/im/v1/files")) {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 0,
+            data: {
+              file_key: "file-key-1",
+            },
+          }),
+        };
+      }
+      if (url.includes("/im/v1/messages")) {
+        return {
+          ok: true,
+          json: async () => ({ code: 0, msg: "ok" }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        statusText: "not found",
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const channel = new FeishuChannel({
+      config: makeConfig(),
+      bus: new MessageBus(),
+    });
+
+    await channel.send({
+      channel: "feishu",
+      chatId: "ou_target",
+      content: "诊断报告已生成",
+      media: [filePath],
+      metadata: {},
+    });
+
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/im/v1/files"))).toBe(true);
+    const messageCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/im/v1/messages?receive_id_type=open_id"),
+    );
+    expect(messageCalls).toHaveLength(2);
+    const filePayload = messageCalls
+      .map((call) => JSON.parse(String((call[1] as RequestInit | undefined)?.body ?? "{}")) as {
+        msg_type: string;
+        content: string;
+      })
+      .find((payload) => payload.msg_type === "file");
+    expect(filePayload).toBeTruthy();
+    expect(JSON.parse(String(filePayload?.content)).file_key).toBe("file-key-1");
   });
 });

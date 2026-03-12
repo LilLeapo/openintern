@@ -24,6 +24,7 @@ import type { LLMProvider, ToolCallRequest } from "../llm/provider.js";
 import { CronTool } from "../tools/builtins/cron.js";
 import { EditFileTool, ListDirTool, ReadFileTool, WriteFileTool } from "../tools/builtins/filesystem.js";
 import { MessageTool } from "../tools/builtins/message.js";
+import { ReportIssueTool } from "../tools/builtins/report-issue.js";
 import { ExecTool } from "../tools/builtins/exec.js";
 import { InspectFileTool, ReadImageTool } from "../tools/builtins/media.js";
 import { SpawnTool } from "../tools/builtins/spawn.js";
@@ -438,6 +439,16 @@ export class AgentLoop {
     this.tools.register(new WebSearchTool(this.webSearchApiKey, this.webSearchMaxResults, this.webProxy));
     this.tools.register(new WebFetchTool(50_000, this.webProxy));
     this.tools.register(new MessageTool((msg) => this.bus.publishOutbound(msg)));
+    this.tools.register(
+      new ReportIssueTool(
+        this.workspace,
+        async (msg) => this.bus.publishOutbound(msg),
+        {
+          workflowRuns: this.workflowRunHistory,
+          workflowActivities: this.workflowRunActivityHistory,
+        },
+      ),
+    );
     if (this.enableSpawn) {
       this.tools.register(new SpawnTool(this.subagents));
     }
