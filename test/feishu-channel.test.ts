@@ -211,4 +211,144 @@ describe("FeishuChannel", () => {
     expect(payload.msg_type).toBe("text");
     expect(JSON.parse(payload.content).text).toBe("hello outbound");
   });
+
+  it("sends markdown links as Feishu post messages", async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.includes("/tenant_access_token/internal")) {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 0,
+            tenant_access_token: "tenant-token-1",
+            expire: 7200,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ code: 0, msg: "ok" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const channel = new FeishuChannel({
+      config: makeConfig(),
+      bus: new MessageBus(),
+    });
+
+    await channel.send({
+      channel: "feishu",
+      chatId: "ou_target",
+      content: "Read [OpenAI](https://openai.com) now",
+      metadata: {},
+    });
+
+    const sendCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/im/v1/messages?receive_id_type=open_id"),
+    );
+    const payload = JSON.parse(String((sendCall?.[1] as RequestInit | undefined)?.body ?? "{}")) as {
+      msg_type: string;
+      content: string;
+    };
+    expect(payload.msg_type).toBe("post");
+    const body = JSON.parse(payload.content) as {
+      zh_cn: {
+        content: Array<Array<Record<string, string>>>;
+      };
+    };
+    expect(body.zh_cn.content[0]?.some((item) => item.tag === "a" && item.href === "https://openai.com")).toBe(true);
+  });
+
+  it("sends headings and lists as interactive cards", async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.includes("/tenant_access_token/internal")) {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 0,
+            tenant_access_token: "tenant-token-1",
+            expire: 7200,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ code: 0, msg: "ok" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const channel = new FeishuChannel({
+      config: makeConfig(),
+      bus: new MessageBus(),
+    });
+
+    await channel.send({
+      channel: "feishu",
+      chatId: "ou_target",
+      content: "# Title\n\n- first\n- second",
+      metadata: {},
+    });
+
+    const sendCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/im/v1/messages?receive_id_type=open_id"),
+    );
+    const payload = JSON.parse(String((sendCall?.[1] as RequestInit | undefined)?.body ?? "{}")) as {
+      msg_type: string;
+      content: string;
+    };
+    expect(payload.msg_type).toBe("interactive");
+    const card = JSON.parse(payload.content) as {
+      elements: Array<Record<string, unknown>>;
+    };
+    expect(card.elements.some((item) => item.tag === "div")).toBe(true);
+    expect(card.elements.some((item) => item.tag === "markdown")).toBe(true);
+  });
+
+  it("splits multiple markdown tables into multiple interactive cards", async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.includes("/tenant_access_token/internal")) {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 0,
+            tenant_access_token: "tenant-token-1",
+            expire: 7200,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ code: 0, msg: "ok" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const channel = new FeishuChannel({
+      config: makeConfig(),
+      bus: new MessageBus(),
+    });
+
+    await channel.send({
+      channel: "feishu",
+      chatId: "ou_target",
+      content:
+        "| A |\n| - |\n| 1 |\n\n| B |\n| - |\n| 2 |",
+      metadata: {},
+    });
+
+    const sendCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/im/v1/messages?receive_id_type=open_id"),
+    );
+    expect(sendCalls).toHaveLength(2);
+    const cards = sendCalls.map((call) =>
+      JSON.parse(String((call[1] as RequestInit | undefined)?.body ?? "{}")) as {
+        msg_type: string;
+        content: string;
+      },
+    );
+    expect(cards.every((card) => card.msg_type === "interactive")).toBe(true);
+    const parsedCards = cards.map((card) => JSON.parse(card.content) as { elements: Array<Record<string, unknown>> });
+    expect(parsedCards.every((card) => card.elements.filter((item) => item.tag === "table").length <= 1)).toBe(true);
+  });
 });

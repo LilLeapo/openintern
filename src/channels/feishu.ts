@@ -7,6 +7,19 @@ import { MessageBus } from "../bus/message-bus.js";
 import type { FeishuChannelConfig } from "../config/schema.js";
 
 const TOKEN_REFRESH_SKEW_MS = 60_000;
+const TEXT_MAX_LEN = 200;
+const POST_MAX_LEN = 2000;
+const TABLE_RE =
+  /((?:^[ \t]*\|.+\|[ \t]*\n)(?:^[ \t]*\|[-:\s|]+\|[ \t]*\n)(?:^[ \t]*\|.+\|[ \t]*\n?)+)/gm;
+const HEADING_RE = /^(#{1,6})\s+(.+)$/gm;
+const CODE_BLOCK_RE = /(```[\s\S]*?```)/gm;
+const COMPLEX_MD_RE = /```|^\|.+\|.*\n\s*\|[-:\s|]+\||^#{1,6}\s+/m;
+const SIMPLE_MD_RE =
+  /\*\*.+?\*\*|__.+?__|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|~~.+?~~/s;
+const MD_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g;
+const MD_LINK_DETECT_RE = /\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/;
+const LIST_RE = /^[\s]*[-*+]\s+/m;
+const OLIST_RE = /^[\s]*\d+\.\s+/m;
 
 interface FeishuGatewayOptions {
   config: FeishuChannelConfig;
@@ -115,17 +128,10 @@ export class FeishuChannel {
     }
 
     const receiveIdType = this.receiveIdTypeForChat(message.chatId);
-    const payload = {
-      receive_id: message.chatId,
-      msg_type: "text",
-      content: JSON.stringify({ text: message.content }),
-      uuid: randomUUID(),
-    };
     const url =
       `https://open.feishu.cn/open-apis/im/v1/messages?` +
       `receive_id_type=${encodeURIComponent(receiveIdType)}`;
-
-    await this.withAuthRetry(async (token) => {
+    const sendOps = this.buildOutboundPayloads(message).map((payload) => async (token: string) => {
       const response = await fetch(url, {
         method: "POST",
         headers: {
@@ -142,6 +148,256 @@ export class FeishuChannel {
         throw new Error(`Feishu send failed (code=${code}, status=${response.status}): ${msg}`);
       }
     });
+
+    await this.withAuthRetry(async (token) => {
+      for (const sendOp of sendOps) {
+        await sendOp(token);
+      }
+    });
+  }
+
+  private buildOutboundPayloads(message: OutboundMessage): Array<{
+    receive_id: string;
+    msg_type: "text" | "post" | "interactive";
+    content: string;
+    uuid: string;
+  }> {
+    const content = message.content.trim();
+    const format = this.detectMessageFormat(content);
+
+    if (format === "text") {
+      return [
+        {
+          receive_id: message.chatId,
+          msg_type: "text",
+          content: JSON.stringify({ text: content }),
+          uuid: randomUUID(),
+        },
+      ];
+    }
+
+    if (format === "post") {
+      return [
+        {
+          receive_id: message.chatId,
+          msg_type: "post",
+          content: this.markdownToPost(content),
+          uuid: randomUUID(),
+        },
+      ];
+    }
+
+    const elements = this.buildCardElements(content);
+    return this.splitElementsByTableLimit(elements).map((chunk) => ({
+      receive_id: message.chatId,
+      msg_type: "interactive" as const,
+      content: JSON.stringify(
+        {
+          config: {
+            wide_screen_mode: true,
+          },
+          elements: chunk,
+        },
+        null,
+        0,
+      ),
+      uuid: randomUUID(),
+    }));
+  }
+
+  private detectMessageFormat(content: string): "text" | "post" | "interactive" {
+    const stripped = content.trim();
+    if (COMPLEX_MD_RE.test(stripped)) {
+      return "interactive";
+    }
+    if (stripped.length > POST_MAX_LEN) {
+      return "interactive";
+    }
+    if (SIMPLE_MD_RE.test(stripped)) {
+      return "interactive";
+    }
+    if (LIST_RE.test(stripped) || OLIST_RE.test(stripped)) {
+      return "interactive";
+    }
+    if (MD_LINK_DETECT_RE.test(stripped)) {
+      return "post";
+    }
+    if (stripped.length <= TEXT_MAX_LEN) {
+      return "text";
+    }
+    return "post";
+  }
+
+  private markdownToPost(content: string): string {
+    const paragraphs = content.trim().split("\n").map((line) => {
+      const elements: Array<Record<string, string>> = [];
+      let lastEnd = 0;
+      for (const match of line.matchAll(MD_LINK_RE)) {
+        const [fullMatch, text, href] = match;
+        const start = match.index ?? 0;
+        const before = line.slice(lastEnd, start);
+        if (before) {
+          elements.push({ tag: "text", text: before });
+        }
+        elements.push({
+          tag: "a",
+          text,
+          href,
+        });
+        lastEnd = start + fullMatch.length;
+      }
+      const remaining = line.slice(lastEnd);
+      if (remaining) {
+        elements.push({ tag: "text", text: remaining });
+      }
+      if (elements.length === 0) {
+        elements.push({ tag: "text", text: "" });
+      }
+      return elements;
+    });
+
+    return JSON.stringify(
+      {
+        zh_cn: {
+          content: paragraphs,
+        },
+      },
+      null,
+      0,
+    );
+  }
+
+  private buildCardElements(content: string): Array<Record<string, unknown>> {
+    const elements: Array<Record<string, unknown>> = [];
+    let lastEnd = 0;
+    for (const match of content.matchAll(TABLE_RE)) {
+      const fullMatch = match[0];
+      const start = match.index ?? 0;
+      const before = content.slice(lastEnd, start);
+      if (before.trim()) {
+        elements.push(...this.splitHeadings(before));
+      }
+      elements.push(this.parseMarkdownTable(fullMatch) ?? { tag: "markdown", content: fullMatch });
+      lastEnd = start + fullMatch.length;
+    }
+    const remaining = content.slice(lastEnd);
+    if (remaining.trim()) {
+      elements.push(...this.splitHeadings(remaining));
+    }
+    return elements.length > 0 ? elements : [{ tag: "markdown", content }];
+  }
+
+  private parseMarkdownTable(tableText: string): Record<string, unknown> | null {
+    const lines = tableText
+      .trim()
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (lines.length < 3) {
+      return null;
+    }
+
+    const splitLine = (line: string): string[] =>
+      line
+        .replace(/^\||\|$/g, "")
+        .split("|")
+        .map((cell) => cell.trim());
+
+    const headers = splitLine(lines[0]);
+    const rows = lines.slice(2).map(splitLine);
+    return {
+      tag: "table",
+      page_size: rows.length + 1,
+      columns: headers.map((header, index) => ({
+        tag: "column",
+        name: `c${index}`,
+        display_name: header,
+        width: "auto",
+      })),
+      rows: rows.map((row) =>
+        Object.fromEntries(headers.map((_, index) => [`c${index}`, row[index] ?? ""])),
+      ),
+    };
+  }
+
+  private splitElementsByTableLimit(
+    elements: Array<Record<string, unknown>>,
+    maxTables = 1,
+  ): Array<Array<Record<string, unknown>>> {
+    if (elements.length === 0) {
+      return [[]];
+    }
+
+    const groups: Array<Array<Record<string, unknown>>> = [];
+    let current: Array<Record<string, unknown>> = [];
+    let tableCount = 0;
+
+    for (const element of elements) {
+      if (element.tag === "table") {
+        if (tableCount >= maxTables) {
+          if (current.length > 0) {
+            groups.push(current);
+          }
+          current = [];
+          tableCount = 0;
+        }
+        current.push(element);
+        tableCount += 1;
+        continue;
+      }
+      current.push(element);
+    }
+
+    if (current.length > 0) {
+      groups.push(current);
+    }
+    return groups.length > 0 ? groups : [[]];
+  }
+
+  private splitHeadings(content: string): Array<Record<string, unknown>> {
+    let protectedContent = content;
+    const codeBlocks: string[] = [];
+    for (const match of content.matchAll(CODE_BLOCK_RE)) {
+      const codeBlock = match[0];
+      const marker = `\u0000CODE${codeBlocks.length}\u0000`;
+      codeBlocks.push(codeBlock);
+      protectedContent = protectedContent.replace(codeBlock, marker);
+    }
+
+    const elements: Array<Record<string, unknown>> = [];
+    let lastEnd = 0;
+    for (const match of protectedContent.matchAll(HEADING_RE)) {
+      const text = match[2]?.trim() ?? "";
+      const start = match.index ?? 0;
+      const before = protectedContent.slice(lastEnd, start).trim();
+      if (before) {
+        elements.push({ tag: "markdown", content: before });
+      }
+      elements.push({
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: `**${text}**`,
+        },
+      });
+      lastEnd = start + match[0].length;
+    }
+    const remaining = protectedContent.slice(lastEnd).trim();
+    if (remaining) {
+      elements.push({ tag: "markdown", content: remaining });
+    }
+
+    for (let index = 0; index < codeBlocks.length; index += 1) {
+      const marker = `\u0000CODE${index}\u0000`;
+      for (const element of elements) {
+        if (element.tag !== "markdown" || typeof element.content !== "string") {
+          continue;
+        }
+        element.content = element.content.replace(marker, codeBlocks[index]);
+      }
+    }
+
+    return elements.length > 0 ? elements : [{ tag: "markdown", content }];
   }
 
   private async handleMessageEvent(payload: FeishuMessageEvent): Promise<void> {
