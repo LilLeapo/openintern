@@ -251,7 +251,108 @@ describe("AgentLoop", () => {
     expect(help).toContain("可用命令");
     expect(help).toContain("/new - 开始新会话");
     expect(help).toContain("/stop - 停止当前正在执行的任务");
+    expect(help).toContain("/verbose on - 开启当前会话的调试信息 IM 输出");
     expect(help).toContain("在飞书等聊天渠道里，直接发送这些命令也生效");
+  });
+
+  it("toggles IM debug output per session with /verbose", async () => {
+    const workspace = await makeWorkspace();
+    const provider = new ScriptedProvider([
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: "tc_1",
+            name: "list_dir",
+            arguments: { path: "." },
+          },
+        ],
+      },
+      {
+        content: "Done",
+        toolCalls: [],
+      },
+      {
+        content: null,
+        toolCalls: [
+          {
+            id: "tc_2",
+            name: "list_dir",
+            arguments: { path: "." },
+          },
+        ],
+      },
+      {
+        content: "Done again",
+        toolCalls: [],
+      },
+    ]);
+    const bus = new MessageBus();
+    const agent = new AgentLoop({
+      bus,
+      provider,
+      workspace,
+      channelsConfig: {
+        sendProgress: true,
+        sendToolHints: false,
+      },
+    });
+
+    const before = await agent.processDirect({
+      content: "/verbose",
+      sessionKey: "feishu:test",
+      channel: "feishu",
+      chatId: "test",
+    });
+    expect(before).toContain("跟随系统默认配置");
+
+    const on = await agent.processDirect({
+      content: "/verbose on",
+      sessionKey: "feishu:test",
+      channel: "feishu",
+      chatId: "test",
+    });
+    expect(on).toContain("已开启");
+
+    await agent.processDirect({
+      content: "列出目录",
+      sessionKey: "feishu:test",
+      channel: "feishu",
+      chatId: "test",
+    });
+    const seenWhileOn: string[] = [];
+    while (true) {
+      const outbound = await bus.consumeOutbound(20);
+      if (!outbound) {
+        break;
+      }
+      seenWhileOn.push(outbound.content);
+    }
+    expect(seenWhileOn.some((item) => item.includes('list_dir(".")'))).toBe(true);
+
+    const off = await agent.processDirect({
+      content: "/verbose off",
+      sessionKey: "feishu:test",
+      channel: "feishu",
+      chatId: "test",
+    });
+    expect(off).toContain("已关闭");
+
+    await agent.processDirect({
+      content: "再列一次目录",
+      sessionKey: "feishu:test",
+      channel: "feishu",
+      chatId: "test",
+    });
+    const seenWhileOff: string[] = [];
+    while (true) {
+      const outbound = await bus.consumeOutbound(20);
+      if (!outbound) {
+        break;
+      }
+      seenWhileOff.push(outbound.content);
+    }
+    expect(seenWhileOff).toHaveLength(0);
   });
 
   it("returns max-iteration fallback when tool loop never ends", async () => {

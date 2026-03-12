@@ -72,6 +72,8 @@ interface MainTraceContext {
   originChatId: string;
 }
 
+type SessionImVerboseMode = "default" | "on" | "off";
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -803,6 +805,9 @@ export class AgentLoop {
       "/help - 查看帮助",
       "/new - 开始新会话，并清空当前上下文",
       "/stop - 停止当前正在执行的任务",
+      "/verbose - 查看当前调试输出状态",
+      "/verbose on - 开启当前会话的调试信息 IM 输出",
+      "/verbose off - 关闭当前会话的调试信息 IM 输出",
       "",
       "你也可以直接用自然语言提需求，例如：",
       "- 帮我总结这个问题",
@@ -814,7 +819,53 @@ export class AgentLoop {
       "- 如果已启用 workflow，我可以触发并跟踪执行状态",
       "- 如果已连接 MCP，我可以调用对应外部工具",
       "- 在飞书等聊天渠道里，直接发送这些命令也生效",
+      "- /verbose 只影响当前会话的调试信息输出，不影响最终答复",
     ].join("\n");
+  }
+
+  private getSessionImVerboseMode(session: Session): SessionImVerboseMode {
+    const raw = session.metadata.im_verbose;
+    return raw === "on" || raw === "off" ? raw : "default";
+  }
+
+  private setSessionImVerboseMode(session: Session, mode: SessionImVerboseMode): void {
+    if (mode === "default") {
+      delete session.metadata.im_verbose;
+      return;
+    }
+    session.metadata.im_verbose = mode;
+  }
+
+  private describeSessionImVerboseMode(session: Session): string {
+    const mode = this.getSessionImVerboseMode(session);
+    if (mode === "on") {
+      return "当前会话的调试信息 IM 输出：已开启";
+    }
+    if (mode === "off") {
+      return "当前会话的调试信息 IM 输出：已关闭";
+    }
+    return "当前会话的调试信息 IM 输出：跟随系统默认配置";
+  }
+
+  private sessionAllowsProgress(session: Session, channel: string, isToolHint: boolean): boolean {
+    if (channel === "cli") {
+      if (!this.channelsConfig) {
+        return true;
+      }
+      return isToolHint ? this.channelsConfig.sendToolHints : this.channelsConfig.sendProgress;
+    }
+
+    const mode = this.getSessionImVerboseMode(session);
+    if (mode === "on") {
+      return true;
+    }
+    if (mode === "off") {
+      return false;
+    }
+    if (!this.channelsConfig) {
+      return true;
+    }
+    return isToolHint ? this.channelsConfig.sendToolHints : this.channelsConfig.sendProgress;
   }
 
   private async runAgentLoop(
@@ -1189,6 +1240,22 @@ export class AgentLoop {
         content: AgentLoop.helpMessage(),
       };
     }
+    if (command === "/verbose") {
+      return {
+        channel: message.channel,
+        chatId: message.chatId,
+        content: `${this.describeSessionImVerboseMode(session)}\n用法：/verbose on 或 /verbose off`,
+      };
+    }
+    if (command === "/verbose on" || command === "/verbose off") {
+      this.setSessionImVerboseMode(session, command.endsWith("on") ? "on" : "off");
+      await this.sessions.save(session);
+      return {
+        channel: message.channel,
+        chatId: message.chatId,
+        content: this.describeSessionImVerboseMode(session),
+      };
+    }
 
     const unconsolidated = session.messages.length - session.lastConsolidated;
     if (unconsolidated >= this.memoryWindow && !this.consolidating.has(session.key)) {
@@ -1245,13 +1312,8 @@ export class AgentLoop {
       onProgress ??
       (async (content: string, meta?: ProgressMeta) => {
         const isToolHint = meta?.toolHint ?? false;
-        if (this.channelsConfig) {
-          if (isToolHint && !this.channelsConfig.sendToolHints) {
-            return;
-          }
-          if (!isToolHint && !this.channelsConfig.sendProgress) {
-            return;
-          }
+        if (!this.sessionAllowsProgress(session, message.channel, isToolHint)) {
+          return;
         }
         await this.bus.publishOutbound({
           channel: message.channel,
