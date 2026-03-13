@@ -84,6 +84,7 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["channels", "feishu", "encrypt_key"], ["channels", "feishu", "encryptKey"]);
   movePath(out, ["channels", "feishu", "allow_from"], ["channels", "feishu", "allowFrom"]);
   movePath(out, ["channels", "feishu", "webhook_path"], ["channels", "feishu", "webhookPath"]);
+  movePath(out, ["channels", "feishu", "react_emoji"], ["channels", "feishu", "reactEmoji"]);
   movePath(out, ["memory", "memu", "api_key"], ["memory", "memu", "apiKey"]);
   movePath(out, ["memory", "memu", "base_url"], ["memory", "memu", "baseUrl"]);
   movePath(out, ["memory", "memu", "agent_id"], ["memory", "memu", "agentId"]);

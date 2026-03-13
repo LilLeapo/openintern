@@ -39,6 +39,7 @@ import { ToolRegistry } from "../../tools/core/tool-registry.js";
 import { ContextBuilder, sanitizeToolResultForContext } from "../context/context-builder.js";
 import type { MemUClient } from "../memory/memu-client.js";
 import { SkillsLoader } from "../skills/loader.js";
+import { extractJsonObject } from "../../workflow/interpolation.js";
 
 interface RunningTask {
   task: Promise<void>;
@@ -112,6 +113,7 @@ export interface SpawnTaskOptions {
     runId: string;
     nodeId: string;
     nodeName: string;
+    outputKeys?: string[];
     hitl?: {
       enabled: boolean;
       highRiskTools: string[];
@@ -294,6 +296,7 @@ export class SubagentManager {
           runId: options.workflowContext.runId,
           nodeId: options.workflowContext.nodeId,
           nodeName: options.workflowContext.nodeName,
+          outputKeys: [...(options.workflowContext.outputKeys ?? [])],
           hitl: options.workflowContext.hitl
             ? {
                 enabled: options.workflowContext.hitl.enabled === true,
@@ -888,6 +891,29 @@ Focus on these skills for this task: ${listedSkills}`);
     return parts.join("\n\n");
   }
 
+  private ensureWorkflowJsonResult(
+    result: string | null | undefined,
+    workflowContext: SpawnTaskOptions["workflowContext"] | undefined,
+    fallbackText: string,
+  ): string {
+    const normalized = typeof result === "string" ? result.trim() : "";
+    const finalText = normalized || fallbackText;
+    const outputKeys = workflowContext?.outputKeys ?? [];
+
+    if (outputKeys.length !== 1) {
+      return finalText;
+    }
+
+    try {
+      extractJsonObject(finalText);
+      return finalText;
+    } catch {
+      return JSON.stringify({
+        [outputKeys[0] as string]: finalText,
+      });
+    }
+  }
+
   private async runSubagent(options: {
     taskId: string;
     role: string | null;
@@ -1018,7 +1044,11 @@ Focus on these skills for this task: ${listedSkills}`);
         });
 
         if (response.toolCalls.length === 0) {
-          finalResult = response.content ?? "Task completed with no output.";
+          finalResult = this.ensureWorkflowJsonResult(
+            response.content,
+            options.workflowContext,
+            "Task completed with no output.",
+          );
           if (this.traceEnabled()) {
             await this.emitSubagentTraceEvent({
               runId,
@@ -1171,7 +1201,11 @@ Focus on these skills for this task: ${listedSkills}`);
       }
 
       if (!finalResult) {
-        finalResult = "Task completed but no final response was generated.";
+        finalResult = this.ensureWorkflowJsonResult(
+          null,
+          options.workflowContext,
+          "Task completed but no final response was generated.",
+        );
       }
 
       if (this.traceEnabled()) {

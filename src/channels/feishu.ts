@@ -508,6 +508,8 @@ export class FeishuChannel {
       return;
     }
 
+    await this.tryAddReaction(messageId);
+
     const msgType = message?.message_type ?? "unknown";
     const parsed = this.parseIncomingContent(msgType, message?.content ?? "");
     if (!parsed.content.trim()) {
@@ -608,6 +610,43 @@ export class FeishuChannel {
       }
     }
     return parts.join(" ").trim();
+  }
+
+  private async tryAddReaction(messageId: string): Promise<void> {
+    const emojiType = this.config.reactEmoji.trim();
+    if (!emojiType) {
+      return;
+    }
+
+    try {
+      await this.withAuthRetry(async (token) => {
+        const response = await fetch(
+          `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reactions`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              reaction_type: {
+                emoji_type: emojiType,
+              },
+            }),
+          },
+        );
+
+        const raw = (await response.json()) as unknown;
+        const body = this.asObject(raw);
+        const code = typeof body.code === "number" ? body.code : -1;
+        if (!response.ok || code !== 0) {
+          const msg = typeof body.msg === "string" ? body.msg : response.statusText;
+          throw new Error(`Feishu add reaction failed (code=${code}, status=${response.status}): ${msg}`);
+        }
+      });
+    } catch {
+      // Best-effort only. Inbound delivery must continue even if reaction fails.
+    }
   }
 
   private async withAuthRetry(

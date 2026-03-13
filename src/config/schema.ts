@@ -82,6 +82,7 @@ export interface FeishuChannelConfig {
   encryptKey: string;
   allowFrom: string[];
   webhookPath: string;
+  reactEmoji: string;
 }
 
 export interface McpServerConfig {
@@ -264,6 +265,7 @@ export const DEFAULT_CONFIG: AppConfig = {
       encryptKey: "",
       allowFrom: [],
       webhookPath: "/feishu/events",
+      reactEmoji: "THUMBSUP",
     },
   },
   gateway: {

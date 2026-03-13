@@ -41,6 +41,7 @@ describe("config loader", () => {
     expect(config.providers.anthropicCompatible.apiBase).toBe("https://api.anthropic.com/v1");
     expect(config.channels.feishu.enabled).toBe(false);
     expect(config.channels.feishu.webhookPath).toBe("/feishu/events");
+    expect(config.channels.feishu.reactEmoji).toBe("THUMBSUP");
     expect(config.gateway.host).toBe("0.0.0.0");
     expect(config.gateway.port).toBe(18790);
     expect(config.memory.memu.enabled).toBe(false);
@@ -91,6 +92,7 @@ describe("config loader", () => {
             encrypt_key: "ek",
             allow_from: ["ou_abc"],
             webhook_path: "/custom/feishu",
+            react_emoji: "EYES",
           },
         },
         gateway: {
@@ -147,6 +149,7 @@ describe("config loader", () => {
     expect(config.channels.feishu.encryptKey).toBe("ek");
     expect(config.channels.feishu.allowFrom).toEqual(["ou_abc"]);
     expect(config.channels.feishu.webhookPath).toBe("/custom/feishu");
+    expect(config.channels.feishu.reactEmoji).toBe("EYES");
     expect(config.gateway.host).toBe("127.0.0.1");
     expect(config.gateway.port).toBe(18080);
     expect(config.memory.memu.apiKey).toBe("memu-key");

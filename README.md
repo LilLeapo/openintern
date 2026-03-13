@@ -304,7 +304,8 @@ Minimal example:
       "verificationToken": "xxx",
       "encryptKey": "",
       "allowFrom": ["*"],
-      "webhookPath": "/feishu/events"
+      "webhookPath": "/feishu/events",
+      "reactEmoji": "THUMBSUP"
     }
   },
   "gateway": {
@@ -370,6 +371,7 @@ Provider notes:
 - `encryptKey` and `verificationToken` are optional in long connection mode.
 - `channels.feishu.webhookPath` is kept for compatibility and is ignored in long connection mode.
 - `allowFrom` controls sender allowlist (`["*"]` to allow all users).
+- `reactEmoji` controls the best-effort reaction added to each received message. Set it to `""` to disable.
 
 Trace/debug notes:
 

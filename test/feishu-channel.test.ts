@@ -61,6 +61,7 @@ function makeConfig(overrides?: Partial<FeishuChannelConfig>): FeishuChannelConf
     encryptKey: "",
     allowFrom: ["*"],
     webhookPath: "/feishu/events",
+    reactEmoji: "THUMBSUP",
     ...(overrides ?? {}),
   };
 }
@@ -102,6 +103,34 @@ describe("FeishuChannel", () => {
   });
 
   it("publishes inbound message event to bus from websocket handler", async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.includes("/tenant_access_token/internal")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: 0,
+            tenant_access_token: "tenant-token-1",
+            expire: 7200,
+          }),
+        };
+      }
+      if (url.includes("/im/v1/messages/om_1/reactions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ code: 0, msg: "ok" }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        statusText: "not found",
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     const bus = new MessageBus();
     const channel = new FeishuChannel({
       config: makeConfig({ allowFrom: ["ou_allowed"] }),
@@ -133,6 +162,7 @@ describe("FeishuChannel", () => {
     expect(inbound?.chatId).toBe("ou_allowed");
     expect(inbound?.content).toBe("hello from feishu");
     expect(inbound?.metadata?.message_id).toBe("om_1");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/im/v1/messages/om_1/reactions"))).toBe(true);
 
     // Dedup check
     await handler?.({
@@ -152,6 +182,7 @@ describe("FeishuChannel", () => {
     });
     const duplicate = await bus.consumeInbound(20);
     expect(duplicate).toBeNull();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/im/v1/messages/om_1/reactions"))).toHaveLength(1);
 
     await channel.stop();
   });
