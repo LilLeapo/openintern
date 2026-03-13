@@ -476,6 +476,16 @@ export class WorkflowEngine {
           await this.scheduleRun(run.runId);
           return;
         } catch (error) {
+          if (this.isNaturalLanguageTerminalNode(run, node.definition.id)) {
+            const wrapped = this.wrapNaturalLanguageTerminalOutput(event.result);
+            if (wrapped) {
+              node.status = "completed";
+              node.lastError = null;
+              run.outputs[node.definition.id] = wrapped;
+              await this.scheduleRun(run.runId);
+              return;
+            }
+          }
           await this.handleNodeFailure(run, node, error);
           await this.scheduleRun(run.runId);
           return;
@@ -710,11 +720,24 @@ export class WorkflowEngine {
     node: NormalizedWorkflowNodeDefinition,
     triggerInput: Record<string, unknown>,
     outputs: Record<string, Record<string, unknown>>,
+    options?: {
+      allowNaturalLanguageFinal?: boolean;
+    },
   ): string {
     const interpolated = interpolateTemplate(node.taskPrompt, {
       trigger: triggerInput,
       nodes: outputs,
     });
+
+    if (options?.allowNaturalLanguageFinal) {
+      return `${interpolated}
+
+Final answer contract:
+- Write the best possible final answer for the end user in natural language.
+- Focus on clarity, directness, and answer quality over rigid structure.
+- You may use short paragraphs or a simple Markdown list when helpful.
+- Do not wrap the answer in JSON unless the task explicitly requires machine-readable output.`;
+    }
 
     const outputKeyHint =
       node.outputKeys.length > 0
@@ -741,7 +764,9 @@ ${outputKeyHint}`;
 
     let spawnResult: SpawnTaskResult;
     try {
-      const task = this.buildNodeTaskPrompt(node.definition, run.triggerInput, run.outputs);
+      const task = this.buildNodeTaskPrompt(node.definition, run.triggerInput, run.outputs, {
+        allowNaturalLanguageFinal: this.isNaturalLanguageTerminalNode(run, node.definition.id),
+      });
       const spawnInput: SpawnTaskOptions = {
         task,
         role: node.definition.role,
@@ -755,6 +780,7 @@ ${outputKeyHint}`;
           runId: run.runId,
           nodeId: node.definition.id,
           nodeName: node.definition.name ?? node.definition.id,
+          outputKeys: [...node.definition.outputKeys],
           hitl: node.definition.hitl.enabled
             ? {
                 enabled: true,
@@ -990,6 +1016,24 @@ ${outputKeyHint}`;
     } catch {
       return null;
     }
+  }
+
+  private isSinkNode(run: RunRuntimeState, nodeId: string): boolean {
+    return run.definition.nodes.every((node) => !node.dependsOn.includes(nodeId));
+  }
+
+  private isNaturalLanguageTerminalNode(run: RunRuntimeState, nodeId: string): boolean {
+    return run.originChannel !== "workflow" && this.isSinkNode(run, nodeId);
+  }
+
+  private wrapNaturalLanguageTerminalOutput(text: string): Record<string, unknown> | null {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return null;
+    }
+    return {
+      answer: trimmed,
+    };
   }
 
   private emitSnapshot(runId: string): void {

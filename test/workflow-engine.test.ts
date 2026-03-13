@@ -228,6 +228,63 @@ describe("WorkflowEngine", () => {
     engine.close();
   });
 
+  it("lets terminal nodes write natural-language answers", async () => {
+    const bus = new MessageBus();
+    const subagents = new FakeSubagentManager();
+    const engine = new WorkflowEngine({
+      bus,
+      subagents,
+      workspace: process.cwd(),
+      config: structuredClone(DEFAULT_CONFIG),
+    });
+
+    const handle = await engine.start(
+      {
+        id: "wf_terminal_text_prompt",
+        trigger: { type: "manual" },
+        nodes: [
+          {
+            id: "node_answer",
+            role: "scientist",
+            taskPrompt: "Answer the user",
+            dependsOn: [],
+            outputKeys: ["final_summary"],
+          },
+        ],
+      },
+      {
+        triggerInput: {},
+        originChannel: "cli",
+        originChatId: "direct",
+      },
+    );
+
+    await waitFor(() => subagents.calls.length === 1);
+    expect(subagents.calls[0]?.task).toContain("Final answer contract:");
+    expect(subagents.calls[0]?.task).toContain("Do not wrap the answer in JSON");
+    expect(subagents.calls[0]?.task).not.toContain("Return a JSON object as your final answer.");
+
+    await bus.emitSubagentEvent(
+      makeEvent({
+        type: "SUBAGENT_TASK_COMPLETED",
+        taskId: "task_1",
+        status: "ok",
+        result: "这是给用户的自然语言结论，不需要 JSON 包裹。",
+        originChatId: `${handle.runId}:node_answer`,
+      }),
+    );
+
+    const result = await handle.done;
+    expect(result.status).toBe("completed");
+    expect(result.outputs.node_answer).toEqual({
+      answer: "这是给用户的自然语言结论，不需要 JSON 包裹。",
+    });
+
+    const outbound = await bus.consumeOutbound(100);
+    expect(outbound?.content).toBe("这是给用户的自然语言结论，不需要 JSON 包裹。");
+    engine.close();
+  });
+
   it("enforces maxParallel when mode is parallel", async () => {
     const bus = new MessageBus();
     const subagents = new FakeSubagentManager();
