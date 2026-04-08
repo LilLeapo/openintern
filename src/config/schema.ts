@@ -143,9 +143,21 @@ export interface MemoryIsolationConfig {
 
 export type MemoryMode = "wiki" | "memu";
 
+export interface WikiNamespaceConfig {
+  /** Enable per-user personal wiki namespaces (@{principalId}/) */
+  personal: boolean;
+  /** Enable shared wiki namespace (@shared/) */
+  shared: boolean;
+  /** Metadata key to extract department for department namespaces (e.g. "department") */
+  departmentKey: string | null;
+  /** Default namespace when none can be resolved: "shared" or "personal" */
+  defaultNamespace: "shared" | "personal";
+}
+
 export interface MemoryConfig {
   mode: MemoryMode;
   dream: DreamConfig;
+  wiki: WikiNamespaceConfig;
   memu: MemUConfig;
   isolation: MemoryIsolationConfig;
 }
@@ -245,6 +257,12 @@ export const DEFAULT_CONFIG: AppConfig = {
       enabled: true,
       cronExpression: "0 3 * * *",
       maxSessionsPerRun: 20,
+    },
+    wiki: {
+      personal: true,
+      shared: true,
+      departmentKey: null,
+      defaultNamespace: "shared",
     },
     isolation: {
       tenantId: "default",

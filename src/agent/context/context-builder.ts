@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { MemoryMode } from "../../config/schema.js";
+import type { MemoryMode, WikiNamespaceConfig } from "../../config/schema.js";
+import { WikiNamespaceResolver } from "../memory/wiki-namespace.js";
 import { MemoryStore } from "../memory/store.js";
 import { SkillsLoader } from "../skills/loader.js";
 
@@ -43,10 +44,16 @@ export class ContextBuilder {
 
   private readonly skills: SkillsLoader;
   private readonly memoryMode: MemoryMode;
+  private readonly wikiConfig: WikiNamespaceConfig | null;
 
-  constructor(private readonly workspace: string, memoryMode: MemoryMode = "wiki") {
+  constructor(
+    private readonly workspace: string,
+    memoryMode: MemoryMode = "wiki",
+    wikiConfig?: WikiNamespaceConfig,
+  ) {
     this.skills = new SkillsLoader(workspace);
     this.memoryMode = memoryMode;
+    this.wikiConfig = memoryMode === "wiki" ? (wikiConfig ?? null) : null;
   }
 
   async buildSystemPrompt(memoryStore?: MemoryStore): Promise<string> {
@@ -87,6 +94,7 @@ ${skillsSummary}`,
       tenantId?: string;
       principalId?: string;
       conversationId?: string;
+      [key: string]: unknown;
     },
   ): string {
     const now = new Date();
@@ -107,6 +115,24 @@ ${skillsSummary}`,
     if (metadata?.conversationId) {
       lines.push(`Conversation ID: ${metadata.conversationId}`);
     }
+
+    // Resolve wiki namespace for this context
+    if (this.memoryMode === "wiki" && this.wikiConfig) {
+      const wikiRoot = path.join(path.resolve(this.workspace), "wiki");
+      const resolver = new WikiNamespaceResolver(wikiRoot, this.wikiConfig);
+      const deptKey = this.wikiConfig.departmentKey;
+      const department =
+        deptKey && metadata && typeof metadata[deptKey] === "string"
+          ? (metadata[deptKey] as string)
+          : undefined;
+      const resolved = resolver.resolve({
+        principalId: metadata?.principalId,
+        department,
+      });
+      lines.push(`Wiki Active Namespace: ${resolved.active}`);
+      lines.push(`Wiki Readable Namespaces: ${resolved.readable.join(", ")}`);
+    }
+
     return `${ContextBuilder.RUNTIME_CONTEXT_TAG}\n${lines.join("\n")}`;
   }
 
@@ -196,9 +222,9 @@ Your workspace is at: ${workspacePath}
 - Long-term memory: ${workspacePath}/memory/MEMORY.md
 - History log: ${workspacePath}/memory/HISTORY.md
 ${this.memoryMode === "wiki" ? `- Raw sources: ${workspacePath}/raw/
-- Wiki pages: ${workspacePath}/wiki/
-- Wiki index: ${workspacePath}/wiki/index.md
-- Wiki log: ${workspacePath}/wiki/log.md` : ""}
+- Wiki root: ${workspacePath}/wiki/
+- Wiki namespaces: @shared/ (default), @user-{id}/ (personal), @dept-{name}/ (department)
+- Each namespace has: index.md, log.md, sources/, entities/, concepts/, analyses/` : ""}
 - Custom skills: ${workspacePath}/skills/{skill-name}/SKILL.md
 
 ## Guidelines
@@ -208,7 +234,9 @@ ${this.memoryMode === "wiki" ? `- Raw sources: ${workspacePath}/raw/
 - If a tool call fails, analyze the error before retrying with a different approach.
 - Ask for clarification when the request is ambiguous.
 ${this.memoryMode === "wiki" ? `- Knowledge management uses wiki mode: maintain structured wiki pages instead of memory tools.
-- Read wiki/index.md to locate knowledge; write wiki pages to persist knowledge.
+- Wiki is organized into namespaces (@shared/, @user-{id}/, @dept-{name}/). Check runtime context for the active namespace.
+- Read the active namespace's index.md to locate knowledge. Also check @shared/index.md for shared knowledge.
+- Use [[@namespace/page-name]] for cross-namespace references.
 - Raw sources in raw/ are read-only; never modify them.` : `- Use memory tools selectively: save only stable high-value facts/decisions.
 - Prefer scope "chat" for conversational memory and scope "papers" for document knowledge.
 - Ask for user confirmation before saving sensitive personal information.`}

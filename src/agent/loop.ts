@@ -205,7 +205,7 @@ export class AgentLoop {
     this.tools = new ToolRegistry();
     this.memoryConfig = options.memoryConfig ?? structuredClone(DEFAULT_CONFIG.memory);
     const memoryMode = this.memoryConfig.mode ?? "wiki";
-    this.context = new ContextBuilder(this.workspace, memoryMode);
+    this.context = new ContextBuilder(this.workspace, memoryMode, this.memoryConfig.wiki);
     const memuConfig = options.memoryConfig?.memu;
     const memuApiStyle = memuConfig?.apiStyle ?? "cloudV3";
     const requiresMemuApiKey = memuApiStyle === "cloudV3";
