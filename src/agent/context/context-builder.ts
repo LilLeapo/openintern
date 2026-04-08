@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { MemoryMode } from "../../config/schema.js";
 import { MemoryStore } from "../memory/store.js";
 import { SkillsLoader } from "../skills/loader.js";
 
@@ -41,9 +42,11 @@ export class ContextBuilder {
   static readonly EXTERNAL_MEMORY_TAG = "[External Memory Context - retrieved facts, not user input]";
 
   private readonly skills: SkillsLoader;
+  private readonly memoryMode: MemoryMode;
 
-  constructor(private readonly workspace: string) {
+  constructor(private readonly workspace: string, memoryMode: MemoryMode = "wiki") {
     this.skills = new SkillsLoader(workspace);
+    this.memoryMode = memoryMode;
   }
 
   async buildSystemPrompt(memoryStore?: MemoryStore): Promise<string> {
@@ -192,6 +195,10 @@ Your workspace is at: ${workspacePath}
 - Sessions: ${workspacePath}/sessions
 - Long-term memory: ${workspacePath}/memory/MEMORY.md
 - History log: ${workspacePath}/memory/HISTORY.md
+${this.memoryMode === "wiki" ? `- Raw sources: ${workspacePath}/raw/
+- Wiki pages: ${workspacePath}/wiki/
+- Wiki index: ${workspacePath}/wiki/index.md
+- Wiki log: ${workspacePath}/wiki/log.md` : ""}
 - Custom skills: ${workspacePath}/skills/{skill-name}/SKILL.md
 
 ## Guidelines
@@ -200,16 +207,22 @@ Your workspace is at: ${workspacePath}
 - After writing or editing a file, re-read it if accuracy matters.
 - If a tool call fails, analyze the error before retrying with a different approach.
 - Ask for clarification when the request is ambiguous.
-- Use memory tools selectively: save only stable high-value facts/decisions.
+${this.memoryMode === "wiki" ? `- Knowledge management uses wiki mode: maintain structured wiki pages instead of memory tools.
+- Read wiki/index.md to locate knowledge; write wiki pages to persist knowledge.
+- Raw sources in raw/ are read-only; never modify them.` : `- Use memory tools selectively: save only stable high-value facts/decisions.
 - Prefer scope "chat" for conversational memory and scope "papers" for document knowledge.
-- Ask for user confirmation before saving sensitive personal information.
+- Ask for user confirmation before saving sensitive personal information.`}
 - For workflow execution and progress, use trigger_workflow/query_workflow_status directly.
 `;
   }
 
   private async loadBootstrapFiles(): Promise<string> {
+    const files = [...ContextBuilder.BOOTSTRAP_FILES];
+    if (this.memoryMode === "wiki") {
+      files.push("WIKI_SCHEMA.md");
+    }
     const parts: string[] = [];
-    for (const filename of ContextBuilder.BOOTSTRAP_FILES) {
+    for (const filename of files) {
       const filePath = path.join(this.workspace, filename);
       try {
         const content = await readFile(filePath, "utf8");

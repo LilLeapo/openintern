@@ -126,6 +126,14 @@ export function migrateConfig(data: unknown): Record<string, unknown> {
   movePath(out, ["gateway", "heartbeat", "port"], ["gateway", "port"]);
   movePath(out, ["gateway", "heartbeat", "interval_s"], ["gateway", "heartbeat", "intervalS"]);
 
+  // Infer memory.mode from legacy memu.enabled when mode is not explicitly set.
+  if (getPath(out, ["memory", "mode"]) === undefined) {
+    const memuEnabled = getPath(out, ["memory", "memu", "enabled"]);
+    if (memuEnabled === true) {
+      setPath(out, ["memory", "mode"], "memu");
+    }
+  }
+
   const roles = getPath(out, ["roles"]);
   if (isObject(roles)) {
     for (const [roleName, roleValue] of Object.entries(roles)) {

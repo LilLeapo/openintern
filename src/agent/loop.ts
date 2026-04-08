@@ -201,15 +201,18 @@ export class AgentLoop {
     this.enableSpawn = options.enableSpawn ?? true;
     this.channelsConfig = options.channelsConfig;
 
-    this.context = new ContextBuilder(this.workspace);
     this.sessions = options.sessionStore ?? new SessionStore(this.workspace);
     this.tools = new ToolRegistry();
     this.memoryConfig = options.memoryConfig ?? structuredClone(DEFAULT_CONFIG.memory);
+    const memoryMode = this.memoryConfig.mode ?? "wiki";
+    this.context = new ContextBuilder(this.workspace, memoryMode);
     const memuConfig = options.memoryConfig?.memu;
     const memuApiStyle = memuConfig?.apiStyle ?? "cloudV3";
     const requiresMemuApiKey = memuApiStyle === "cloudV3";
     const memuEnabled =
-      memuConfig?.enabled === true && (!requiresMemuApiKey || Boolean(memuConfig.apiKey.trim()));
+      memoryMode === "memu" &&
+      memuConfig?.enabled === true &&
+      (!requiresMemuApiKey || Boolean(memuConfig.apiKey.trim()));
     this.memuClient = memuEnabled
       ? new MemUClient({
           apiKey: memuConfig?.apiKey ?? "",

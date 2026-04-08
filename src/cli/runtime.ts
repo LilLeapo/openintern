@@ -24,7 +24,7 @@ export async function createAppRuntime(): Promise<AppRuntime> {
   const config = await loadOrCreateConfig();
   const workspace = resolveWorkspacePath(config);
   await mkdir(workspace, { recursive: true });
-  await syncWorkspaceTemplates(workspace);
+  await syncWorkspaceTemplates(workspace, config.memory.mode);
 
   const bus = new MessageBus();
   const provider = makeProvider(config);

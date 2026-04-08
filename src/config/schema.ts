@@ -135,7 +135,10 @@ export interface MemoryIsolationConfig {
   };
 }
 
+export type MemoryMode = "wiki" | "memu";
+
 export interface MemoryConfig {
+  mode: MemoryMode;
   memu: MemUConfig;
   isolation: MemoryIsolationConfig;
 }
@@ -230,6 +233,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     restrictToWorkspace: false,
   },
   memory: {
+    mode: "wiki",
     isolation: {
       tenantId: "default",
       scopeOwners: {

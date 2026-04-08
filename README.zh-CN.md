@@ -9,7 +9,10 @@ OpenIntern 是一个受 `reference/nanobot` 启发的 TypeScript Agent 项目，
 - 事件驱动 Agent Loop：`LLM -> tool calls -> LLM`
 - 会话持久化（JSONL）
 - 命令：`/help`、`/new`、`/stop`
-- Memory / History：
+- 双模式知识管理（`memory.mode` 切换，互斥）：
+  - **Wiki 模式**（默认）：三层架构（`raw/` 原始资料 → `wiki/` 知识页面 → `WIKI_SCHEMA.md` 规则），知识持续积累
+  - **MemU 模式**：外部向量记忆服务，`memory_retrieve` / `memory_save` / `memory_delete`
+- 会话记忆（两种模式共用）：
   - 会话隔离的长期记忆：`memory/sessions/<session_key>/MEMORY.md`
   - 会话隔离的历史日志：`memory/sessions/<session_key>/HISTORY.md`
 - Skills 发现与注入
@@ -26,7 +29,7 @@ OpenIntern 是一个受 `reference/nanobot` 启发的 TypeScript Agent 项目，
   - `cron`
   - `spawn`
   - `trigger_workflow`、`query_workflow_status`、`draft_workflow`
-  - `memory_retrieve`、`memory_save`、`memory_delete`（启用 MemU 时）
+  - `memory_retrieve`、`memory_save`、`memory_delete`（MemU 模式时）
 - 工作流与自动化：
   - cron 调度
   - heartbeat
@@ -202,10 +205,14 @@ Provider 说明：
 
 - `agents.defaults.provider = "openaiCompatible"`：强制走 OpenAI-compatible
 - `agents.defaults.provider = "anthropicCompatible"`：强制走 Anthropic-compatible
-- `memory.memu.enabled = true`：启用 MemU 检索和 memory tools
-- `memory.isolation.tenantId`：设置默认企业租户命名空间
-- `memory.isolation.scopeOwners.chat = "principal"`：聊天记忆默认跟随发送者身份隔离
-- `memory.isolation.scopeOwners.papers = "conversation"`：文档/知识记忆默认按会话隔离；如果要共享知识库，可显式传 `knowledge_base_id`
+
+记忆模式说明：
+
+- `memory.mode = "wiki"`（默认）：Wiki 知识管理模式，workspace 自动创建 `raw/`、`wiki/`、`WIKI_SCHEMA.md`
+- `memory.mode = "memu"`：MemU 向量记忆模式，需配置 `memory.memu.enabled = true` 和 API Key
+- 两种模式互斥。旧配置中 `memu.enabled = true` 会自动推断为 `mode = "memu"`
+- `memory.isolation.tenantId`：设置默认企业租户命名空间（MemU 模式）
+- `memory.isolation.scopeOwners.chat = "principal"`：聊天记忆默认跟随发送者身份隔离（MemU 模式）
 
 ## Upgrade Notes
 

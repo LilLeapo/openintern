@@ -401,7 +401,7 @@ async function main(): Promise<void> {
   const config = await loadOrCreateConfig();
   const workspace = resolveWorkspacePath(config);
   await mkdir(workspace, { recursive: true });
-  await syncWorkspaceTemplates(workspace);
+  await syncWorkspaceTemplates(workspace, config.memory.mode);
 
   const state = new UiMockState(config);
   const workflowRepository = new WorkflowRepository(workspace);

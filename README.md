@@ -74,11 +74,11 @@ OpenIntern 是一个为企业打造的 AI Agent 自动化框架，专注于将 A
 
 ### 场景 3：研究助手工作流
 ```
-文献检索 → 全文下载 → 内容摘要 → 知识图谱构建 → 生成研究报告
+文献检索 → 全文下载 → Wiki 摄入 → 交叉引用构建 → 生成研究报告
 ```
 - 子 Agent 并行处理多篇论文
-- 企业知识库持久化
-- 支持增量更新
+- Wiki 模式：每篇论文生成摘要页，自动关联实体和概念页，知识持续积累
+- 支持增量摄入，新论文自动整合进现有知识结构
 
 ---
 
@@ -190,10 +190,14 @@ pnpm dev:ui
 - `query_workflow_status` - 查询工作流状态
 - `draft_workflow` - 创建工作流草稿
 
-**记忆系统**：
+**记忆系统**（MemU 模式）：
 - `memory_retrieve` - 检索记忆
 - `memory_save` - 保存记忆
 - `memory_delete` - 删除记忆
+
+**知识管理**（Wiki 模式）：
+- 通过 `read_file` / `write_file` / `edit_file` 直接操作 wiki 页面
+- 配合 `wiki-ingest` / `wiki-query` / `wiki-lint` 技能使用
 
 **自动化**：
 - `cron` - 定时任务调度
@@ -201,18 +205,74 @@ pnpm dev:ui
 
 ### 4. 记忆系统
 
-**三层记忆架构**：
+OpenIntern 提供两种互斥的知识管理模式，通过 `memory.mode` 配置切换：
 
-1. **会话记忆**：当前对话的短期上下文
-   - 路径：`memory/sessions/<session_key>/MEMORY.md`
+#### Wiki 模式（默认）
 
-2. **会话历史**：交互日志
-   - 路径：`memory/sessions/<session_key>/HISTORY.md`
+受 Karpathy 提出的 "LLM Wiki" 理念启发。传统 RAG 每次查询都从零检索和拼接，没有积累；Wiki 模式让 LLM 主动构建和维护一个持久化的结构化知识库，知识被编译一次，然后持续维护。
 
-3. **企业记忆（MemU 集成）**：
-   - `chat` 作用域：用户个人偏好和上下文
-   - `papers` 作用域：文档和知识库
-   - 支持租户隔离和 ACL 控制
+**三层架构**：
+
+```
+workspace/
+├── raw/                  # Layer 1: 原始资料（不可变，LLM 只读）
+│   ├── paper-a.pdf
+│   └── article-b.md
+├── wiki/                 # Layer 2: 知识层（LLM 全权维护）
+│   ├── index.md          # 主索引：所有页面的链接和一句话摘要
+│   ├── log.md            # 操作日志：摄入、查询、检查的时间线
+│   ├── sources/          # 每个原始资料的摘要页
+│   ├── entities/         # 实体页（人物、组织、产品、数据集）
+│   ├── concepts/         # 概念页（方法、理论、主题）
+│   └── analyses/         # 综合分析页（有价值的查询结果存回）
+└── WIKI_SCHEMA.md        # Layer 3: 规则层（定义 wiki 结构和操作约定）
+```
+
+**四种操作模式**（对应三个技能）：
+
+| 操作 | 技能 | 说明 |
+|------|------|------|
+| **Ingest** | `wiki-ingest` | 将 `raw/` 中的新资料读取、提炼、整合进 wiki 页面。支持人在回路讨论要点 |
+| **Query** | `wiki-query` | 从 `wiki/index.md` 定位相关页面，综合回答。有价值的分析自动存回 `wiki/analyses/` |
+| **Lint** | `wiki-lint` | Wiki 健康检查：断链、矛盾、孤儿页、缺失交叉引用、过时内容 |
+| **Index & Log** | 自动 | `index.md` 和 `log.md` 在每次操作后自动更新 |
+
+**Wiki 页面约定**：
+- 每个页面以 YAML frontmatter 开头（title, type, created, updated, sources）
+- 使用 `[[page-name]]` 语法进行交叉引用
+- 矛盾信息保留双方立场并标注来源
+- 单个页面超过 ~800 词时拆分
+
+**核心优势**：
+- 知识持续积累，不每次重新推导
+- 结构化索引文件替代向量检索（中小规模下更高效）
+- 可追溯——每个 wiki 页面的信息都能回溯到 `raw/` 中的原始资料
+- 探索过程本身也被保留（analyses 页面）
+
+#### MemU 模式
+
+通过外部 MemU 服务进行向量化记忆管理，适合需要大规模检索或已有 MemU 基础设施的场景。
+
+**记忆作用域**：
+- `chat`：用户个人偏好和对话上下文
+- `papers`：文档和知识库
+
+**记忆工具**：
+- `memory_retrieve` — 按语义检索相关记忆
+- `memory_save` — 保存新记忆
+- `memory_delete` — 清除指定作用域的记忆
+
+**记忆隔离**：
+- 租户隔离（`tenant_id`）
+- 作用域所有者类型：`principal`（用户）/ `conversation`（会话）/ `knowledgeBase`（知识库）
+
+#### 会话记忆（两种模式共用）
+
+无论选择哪种模式，每个会话都有本地的短期记忆：
+
+- **会话记忆**：`memory/sessions/<session_key>/MEMORY.md`
+- **会话历史**：`memory/sessions/<session_key>/HISTORY.md`
+- 通过 `memoryWindow` 配置自动整合窗口（默认 100 条消息）
 
 ### 5. 多模型支持
 
@@ -314,11 +374,34 @@ pnpm dev:ui
 3. 设置订阅模式为**长连接**（无需公网回调地址）
 4. 将 `appId` 和 `appSecret` 填入配置
 
-### 企业记忆配置（MemU）
+### 记忆模式配置
+
+两种模式互斥，通过 `memory.mode` 切换：
+
+**Wiki 模式（默认）**：
 
 ```json
 {
   "memory": {
+    "mode": "wiki"
+  }
+}
+```
+
+无需额外配置。启动后自动在 workspace 中创建 `raw/`、`wiki/`、`WIKI_SCHEMA.md`。
+
+使用方式：
+1. 将原始资料放入 `~/.openintern/workspace/raw/`
+2. 对话中使用 `wiki-ingest` 技能摄入资料
+3. 使用 `wiki-query` 技能查询知识
+4. 定期使用 `wiki-lint` 技能维护质量
+
+**MemU 模式**：
+
+```json
+{
+  "memory": {
+    "mode": "memu",
     "memu": {
       "enabled": true,
       "apiStyle": "cloudV3",
@@ -342,9 +425,7 @@ pnpm dev:ui
 }
 ```
 
-**记忆隔离策略**：
-- `chat` 记忆：绑定到用户身份（`principal`）
-- `papers` 记忆：绑定到会话（`conversation`）或知识库（`knowledgeBase`）
+> **兼容性说明**：旧配置中如果已有 `memu.enabled: true` 但没有 `mode` 字段，系统会自动推断为 `mode: "memu"`。
 
 ### 追踪和调试配置
 
@@ -487,6 +568,11 @@ src/
   ├── cli/                # CLI 入口
   └── ui/                 # Web UI
 skills/                   # 可扩展技能
+  ├── wiki-ingest/        # Wiki 摄入技能
+  ├── wiki-query/         # Wiki 查询技能
+  ├── wiki-lint/          # Wiki 健康检查技能
+  ├── selective-memory/   # MemU 选择性记忆技能
+  └── pdf-ingest/         # PDF 摄入技能
 workflows/                # 工作流定义
   ├── *.json              # 已发布工作流
   └── drafts/             # 草稿工作流
@@ -595,6 +681,7 @@ OpenIntern 正在向完整的企业 AI 转型平台演进。
 - [x] 结构化事件追踪
 - [x] 会话级记忆隔离
 - [x] MemU 企业记忆集成
+- [x] Wiki 知识管理模式（Karpathy LLM Wiki）
 - [x] 基于角色的工具权限控制
 
 ### 开发中 🚧
@@ -631,11 +718,15 @@ OpenIntern 正在向完整的企业 AI 转型平台演进。
       └── 向量（embedding）
 ```
 
-#### 2. 企业知识库和 RAG（Q2-Q3 2026）
+#### 2. 企业知识库（Q2-Q3 2026）
 
-**功能**：
-- 文档摄取管道（PDF/Word/Markdown/HTML）
-- 智能分块和向量化
+**Wiki 模式增强**：
+- 文档摄取管道扩展（PDF/Word/HTML 自动提取文本后摄入 wiki）
+- Wiki 页面版本管理（git 追踪）
+- 多用户协作 wiki（冲突合并策略）
+- 大规模 wiki 的索引优化（当页面超过数百个时引入轻量检索）
+
+**MemU 模式增强**：
 - 混合检索（向量 + 关键词 + 元数据过滤）
 - ACL 权限控制
 - 增量更新和版本管理
@@ -644,7 +735,7 @@ OpenIntern 正在向完整的企业 AI 转型平台演进。
 ```
 会话记忆（短期）
   ↓ 定期总结
-用户长期记忆（个人偏好和事实）
+Wiki 知识库 / MemU 长期记忆
   ↓ 共享和沉淀
 组织知识库（企业共享知识 + ACL）
 ```
