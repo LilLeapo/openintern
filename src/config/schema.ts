@@ -102,6 +102,12 @@ export interface GatewayConfig {
   heartbeat: HeartbeatConfig;
 }
 
+export interface DreamConfig {
+  enabled: boolean;
+  cronExpression: string;
+  maxSessionsPerRun: number;
+}
+
 export interface MemUConfig {
   enabled: boolean;
   apiKey: string;
@@ -139,6 +145,7 @@ export type MemoryMode = "wiki" | "memu";
 
 export interface MemoryConfig {
   mode: MemoryMode;
+  dream: DreamConfig;
   memu: MemUConfig;
   isolation: MemoryIsolationConfig;
 }
@@ -234,6 +241,11 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   memory: {
     mode: "wiki",
+    dream: {
+      enabled: true,
+      cronExpression: "0 3 * * *",
+      maxSessionsPerRun: 20,
+    },
     isolation: {
       tenantId: "default",
       scopeOwners: {

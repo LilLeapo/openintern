@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import { AgentLoop } from "../agent/loop.js";
+import { DreamService } from "../agent/memory/dream.js";
 import { MessageBus } from "../bus/message-bus.js";
 import { FeishuChannel } from "../channels/feishu.js";
 import { loadOrCreateConfig, resolveWorkspacePath, getDataDir } from "../config/loader.js";
@@ -16,6 +17,7 @@ export interface AppRuntime {
   bus: MessageBus;
   cron: CronService;
   heartbeat: HeartbeatService;
+  dream: DreamService;
   feishu: FeishuChannel;
   agent: AgentLoop;
 }
@@ -34,6 +36,14 @@ export async function createAppRuntime(): Promise<AppRuntime> {
     config: config.channels.feishu,
     bus,
   });
+  const dreamConfig = config.memory.dream;
+  const dream = new DreamService({
+    workspace,
+    provider,
+    model: config.agents.defaults.model,
+    maxSessionsPerRun: dreamConfig.maxSessionsPerRun,
+  });
+
   const agent = new AgentLoop({
     bus,
     provider,
@@ -57,6 +67,12 @@ export async function createAppRuntime(): Promise<AppRuntime> {
   });
 
   cron.onJob = async (job) => {
+    // Dream jobs are handled directly, not routed through the agent loop
+    if (job.name === "__dream__") {
+      await dream.dream();
+      return null;
+    }
+
     const reminder = `[Scheduled Task] Timer finished.
 
 Task '${job.name}' has been triggered.
@@ -102,12 +118,32 @@ Scheduled instruction: ${job.payload.message}`;
     },
   });
 
+  // Register dream cron job if enabled and not already registered
+  if (dreamConfig.enabled) {
+    const existingJobs = await cron.listJobs(true);
+    const hasDreamJob = existingJobs.some((j) => j.name === "__dream__");
+    if (!hasDreamJob) {
+      await cron.addJob({
+        name: "__dream__",
+        schedule: {
+          kind: "cron",
+          expr: dreamConfig.cronExpression,
+          atMs: null,
+          everyMs: null,
+          tz: null,
+        },
+        message: "[Dream] Run dream consolidation cycle.",
+      });
+    }
+  }
+
   return {
     config,
     workspace,
     bus,
     cron,
     heartbeat,
+    dream,
     feishu,
     agent,
   };
